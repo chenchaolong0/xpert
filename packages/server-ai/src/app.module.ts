@@ -35,6 +35,7 @@ import { RagVStoreModule } from './rag-vstore'
 import { IntegrationGithubModule } from './integration-github'
 import { EnvironmentModule } from './environment'
 import { XpertTableModule } from './xpert-table'
+import { HandoffQueueModule } from './handoff/message-queue.module'
 
 @Module({
 	imports: [
@@ -55,6 +56,7 @@ import { XpertTableModule } from './xpert-table'
 		CopilotStoreModule,
 		EnvironmentModule,
 		GraphragModule,
+		HandoffQueueModule,
 		XpertModule,
 		XpertAgentModule,
 		XpertAgentExecutionModule,
