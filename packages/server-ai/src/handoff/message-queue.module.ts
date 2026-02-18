@@ -1,7 +1,8 @@
 import { BullModule } from '@nestjs/bull'
 import { Global, Module } from '@nestjs/common'
 import { DiscoveryModule } from '@nestjs/core'
-import { HandoffProcessorRegistry } from '@xpert-ai/plugin-sdk'
+import { CqrsModule } from '@nestjs/cqrs'
+import { HANDOFF_QUEUE_SERVICE_TOKEN, HandoffProcessorRegistry } from '@xpert-ai/plugin-sdk'
 import {
 	XPERT_HANDOFF_QUEUE,
 	XPERT_HANDOFF_QUEUE_BATCH,
@@ -12,6 +13,7 @@ import { HandoffQueueGatewayService } from './dispatcher/handoff-queue-gateway.s
 import { HandoffRouteResolver } from './dispatcher/handoff-route-resolver.service'
 import { HandoffRoutingConfigService } from './dispatcher/handoff-routing-config.service'
 import { HandoffDeadService } from './dead-letter.service'
+import { registerHandoffPluginServicePermissionHandler } from './handoff-permission'
 import { MessageDispatcherService } from './message-dispatcher.service'
 import {
 	HandoffQueueBatchProcessor,
@@ -29,6 +31,7 @@ import { Processors } from './plugins'
 @Module({
 	imports: [
 		DiscoveryModule,
+		CqrsModule,
 		BullModule.registerQueue(
 			{
 				name: XPERT_HANDOFF_QUEUE
@@ -53,6 +56,7 @@ import { Processors } from './plugins'
 		HandoffRouteResolver,
 		HandoffQueueGatewayService,
 		HandoffQueueService,
+		{ provide: HANDOFF_QUEUE_SERVICE_TOKEN, useExisting: HandoffQueueService },
 		HandoffQueueProcessor,
 		HandoffQueueRealtimeProcessor,
 		HandoffQueueBatchProcessor,
@@ -62,4 +66,8 @@ import { Processors } from './plugins'
 		...CommandHandlers
 	]
 })
-export class HandoffQueueModule {}
+export class HandoffQueueModule {
+	constructor() {
+		registerHandoffPluginServicePermissionHandler()
+	}
+}

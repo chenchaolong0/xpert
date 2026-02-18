@@ -11,6 +11,10 @@ import { LarkConversationService } from './conversation.service'
 import { LarkTokenStrategy } from './auth/lark-token.strategy'
 import { CommandHandlers } from './commands/handlers'
 import { QueryHandlers } from './queries/handlers'
+import {
+	LarkChatRunStateService,
+	LarkChatStreamCallbackProcessor,
+} from './handoff'
 
 @XpertServerPlugin({
 	imports: [
@@ -23,6 +27,8 @@ import { QueryHandlers } from './queries/handlers'
 		LarkConversationService,
 		LarkChannelStrategy,
 		LarkIntegrationStrategy,
+		LarkChatRunStateService,
+		LarkChatStreamCallbackProcessor,
 		...CommandHandlers,
 		...QueryHandlers,
 		LarkTokenStrategy

@@ -65,6 +65,28 @@ typePolicies:
     idempotency:
       keyFrom: businessKey
       windowMs: 86400000
+  system.chat_dispatch.v1:
+    queue: realtime
+    lane: high
+    timeoutMs: 120000
+    retry:
+      maxAttempts: 2
+      backoff: exponential
+      baseDelayMs: 300
+      maxDelayMs: 5000
+      jitter: full
+      retryOn: [429, 500, 502, 503, 504]
+  system.chat_message_upsert.v1:
+    queue: realtime
+    lane: main
+    timeoutMs: 30000
+    retry:
+      maxAttempts: 2
+      backoff: fixed
+      baseDelayMs: 500
+      maxDelayMs: 2000
+      jitter: none
+      retryOn: [429, 500, 502, 503, 504]
 
 routes:
   - match:

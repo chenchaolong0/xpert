@@ -1,16 +1,16 @@
-import { z } from 'zod'
 import type { XpertPlugin } from '@xpert-ai/plugin-sdk'
+import { join } from 'node:path'
 import { IntegrationLarkPlugin } from './lib/integration-lark.plugin'
+import {
+	IntegrationLarkPluginConfig,
+	IntegrationLarkPluginConfigSchema,
+} from './lib/plugin-config'
 import { LARK_PLUGIN_CONTEXT } from './lib/tokens'
 import { iconImage } from './lib/types'
+import { initI18n } from './lib/i18n'
 
 export * from './lib/queries'
-
-const ConfigSchema = z.object({
-	// Optional: global configuration, such as default log level
-})
-
-const plugin: XpertPlugin<z.infer<typeof ConfigSchema>> = {
+const plugin: XpertPlugin<IntegrationLarkPluginConfig> = {
 	meta: {
 		name: '@xpert-ai/plugin-integration-lark',
 		version: '0.0.1',
@@ -26,14 +26,16 @@ const plugin: XpertPlugin<z.infer<typeof ConfigSchema>> = {
 		homepage: 'https://xpertai.cloud'
 	},
 	config: {
-		schema: ConfigSchema
+		schema: IntegrationLarkPluginConfigSchema
 	},
 	permissions: [
 		{ type: 'integration', service: 'lark', operations: ['read'] },
-		{ type: 'user', operations: ['read'] },
+		{ type: 'user', operations: ['read', 'write'] },
+		{ type: 'handoff', operations: ['enqueue'] },
 	],
 	register(ctx) {
 		ctx.logger.log('Registering Lark integration plugin')
+		initI18n(join(__dirname, '../src'));
 		return {
 			module: IntegrationLarkPlugin,
 			global: true,

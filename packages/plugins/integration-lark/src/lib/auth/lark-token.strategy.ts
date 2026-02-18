@@ -1,5 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import { IIntegration, TIntegrationLarkOptions } from '@metad/contracts'
+import { IIntegration } from '@metad/contracts'
 import {
 	INTEGRATION_PERMISSION_SERVICE_TOKEN,
 	IntegrationPermissionService,
@@ -11,6 +11,7 @@ import express from 'express'
 import { Strategy } from 'passport'
 import { LarkService } from '../lark.service'
 import { LARK_PLUGIN_CONTEXT } from '../tokens'
+import { TIntegrationLarkOptions } from '../types'
 
 @Injectable()
 export class LarkTokenStrategy extends PassportStrategy(Strategy, 'lark-token') {
@@ -83,7 +84,8 @@ export class LarkTokenStrategy extends PassportStrategy(Strategy, 'lark-token') 
 					const user = await this.larkService.getUser(
 						integrationClient.client,
 						integration.tenantId,
-						union_id
+						union_id,
+						integration.options?.userProvision
 					)
 					if (!user) {
 						throw new UnauthorizedException(`No mapped user found for union_id '${union_id}'`)

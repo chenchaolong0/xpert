@@ -2,7 +2,6 @@ import { Serializable } from '@langchain/core/load/serializable'
 import {
 	I18nObject,
 	IChatMessage,
-	TranslateOptions,
 	TSensitiveOperation,
 	XpertAgentExecutionStatusEnum
 } from '@metad/contracts'
@@ -14,6 +13,7 @@ import {
 	LARK_REJECT,
 	TLarkConversationStatus
 } from '../types'
+import { translate } from '../i18n'
 import { LarkService } from '../lark.service'
 
 export type ChatLarkMessageStatus = IChatMessage['status'] | 'continuing' | 'waiting' | 'done' | TLarkConversationStatus
@@ -52,7 +52,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 		img_key: ChatLarkMessage.logoImgKey,
 		corner_radius: '30%'
 	}
-	static readonly helpUrl = 'https://xpertai.cn/en/docs/ai/tool/chatbi/feishu/bot'
+	static readonly helpUrl = 'https://docs.xpertai.cn/en/ai/toolset/chatbi-toolset/bot'
 
 	private readonly logger = new Logger(ChatLarkMessage.name)
 
@@ -106,7 +106,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 	}
 
 	async getTitle() {
-		const status = await this.translate('integration.Lark.Status_' + this.status, { lang: this.language })
+		const status = await this.translate('integration.Lark.Status_' + this.status, { lng: this.language })
 		switch (this.status) {
 			case 'thinking':
 				return status
@@ -152,13 +152,17 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 	async getCard() {
 		const elements = [...this.elements]
 
+		if (this.shouldShowThinkingFooter()) {
+			elements.push(await this.getThinkingFooter())
+		}
+
 		if (this.status === 'end') {
 			if (elements[elements.length - 1]?.tag !== 'hr') {
 				elements.push({ tag: 'hr' })
 			}
 			elements.push({
 				tag: 'markdown',
-				content: await this.translate('integration.Lark.ConversationEnded', { lang: this.language })
+				content: await this.translate('integration.Lark.ConversationEnded', { lng: this.language })
 			})
 		} else if (this.status !== 'done') {
 			if (elements[elements.length - 1]?.tag !== 'hr') {
@@ -172,6 +176,24 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 		}
 	}
 
+	private shouldShowThinkingFooter(): boolean {
+		return (
+			this.status !== 'end' &&
+			this.status !== 'done' &&
+			this.status !== XpertAgentExecutionStatusEnum.SUCCESS &&
+			this.status !== XpertAgentExecutionStatusEnum.ERROR &&
+			this.status !== XpertAgentExecutionStatusEnum.INTERRUPTED
+		)
+	}
+
+	private async getThinkingFooter() {
+		const thinking = await this.translate('integration.Lark.Status_thinking', { lng: this.language })
+		return {
+			tag: 'markdown',
+			content: `<text_tag color='wathet'>${thinking}</text_tag>`
+		}
+	}
+
 	async getEndAction() {
 		return {
 			tag: 'action',
@@ -182,7 +204,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 					tag: 'button',
 					text: {
 						tag: 'plain_text',
-						content: await this.translate('integration.Lark.EndConversation', { lang: this.language })
+						content: await this.translate('integration.Lark.EndConversation', { lng: this.language })
 					},
 					type: 'text',
 					complex_interaction: true,
@@ -194,7 +216,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 					tag: 'button',
 					text: {
 						tag: 'plain_text',
-						content: await this.translate('integration.Lark.HelpDoc', { lang: this.language })
+						content: await this.translate('integration.Lark.HelpDoc', { lng: this.language })
 					},
 					type: 'text',
 					complex_interaction: true,
@@ -214,7 +236,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 				tag: 'button',
 				text: {
 					tag: 'plain_text',
-					content: await this.translate('integration.Lark.Confirm', { lang: this.language })
+					content: await this.translate('integration.Lark.Confirm', { lng: this.language })
 				},
 				type: 'primary',
 				width: 'default',
@@ -225,7 +247,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 				tag: 'button',
 				text: {
 					tag: 'plain_text',
-					content: await this.translate('integration.Lark.Reject', { lang: this.language })
+					content: await this.translate('integration.Lark.Reject', { lng: this.language })
 				},
 				type: 'danger',
 				width: 'default',
@@ -316,8 +338,8 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
 		})
 	}
 
-	async translate(key: string, options: TranslateOptions) {
-		return await this.larkService.translate(key, options)
+	async translate(key: string, options?: Parameters<typeof translate>[1]) {
+		return translate(key, options)
 	}
 }
 

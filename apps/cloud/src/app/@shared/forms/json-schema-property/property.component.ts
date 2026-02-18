@@ -110,7 +110,7 @@ export class JSONSchemaPropertyComponent {
   // x-ui
   readonly xUi = computed(() => (this.meta() as any)?.['x-ui'] || {})
   readonly xUiComponent = computed(() => this.xUi()?.component)
-  readonly xUiInputType = computed(() => this.xUi()?.component === 'secretInput' ? 'password' : 'text')
+  readonly xUiInputType = computed(() => ['secretInput', 'password'].includes(this.xUi()?.component) ? 'password' : 'text')
   readonly xUiRevealable = computed(() => this.xUi()?.revealable)
   readonly xUiHelp = computed(() => this.xUi()?.help)
   readonly xUiSpan = computed(() => this.xUi()?.span)

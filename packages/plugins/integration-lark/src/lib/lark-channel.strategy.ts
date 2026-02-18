@@ -1,6 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk'
 import { Injectable, Logger } from '@nestjs/common'
-import { IIntegration, TIntegrationLarkOptions } from '@metad/contracts'
+import { IIntegration } from '@metad/contracts'
 import { Request, Response, NextFunction } from 'express'
 import {
 	IChatChannel,
@@ -16,6 +16,7 @@ import {
 	CHAT_CHANNEL_TEXT_LIMITS
 } from '@xpert-ai/plugin-sdk'
 import { LarkService } from './lark.service'
+import { TIntegrationLarkOptions } from './types'
 
 /**
  * Lark Chat Channel Strategy

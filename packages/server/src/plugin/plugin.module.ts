@@ -16,9 +16,8 @@ import { PluginInstance } from './plugin-instance.entity'
 import { PluginInstanceService } from './plugin-instance.service'
 import {
 	PluginIntegrationPermissionService,
-	PluginUserPermissionService,
-} from './plugin-permission.service'
-
+	PluginUserPermissionService
+} from './permissions'
 
 @Global()
 @Module({

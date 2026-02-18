@@ -1,172 +1,230 @@
-import { SerializedConstructor } from '@langchain/core/load/serializable'
 import {
-	ChatMessageEventTypeEnum,
-	ChatMessageTypeEnum,
 	LanguagesEnum,
-	messageContentText,
-	XpertAgentExecutionStatusEnum
+	TChatOptions
 } from '@metad/contracts'
-import { RequestContext } from '@xpert-ai/plugin-sdk'
-import { Logger } from '@nestjs/common'
+import {
+	HandoffMessage,
+	HandoffRequestContextPayload,
+	HANDOFF_PERMISSION_SERVICE_TOKEN,
+	HandoffPermissionService,
+	PluginContext,
+	RequestContext,
+	SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
+	SystemChatDispatchPayload
+} from '@xpert-ai/plugin-sdk'
+import { Inject } from '@nestjs/common'
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs'
+import { randomUUID } from 'crypto'
 import { ChatLarkMessage } from '../../chat/message'
 import { LarkConversationService } from '../../conversation.service'
+import {
+	LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
+	LarkChatCallbackContext,
+	LarkChatMessageSnapshot
+} from '../../handoff/lark-chat.types'
+import { LarkChatRunStateService } from '../../handoff/lark-chat-run-state.service'
+import { LARK_PLUGIN_CONTEXT } from '../../tokens'
 import { LarkChatXpertCommand } from '../chat-xpert.command'
-
-function createUnavailableChatApi() {
-	return {
-		chatXpert: async (..._args: any[]): Promise<any> => {
-			throw new Error('Chat service is not available in Lark plugin context')
-		},
-		upsertChatMessage: async (..._args: any[]): Promise<any> => {
-			throw new Error('Chat service is not available in Lark plugin context')
-		},
-	}
-}
 
 @CommandHandler(LarkChatXpertCommand)
 export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertCommand> {
-	private readonly logger = new Logger(LarkChatXpertHandler.name)
-	private readonly chat = createUnavailableChatApi()
+	private _handoffPermissionService: HandoffPermissionService
 
-	constructor(private readonly conversationService: LarkConversationService) {}
+	constructor(
+		private readonly conversationService: LarkConversationService,
+		private readonly runStateService: LarkChatRunStateService,
+		@Inject(LARK_PLUGIN_CONTEXT)
+		private readonly pluginContext: PluginContext
+	) {}
+
+	private get handoffPermissionService(): HandoffPermissionService {
+		if (!this._handoffPermissionService) {
+			this._handoffPermissionService = this.pluginContext.resolve(HANDOFF_PERMISSION_SERVICE_TOKEN)
+		}
+		return this._handoffPermissionService
+	}
 
 	public async execute(command: LarkChatXpertCommand) {
 		const { xpertId, input, larkMessage } = command
 		const userId = RequestContext.currentUserId()
+		const tenantId = RequestContext.currentTenantId()
+		if (!tenantId) {
+			throw new Error('Missing tenantId in request context')
+		}
 
+		const organizationId = RequestContext.getOrganizationId()
 		const conversationId = await this.conversationService.getConversation(userId, xpertId)
 
-		// Thinking message
 		await larkMessage.update({ status: 'thinking' })
+		await this.conversationService.setActiveMessage(
+			userId,
+			xpertId,
+			this.toActiveMessageCache(larkMessage)
+		)
 
-			const observable = await this.chat.chatXpert(
-				{
-					input: {
-						input
+		const runId = `lark-chat-${randomUUID()}`
+		const sessionKey = conversationId ?? runId
+		const requestContext = this.buildRequestContext(tenantId, organizationId, userId)
+		const callbackContext: LarkChatCallbackContext = {
+			tenantId,
+			organizationId,
+			userId,
+			xpertId,
+			integrationId: larkMessage.integrationId,
+			chatId: larkMessage.chatId,
+			senderOpenId: larkMessage.senderOpenId,
+			reject: Boolean(command.options?.reject),
+			streaming: this.resolveStreamingOverrideFromRequest(),
+			requestContext,
+			message: this.toMessageSnapshot(larkMessage, input)
+		}
+
+		await this.runStateService.save({
+			sourceMessageId: runId,
+			nextSequence: 1,
+			responseMessageContent: '',
+			context: callbackContext,
+			pendingEvents: {},
+			lastFlushAt: 0,
+			lastFlushedLength: 0
+		})
+
+		await this.handoffPermissionService.enqueue(
+			{
+				id: runId,
+				type: SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
+				version: 1,
+				tenantId,
+				sessionKey,
+				businessKey: sessionKey,
+				attempt: 1,
+				maxAttempts: 1,
+				enqueuedAt: Date.now(),
+				traceId: runId,
+				payload: {
+					request: {
+						input: {
+							input
+						},
+						conversationId,
+						confirm: command.options?.confirm
 					},
-					conversationId,
-					confirm: command.options?.confirm
-				},
-				{
-					xpertId,
-					from: 'feishu',
-					fromEndUserId: userId,
-					tenantId: RequestContext.currentTenantId(),
-					organizationId: RequestContext.getOrganizationId(),
-					user: RequestContext.currentUser(),
-					language: larkMessage.language as LanguagesEnum,
-					// Channel context for notification middleware
-					channelType: 'lark',
-					integrationId: larkMessage.integrationId,
-					chatId: larkMessage.chatId,
-				channelUserId: larkMessage.senderOpenId // Use Lark sender's open_id
+					options: {
+						xpertId,
+						from: 'feishu',
+						fromEndUserId: userId,
+						tenantId,
+						organizationId,
+						user: RequestContext.currentUser(),
+						language: larkMessage.language as LanguagesEnum,
+						channelType: 'lark',
+						integrationId: larkMessage.integrationId,
+						chatId: larkMessage.chatId,
+						channelUserId: larkMessage.senderOpenId
+					} as TChatOptions & { xpertId: string },
+					callback: {
+						messageType: LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
+						headers: {
+							...(organizationId ? { organizationId } : {}),
+							...(userId ? { userId } : {}),
+							...(conversationId ? { conversationId } : {}),
+							source: 'lark',
+							handoffQueue: 'integration',
+							requestedLane: 'main',
+							...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
+						},
+						context: callbackContext
+					},
+					requestContext
+				} as SystemChatDispatchPayload,
+				headers: {
+					...(organizationId ? { organizationId } : {}),
+					...(userId ? { userId } : {}),
+					...(conversationId ? { conversationId } : {}),
+					source: 'lark',
+					requestedLane: 'main',
+					handoffQueue: 'realtime',
+					...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
+				}
+			} as HandoffMessage<SystemChatDispatchPayload>,
+			{
+				delayMs: 0
 			}
 		)
 
-		return new Promise((resolve, reject) => {
-			let responseMessageContent = ''
-			observable.subscribe({
-				next: (event) => {
-					if (event.data) {
-						const message = event.data
-						if (message.type === ChatMessageTypeEnum.MESSAGE) {
-							responseMessageContent += messageContentText(message.data)
-							if (typeof message.data === 'string') {
-								//
-							} else if (message.data) {
-								if (message.data.type === 'update') {
-									larkMessage.update(message.data.data)
-								} else if (message.data.type !== 'text') {
-									this.logger.warn(`Unprocessed messages: `, message)
-								}
-							}
-						} else if (message.type === ChatMessageTypeEnum.EVENT) {
-							switch (message.event) {
-								case ChatMessageEventTypeEnum.ON_CONVERSATION_START: {
-									this.conversationService
-										.setConversation(userId, xpertId, message.data.id)
-										.catch((err) => {
-											this.logger.error(err)
-										})
-									break
-								}
-								case ChatMessageEventTypeEnum.ON_MESSAGE_START: {
-									larkMessage.messageId = message.data.id
-									break
-								}
-								case ChatMessageEventTypeEnum.ON_CONVERSATION_END: {
-									if (
-										message.data.status === XpertAgentExecutionStatusEnum.INTERRUPTED &&
-										message.data.operation
-									) {
-										larkMessage.confirm(message.data.operation).catch((err) => {
-											this.logger.error(err)
-										})
-									} else if (message.data.status === XpertAgentExecutionStatusEnum.ERROR) {
-										larkMessage.error(message.data.error || `Internal Error`).catch((err) => {
-											this.logger.error(err)
-										})
-									}
-									break
-								}
-								case ChatMessageEventTypeEnum.ON_AGENT_START:
-								case ChatMessageEventTypeEnum.ON_AGENT_END:
-								case ChatMessageEventTypeEnum.ON_MESSAGE_END: {
-									break
-								}
-								default: {
-									this.logger.warn(`Unprocessed events: `, message)
-								}
-							}
-						}
-					} else {
-						this.logger.warn(`Unrecognized event: `, event)
-					}
-				},
-				error: (error) => {
-					console.error(error)
-					reject(error)
-				},
-				complete: () => {
-					// console.log('End chat with lark')
-					if (responseMessageContent) {
-						larkMessage
-							.update({
-								status: XpertAgentExecutionStatusEnum.SUCCESS,
-								elements: [{ tag: 'markdown', content: responseMessageContent }]
-							})
-							.catch((error) => {
-								this.logger.error(error)
-							})
-					} else if (command.options?.reject) {
-						larkMessage
-							.update({
-								status: XpertAgentExecutionStatusEnum.SUCCESS,
-								elements: []
-							})
-							.catch((error) => {
-								this.logger.error(error)
-							})
-					}
-
-					this.saveLarkMessage(larkMessage)
-						.then(() => resolve(larkMessage))
-						.catch((error) => {
-							this.logger.error(error)
-							reject(error)
-						})
-				}
-			})
-		})
+		return larkMessage
 	}
 
-	async saveLarkMessage(message: ChatLarkMessage) {
-		if (message.messageId) {
-			await this.chat.upsertChatMessage({
-				id: message.messageId,
-				thirdPartyMessage: (message.toJSON() as SerializedConstructor).kwargs
-			})
+	private buildRequestContext(
+		tenantId: string,
+		organizationId: string | undefined,
+		userId: string
+	): HandoffRequestContextPayload {
+		const requestUser = RequestContext.currentUser()
+		const language = RequestContext.getLanguageCode()
+		const requestContextUser = requestUser
+			? {
+					...requestUser,
+					tenantId: requestUser.tenantId ?? tenantId
+				}
+			: userId
+				? {
+						id: userId,
+						tenantId
+					}
+				: undefined
+
+		return {
+			user: requestContextUser,
+			headers: {
+				...(organizationId ? { ['organization-id']: organizationId } : {}),
+				...(tenantId ? { ['tenant-id']: tenantId } : {}),
+				...(language ? { language } : {})
+			}
+		}
+	}
+
+	private toMessageSnapshot(message: ChatLarkMessage, text?: string): LarkChatMessageSnapshot {
+		return {
+			id: message.id,
+			messageId: message.messageId,
+			status: message.status,
+			language: message.language,
+			header: message.header,
+			elements: [...(message.elements ?? [])],
+			text
+		}
+	}
+
+	private toActiveMessageCache(message: ChatLarkMessage) {
+		return {
+			id: message.messageId,
+			thirdPartyMessage: {
+				id: message.id,
+				messageId: message.messageId,
+				status: message.status as string,
+				language: message.language,
+				header: message.header,
+				elements: [...(message.elements ?? [])]
+			}
+		}
+	}
+
+	private resolveStreamingOverrideFromRequest(): LarkChatCallbackContext['streaming'] | undefined {
+		const request = RequestContext.currentRequest()
+		const rawHeader =
+			request?.headers?.['x-lark-stream-update-window-ms'] ??
+			request?.headers?.['lark-stream-update-window-ms']
+		const rawValue = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader
+		if (!rawValue) {
+			return undefined
+		}
+		const parsed = parseInt(String(rawValue), 10)
+		if (!Number.isFinite(parsed) || parsed <= 0) {
+			return undefined
+		}
+		return {
+			updateWindowMs: parsed
 		}
 	}
 }

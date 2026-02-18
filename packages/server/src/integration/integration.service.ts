@@ -32,6 +32,6 @@ export class IntegrationService extends TenantOrganizationAwareCrudService<Integ
 
 	async test(integration: IIntegration) {
 		const strategy = this.getIntegrationStrategy(integration.provider)
-		return strategy.validateConfig(integration.options)
+		return strategy.validateConfig(integration.options, integration)
 	}
 }

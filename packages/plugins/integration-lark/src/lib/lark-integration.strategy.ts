@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common'
-import { IIntegration, TIntegrationLarkOptions, TIntegrationProvider } from '@metad/contracts'
+import { IIntegration, RolesEnum, TIntegrationProvider } from '@metad/contracts'
 import { IntegrationStrategy, IntegrationStrategyKey, TIntegrationStrategyParams } from '@xpert-ai/plugin-sdk'
 import axios, { AxiosError } from 'axios'
-import { iconImage, INTEGRATION_LARK } from './types'
+import { iconImage, INTEGRATION_LARK, TIntegrationLarkOptions } from './types'
 
 /**
  * Lark Integration Strategy
@@ -47,41 +47,82 @@ export class LarkIntegrationStrategy implements IntegrationStrategy<TIntegration
           }
         },
         appId: { type: 'string', title: 'App ID' },
-        appSecret: { type: 'string', title: 'App Secret' },
-        verificationToken: { type: 'string', title: 'Verification Token' },
+        appSecret: {
+          type: 'string',
+          title: 'App Secret',
+          'x-ui': {
+            component: 'password'
+          }
+        },
+        verificationToken: {
+          type: 'string',
+          title: 'Verification Token',
+          'x-ui': {
+            component: 'password'
+          }
+        },
         encryptKey: {
           type: 'string',
           title: {
             en_US: 'Encrypt Key',
             zh_Hans: '加密密钥'
+          },
+          'x-ui': {
+            component: 'password'
           }
         },
-        // xpertId: {
-        //   type: 'string',
-        //   title: {
-        //     en_US: 'Xpert',
-        //     zh_Hans: '数字专家'
-        //   },
-        //   description: {
-        //     en_US: 'Choose a corresponding digital expert',
-        //     zh_Hans: '选择一个对应的数字专家'
-        //   },
-        //   'x-ui': {
-        //     component: 'remoteSelect',
-        //     selectUrl: '/api/xpert/select-options'
-        //   }
-        // },
+        xpertId: {
+          type: 'string',
+          title: {
+            en_US: 'Xpert',
+            zh_Hans: '数字专家'
+          },
+          description: {
+            en_US: 'Choose a corresponding digital expert',
+            zh_Hans: '选择一个对应的数字专家'
+          },
+          'x-ui': {
+            component: 'remoteSelect',
+            selectUrl: '/api/xpert/select-options'
+          }
+        },
         preferLanguage: {
           type: 'string',
           title: {
             en_US: 'Preferred Language',
             zh_Hans: '首选语言'
           },
-          enum: ['en', 'zh'],
+          enum: ['en', 'zh-Hans'],
           'x-ui': {
             enumLabels: {
               en: { en_US: 'English', zh_Hans: '英语' },
-              zh: { en_US: 'Chinese', zh_Hans: '中文' }
+              'zh-Hans': { en_US: 'Chinese', zh_Hans: '中文' }
+            }
+          }
+        },
+        userProvision: {
+          type: 'object',
+          title: {
+            en_US: 'User Provision',
+            zh_Hans: '用户自动开通'
+          },
+          properties: {
+            autoProvision: {
+              type: 'boolean',
+              title: {
+                en_US: 'Auto Provision User',
+                zh_Hans: '自动创建用户'
+              },
+              default: false
+            },
+            roleName: {
+              type: 'string',
+              title: {
+                en_US: 'Default Role',
+                zh_Hans: '默认角色'
+              },
+              enum: Object.values(RolesEnum),
+              default: RolesEnum.EMPLOYEE
             }
           }
         }
@@ -89,9 +130,6 @@ export class LarkIntegrationStrategy implements IntegrationStrategy<TIntegration
       required: ['appId', 'appSecret'],
       secret: ['appSecret', 'verificationToken', 'encryptKey']
     }
-    // webhookUrl: (integration: IIntegration, baseUrl: string) => {
-    //   return `${baseUrl}/api/lark/webhook/${integration.id}`
-    // }
   }
 
   /**
@@ -112,7 +150,7 @@ export class LarkIntegrationStrategy implements IntegrationStrategy<TIntegration
    * @param config - Lark configuration options
    * @throws Error if configuration is invalid or connection fails
    */
-  async validateConfig(config: TIntegrationLarkOptions): Promise<void> {
+  async validateConfig(config: TIntegrationLarkOptions, integration: IIntegration<TIntegrationLarkOptions>) {
     // Validate required fields
     if (!config?.appId) {
       throw new Error('App ID is required')
@@ -159,7 +197,10 @@ export class LarkIntegrationStrategy implements IntegrationStrategy<TIntegration
         throw new Error('Failed to get bot info from Lark API')
       }
 
-      this.logger.log(`Lark connection test successful: ${botInfo.bot.app_name}`)
+      const apiBaseUrl = process.env.API_BASE_URL
+      return {
+        webhookUrl: `${apiBaseUrl}/api/lark/webhook/${integration.id}`
+      }
     } catch (error: any) {
       const axiosError = error as AxiosError<{ code?: number; msg?: string }>
       const message = axiosError?.response?.data?.msg || axiosError?.message || 'Unknown error'

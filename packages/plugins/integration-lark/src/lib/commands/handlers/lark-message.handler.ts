@@ -1,4 +1,3 @@
-import { TIntegrationLarkOptions } from '@metad/contracts'
 import {
 	INTEGRATION_PERMISSION_SERVICE_TOKEN,
 	IntegrationPermissionService,
@@ -12,6 +11,7 @@ import { LarkService } from '../../lark.service'
 import { LARK_PLUGIN_CONTEXT } from '../../tokens'
 import { LarkChatXpertCommand } from '../chat-xpert.command'
 import { LarkMessageCommand } from '../mesage.command'
+import { TIntegrationLarkOptions } from '../../types'
 
 @CommandHandler(LarkMessageCommand)
 export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
@@ -50,15 +50,17 @@ export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
 				text = textContent.text as string
 			}
 
-			// Conversation last message
-			const lastMessage = await this.conversationService.getLastMessage(userId, integration.options.xpertId)
+			const activeMessage = await this.conversationService.getActiveMessage(
+				userId,
+				integration.options.xpertId
+			)
 
 			const larkMessage = new ChatLarkMessage(
 				{ ...options, larkService: this.larkService },
 				{
 					text,
 					language:
-						lastMessage?.thirdPartyMessage?.language ||
+						activeMessage?.thirdPartyMessage?.language ||
 						(<TIntegrationLarkOptions>integration.options)?.preferLanguage
 				}
 			)

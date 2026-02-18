@@ -1,5 +1,12 @@
 import { Injectable } from '@nestjs/common'
-import { HandoffMessage, ProcessResult } from '@xpert-ai/plugin-sdk'
+import {
+	HandoffEnqueueAndWaitOptions,
+	HandoffEnqueueOptions,
+	HandoffMessage,
+	HandoffPermissionService,
+	ProcessResult,
+	RequirePermissionOperation
+} from '@xpert-ai/plugin-sdk'
 import { randomUUID } from 'crypto'
 import { HandoffPendingResultService } from './pending-result.service'
 import { DEFAULT_HANDOFF_MAX_ATTEMPTS } from './constants'
@@ -13,14 +20,15 @@ import {
 } from './dispatcher/handoff-queue-gateway.service'
 
 @Injectable()
-export class HandoffQueueService {
+export class HandoffQueueService implements HandoffPermissionService {
 	constructor(
 		private readonly queueGateway: HandoffQueueGatewayService,
 		private readonly routeResolver: HandoffRouteResolver,
 		private readonly pendingResults: HandoffPendingResultService
 	) {}
 
-	async enqueue(message: HandoffMessage, options?: { delayMs?: number }): Promise<{ id: string }> {
+	@RequirePermissionOperation('handoff', 'enqueue')
+	async enqueue(message: HandoffMessage, options?: HandoffEnqueueOptions): Promise<{ id: string }> {
 		const route = this.routeResolver.resolve(message)
 		const normalized = this.normalize(message, route)
 		await this.addJob(normalized, route, options)
@@ -41,13 +49,10 @@ export class HandoffQueueService {
 	 * Enqueue a message and wait for local process completion callback.
 	 * Best-effort only: if worker or waiter is on another instance, no callback will arrive.
 	 */
+	@RequirePermissionOperation('handoff', 'wait')
 	async enqueueAndWait(
 		message: HandoffMessage,
-		options?: {
-			delayMs?: number
-			timeoutMs?: number
-			onEvent?: (event: unknown) => void
-		}
+		options?: HandoffEnqueueAndWaitOptions
 	): Promise<ProcessResult> {
 		const route = this.routeResolver.resolve(message)
 		const normalized = this.normalize(message, route)

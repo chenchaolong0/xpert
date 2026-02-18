@@ -1,16 +1,24 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import { IIntegration, IUser, TIntegrationLarkOptions, TranslateOptions } from '@metad/contracts'
+import { IIntegration, IUser, RolesEnum } from '@metad/contracts'
 import {
+	getErrorMessage,
 	INTEGRATION_PERMISSION_SERVICE_TOKEN,
 	IntegrationPermissionService,
 	PluginContext,
 	USER_PERMISSION_SERVICE_TOKEN,
 	UserPermissionService,
 } from '@xpert-ai/plugin-sdk'
+import { Cache } from 'cache-manager'
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { isEqual } from 'date-fns'
 import { LARK_PLUGIN_CONTEXT } from './tokens'
-import { ChatLarkContext, LarkMessage } from './types'
+import {
+	ChatLarkContext,
+	LarkMessage,
+	TIntegrationLarkOptions,
+	TLarkUserProvisionOptions
+} from './types'
+import { CACHE_MANAGER } from '@nestjs/cache-manager'
 
 /**
  * Lark Service
@@ -23,6 +31,9 @@ import { ChatLarkContext, LarkMessage } from './types'
 @Injectable()
 export class LarkService {
 	private readonly logger = new Logger(LarkService.name)
+
+	@Inject(CACHE_MANAGER)
+	private readonly cacheManager: Cache
 
 	private _integrationPermissionService: IntegrationPermissionService
 	private _userPermissionService: UserPermissionService
@@ -183,71 +194,122 @@ export class LarkService {
 	 * @param unionId - Lark union ID
 	 * @returns User entity
 	 */
-	async getUser(_client: lark.Client, tenantId: string, unionId: string): Promise<IUser> {
-		// const larkUserCacheKey = `lark:user:${tenantId}:${unionId}`
+	async getUser(
+		client: lark.Client,
+		tenantId: string,
+		unionId: string,
+		userProvision?: TLarkUserProvisionOptions
+	): Promise<IUser | null> {
+		if (!tenantId || !unionId) {
+			return null
+		}
 
-		// // From cache
-		// let user = await this.core.cache.get<IUser>(larkUserCacheKey)
-		// if (user) {
-		// 	return user
-		// }
-
-		// try {
-		// 	user = await this.core.user.findOneBy?.({
-		// 		tenantId,
-		// 		thirdPartyId: unionId
-		// 	})
-		// } catch (err) {
-		// 	// User not found
-		// }
-
-		// if (!user) {
-		// 	// Try to get user info from Lark (may fail for external users)
-		// 	let larkUser = null
-		// 	try {
-		// 		larkUser = await client.contact.user.get({
-		// 			params: { user_id_type: 'union_id' },
-		// 			path: { user_id: unionId }
-		// 		})
-		// 	} catch (err) {
-		// 		// External user or no permission
-		// 	}
-
-		// 	// Get Lark user role
-		// 	const larkConfig = this.core.config.get('larkConfig') as LarkConfig | undefined
-		// 	const roleName = larkConfig?.roleName
-		// 	if (!roleName) {
-		// 		throw new Error('Lark roleName is not configured')
-		// 	}
-		// 	const role = await this.core.role.findByName(tenantId, roleName)
-		// 	if (!role) {
-		// 		throw new Error(`Role ${roleName} not found`)
-		// 	}
-
-		// 	if (!this.core.user.create) {
-		// 		throw new Error('User create API is not available')
-		// 	}
-
-		// 	user = await this.core.user.create({
-		// 		tenantId,
-		// 		thirdPartyId: unionId,
-		// 		username: larkUser?.data.user.user_id,
-		// 		email: larkUser?.data.user.email,
-		// 		mobile: larkUser?.data.user.mobile,
-		// 		imageUrl: larkUser?.data.user.avatar?.avatar_240,
-		// 		firstName: larkUser?.data.user.name,
-		// 		roleId: role.id
-		// 	})
-		// }
-
-		// if (user) {
-		// 	await this.core.cache.set(larkUserCacheKey, user)
-		// }
-
-		return await this.userPermissionService.read<IUser>({
+		const larkUserCacheKey = this.getUserByUnionIdCacheKey(tenantId, unionId)
+		let user = await this.getUserByCacheOrDatabase(larkUserCacheKey, {
 			tenantId,
-			thirdPartyId: unionId,
+			thirdPartyId: unionId
 		})
+		if (user) {
+			await this.setUserByIdCache(tenantId, user)
+			return user
+		}
+
+		if (!this.isAutoProvisionUserEnabled(userProvision)) {
+			return null
+		}
+
+		const larkUser = await this.safeGetLarkUser(client, unionId)
+		try {
+			user = await this.userPermissionService.provisionByThirdPartyIdentity<IUser>({
+				tenantId,
+				thirdPartyId: unionId,
+				profile: {
+					username: larkUser?.data?.user?.user_id,
+					email: larkUser?.data?.user?.email,
+					mobile: larkUser?.data?.user?.mobile,
+					imageUrl: larkUser?.data?.user?.avatar?.avatar_240,
+					firstName: larkUser?.data?.user?.name
+				},
+				defaults: {
+					roleName: this.resolveAutoProvisionRoleName(userProvision)
+				}
+			})
+		} catch (error) {
+			this.logger.warn(
+				`Failed to auto provision user for tenant "${tenantId}" and unionId "${unionId}": ${getErrorMessage(error)}`
+			)
+			return null
+		}
+
+		if (user) {
+			await this.cacheManager.set(larkUserCacheKey, user)
+			await this.setUserByIdCache(tenantId, user)
+		}
+
+		return user
+	}
+
+	async getUserById(tenantId: string, userId: string): Promise<IUser | null> {
+		if (!tenantId || !userId) {
+			return null
+		}
+
+		return this.getUserByCacheOrDatabase(this.getUserByIdCacheKey(tenantId, userId), {
+			tenantId,
+			id: userId
+		})
+	}
+
+	private getUserByUnionIdCacheKey(tenantId: string, unionId: string): string {
+		return `lark:user:union:${tenantId}:${unionId}`
+	}
+
+	private getUserByIdCacheKey(tenantId: string, userId: string): string {
+		return `lark:user:id:${tenantId}:${userId}`
+	}
+
+	private async setUserByIdCache(tenantId: string, user: IUser): Promise<void> {
+		if (!user?.id) {
+			return
+		}
+		await this.cacheManager.set(this.getUserByIdCacheKey(tenantId, user.id), user)
+	}
+
+	private async getUserByCacheOrDatabase(
+		cacheKey: string,
+		criteria: Record<string, any>
+	): Promise<IUser | null> {
+		const cached = await this.cacheManager.get<IUser>(cacheKey)
+		if (cached) {
+			return cached
+		}
+
+		const user = await this.userPermissionService.read<IUser>(criteria)
+		if (user) {
+			await this.cacheManager.set(cacheKey, user)
+		}
+
+		return user
+	}
+
+	private async safeGetLarkUser(client: lark.Client, unionId: string) {
+		try {
+			return await client.contact.user.get({
+				params: { user_id_type: 'union_id' },
+				path: { user_id: unionId }
+			})
+		} catch {
+			// External user or missing Lark permission.
+			return null
+		}
+	}
+
+	private isAutoProvisionUserEnabled(userProvision?: TLarkUserProvisionOptions): boolean {
+		return userProvision?.autoProvision ?? false
+	}
+
+	private resolveAutoProvisionRoleName(userProvision?: TLarkUserProvisionOptions): string {
+		return userProvision?.roleName || RolesEnum.EMPLOYEE
 	}
 
 	// ==================== Message Operations (Legacy - used by ChatLarkMessage) ====================
@@ -264,7 +326,7 @@ export class LarkService {
 			const client = await this.getOrCreateLarkClientById(integrationId)
 			return await client.im.message.create(message)
 		} catch (err) {
-			this.logger.error(err)
+			this.logger.error(getErrorMessage(err), err.stack)
 		}
 	}
 
@@ -383,17 +445,4 @@ export class LarkService {
 		})
 	}
 
-	// ==================== Utility ====================
-
-	/**
-	 * Translate i18n key
-	 *
-	 * @param key - Translation key
-	 * @param options - Translation options
-	 * @returns Translated string
-	 */
-	async translate(key: string, options: TranslateOptions) {
-		// todo
-		return key
-	}
 }
