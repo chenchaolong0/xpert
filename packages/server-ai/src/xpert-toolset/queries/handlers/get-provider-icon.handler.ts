@@ -1,4 +1,5 @@
 import { ConfigService } from '@metad/server-config'
+import { IconDefinition } from '@metad/contracts'
 import { HttpException, HttpStatus, Inject, Logger } from '@nestjs/common'
 import { IQueryHandler, QueryBus, QueryHandler } from '@nestjs/cqrs'
 import { AgentMiddlewareRegistry, RequestContext, ToolsetRegistry } from '@xpert-ai/plugin-sdk'
@@ -10,6 +11,8 @@ import { getBuiltinToolsetBaseUrl } from '../../provider/builtin'
 import { TToolsetProviderSchema } from '../../types'
 import { ToolProviderIconQuery } from '../get-provider-icon.query'
 import { ListBuiltinToolProvidersQuery } from '../list-builtin-providers.query'
+
+type ProviderIcon = IconDefinition | null | undefined
 
 @QueryHandler(ToolProviderIconQuery)
 export class ToolProviderIconHandler implements IQueryHandler<ToolProviderIconQuery> {
@@ -37,17 +40,12 @@ export class ToolProviderIconHandler implements IQueryHandler<ToolProviderIconQu
 		try {
 			const pluginProvider = this.toolsetRegistry.get(provider, resolvedOrganizationId)
 			if (pluginProvider) {
-				const icon = pluginProvider.meta.icon
-				if (icon.svg) {
-					return [Buffer.from(icon.svg), 'image/svg+xml']
-				} else if (icon.png) {
-					// Remove prefix (data:image/png;base64, image/png;base64,)
-					const base64Data = icon.png.replace(/^data:image\/[a-z]+;base64,|^image\/[a-z]+;base64,/, '')
-					const byteData = Buffer.from(base64Data, 'base64')
-					return [byteData, 'image/png']
+				const resolved = this.resolveIcon(pluginProvider.meta.icon)
+				if (resolved) {
+					return resolved
 				}
 
-				return [null, 'image/svg+xml']
+				return [null, null]
 			}
 		} catch (err) {
 			// If not found in plugin registry, continue to try builtin providers
@@ -74,21 +72,10 @@ export class ToolProviderIconHandler implements IQueryHandler<ToolProviderIconQu
 		try {
 			const middleware = this.agentMiddlewareRegistry.get(provider, resolvedOrganizationId)
 			if (middleware?.meta?.icon) {
-				const icon = middleware.meta.icon
-				let buffer: Buffer
-				let mimetype = 'image/svg+xml'
-				if (icon.type === 'svg') {
-					buffer = Buffer.from(icon.value, 'utf-8')
-				} else if (icon.type === 'image') {
-					buffer = Buffer.from(icon.value, 'base64')
-					mimetype = 'image/png'
-				} else {
-					throw new HttpException(
-						'Icon format not supported:' + icon.type,
-						HttpStatus.UNSUPPORTED_MEDIA_TYPE
-					)
+				const resolved = this.resolveIcon(middleware.meta.icon)
+				if (resolved) {
+					return resolved
 				}
-				return [buffer, mimetype]
 			}
 		} catch (err) {
 			//
@@ -100,5 +87,32 @@ export class ToolProviderIconHandler implements IQueryHandler<ToolProviderIconQu
 
 	getProviderServerPath(name: string) {
 		return path.join(this.configService.assetOptions.serverRoot, getBuiltinToolsetBaseUrl(name), name)
+	}
+
+	private resolveIcon(icon: ProviderIcon): [Buffer, string] | null {
+		if (!icon) {
+			return null
+		}
+
+		// IconDefinition shape.
+		if (icon.type === 'svg' && icon.value) {
+			return [Buffer.from(icon.value, 'utf-8'), 'image/svg+xml']
+		}
+		if (icon.type === 'image' && icon.value) {
+			return this.decodeBase64Image(icon.value)
+		}
+
+		throw new HttpException('Icon format not supported:' + icon.type, HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+	}
+
+	private decodeBase64Image(value: string): [Buffer, string] {
+		const normalizedValue = value.trim()
+		const dataUrlMatch = normalizedValue.match(/^(?:data:)?(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i)
+
+		const mimeType = dataUrlMatch?.[1] ?? 'image/png'
+		const base64 = (dataUrlMatch?.[2] ?? normalizedValue).replace(/\s/g, '')
+		const byteData = Buffer.from(base64, 'base64')
+
+		return [byteData, mimeType]
 	}
 }
