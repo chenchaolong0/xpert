@@ -1,5 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import { Injectable, Logger } from '@nestjs/common'
+import { Inject, Injectable, Logger } from '@nestjs/common'
 import { IIntegration } from '@metad/contracts'
 import { Request, Response, NextFunction } from 'express'
 import {
@@ -16,7 +16,8 @@ import {
 	CHAT_CHANNEL_TEXT_LIMITS
 } from '@xpert-ai/plugin-sdk'
 import { LarkService } from './lark.service'
-import { TIntegrationLarkOptions } from './types'
+import { isLarkCardActionValue, LarkCardActionValue, TIntegrationLarkOptions } from './types'
+import { LarkConversationService } from './conversation.service'
 
 /**
  * Lark Chat Channel Strategy
@@ -53,6 +54,9 @@ import { TIntegrationLarkOptions } from './types'
 @ChatChannel('lark')
 export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions> {
 	private readonly logger = new Logger(LarkChannelStrategy.name)
+
+	@Inject(LarkConversationService)
+	private readonly conversation: LarkConversationService
 
 	constructor(private readonly larkService: LarkService) {}
 
@@ -104,9 +108,23 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 	 */
 	createEventHandler(
 		ctx: TChatEventContext<TIntegrationLarkOptions>,
-		handlers: TChatEventHandlers
 	): (req: Request, res: Response, next?: NextFunction) => Promise<void> {
 		const { integration } = ctx
+
+		const handlers: TChatEventHandlers = {
+			onMessage: async (message, eventCtx) => {
+				// Handle private chat message - delegate to ConversationService
+				await this.conversation.handleMessage(message, eventCtx)
+			},
+			onCardAction: async (action, eventCtx) => {
+				// Handle card button click
+				await this.conversation.handleCardAction(action, eventCtx)
+			},
+			onMention: async (message, eventCtx) => {
+				// Handle @mention in group chat - same as private message
+				await this.conversation.handleMessage(message, eventCtx)
+			}
+		}
 
 		const dispatcher = new lark.EventDispatcher({
 			verificationToken: integration.options.verificationToken,
@@ -222,13 +240,21 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 	 * @param ctx - Event context
 	 * @returns Parsed card action or null if not a card action event
 	 */
-	parseCardAction(event: any, _ctx: TChatEventContext<TIntegrationLarkOptions>): TChatCardAction | null {
+	parseCardAction(
+		event: any,
+		_ctx: TChatEventContext<TIntegrationLarkOptions>
+	): TChatCardAction<LarkCardActionValue> | null {
 		const { action, context, operator } = event
 		if (!action || !context) return null
+		const value = action.value ?? action.option
+		if (!isLarkCardActionValue(value)) {
+			this.logger.warn(`Unsupported Lark card action value: ${JSON.stringify(value)}`)
+			return null
+		}
 
 		return {
 			type: action.tag,
-			value: action.value ?? action.option,
+			value,
 			messageId: context.open_message_id,
 			chatId: context.open_chat_id,
 			userId: operator?.open_id,

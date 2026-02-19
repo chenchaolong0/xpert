@@ -88,10 +88,65 @@ export type TLarkEvent = {
 	}
 }
 
-export const LARK_END_CONVERSATION = 'lark-end-conversation'
-export const LARK_CONFIRM = 'lark-confirm'
-export const LARK_REJECT = 'lark-reject'
+export type LarkElementScalar = string | number | boolean | null
+
+export interface LarkElementObject {
+	[key: string]: LarkElementScalar | LarkElementObject | Array<LarkElementScalar | LarkElementObject>
+}
+
+export interface LarkCardElement extends LarkElementObject {
+	tag: string
+}
+
+export interface LarkMarkdownElement extends LarkCardElement {
+	tag: 'markdown'
+	content: string
+}
+
+export type LarkStreamTextElement = LarkMarkdownElement
+
+export type LarkEventElement = LarkMarkdownElement
+
+export type LarkStructuredElement = LarkCardElement
+
+export type LarkRenderElement =
+	| LarkStreamTextElement
+	| LarkEventElement
+	| LarkStructuredElement
+
+export enum LarkCardActionEnum {
+	Confirm = 'lark-confirm',
+	Reject = 'lark-reject',
+	EndConversation = 'lark-end-conversation'
+}
+
+export type LarkCardActionPayload = {
+	action: string
+}
+
+export type LarkCardActionValue = string | LarkCardActionPayload
+
+export const LARK_END_CONVERSATION = LarkCardActionEnum.EndConversation
+export const LARK_CONFIRM = LarkCardActionEnum.Confirm
+export const LARK_REJECT = LarkCardActionEnum.Reject
+
 export type TLarkConversationStatus = TChatConversationStatus | 'end'
+
+export function isLarkCardActionValue(value: unknown): value is LarkCardActionValue {
+	if (typeof value === 'string') {
+		return true
+	}
+
+	if (!value || typeof value !== 'object') {
+		return false
+	}
+
+	return typeof (value as LarkCardActionPayload).action === 'string'
+}
+
+export function resolveLarkCardActionValue(value: LarkCardActionValue): string {
+	return typeof value === 'string' ? value : value.action
+}
 
 export function isEndAction(value: string) {
 	return value === `"${LARK_END_CONVERSATION}"` || value === LARK_END_CONVERSATION

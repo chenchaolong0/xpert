@@ -3,39 +3,13 @@ import {
 	defineChannelMessageType,
 	SystemChatCallbackEnvelopePayload
 } from '@xpert-ai/plugin-sdk'
-
+import { LarkCardElement, LarkStructuredElement } from '../types'
 
 export const LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE = defineChannelMessageType(
 	'lark',
 	'chat_stream_event',
 	1
 )
-
-export type LarkElementScalar = string | number | boolean | null
-
-export interface LarkElementObject {
-	[key: string]: LarkElementScalar | LarkElementObject | Array<LarkElementScalar | LarkElementObject>
-}
-
-export interface LarkCardElement extends LarkElementObject {
-	tag: string
-}
-
-export interface LarkMarkdownElement extends LarkCardElement {
-	tag: 'markdown'
-	content: string
-}
-
-export type LarkStreamTextElement = LarkMarkdownElement
-
-export type LarkEventElement = LarkMarkdownElement
-
-export type LarkStructuredElement = LarkCardElement
-
-export type LarkRenderElement =
-	| LarkStreamTextElement
-	| LarkEventElement
-	| LarkStructuredElement
 
 export interface LarkStreamTextRenderItem {
 	kind: 'stream_text'
@@ -67,6 +41,7 @@ export interface LarkChatMessageSnapshot {
 	language?: string
 	header?: any
 	elements?: LarkCardElement[]
+	renderItems?: LarkRenderItem[]
 	text?: string
 }
 

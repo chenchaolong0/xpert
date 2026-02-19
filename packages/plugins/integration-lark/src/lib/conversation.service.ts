@@ -2,6 +2,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager'
 import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
 import { CommandBus } from '@nestjs/cqrs'
 import {
+  CancelConversationCommand,
   RequestContext,
   runWithRequestContext,
   TChatCardAction,
@@ -16,7 +17,15 @@ import { LarkMessageCommand } from './commands'
 import { LarkChatXpertCommand } from './commands/chat-xpert.command'
 import { translate } from './i18n'
 import { LarkService } from './lark.service'
-import { ChatLarkContext, isConfirmAction, isEndAction, isRejectAction, TIntegrationLarkOptions } from './types'
+import {
+  ChatLarkContext,
+  isConfirmAction,
+  isEndAction,
+  isLarkCardActionValue,
+  isRejectAction,
+  resolveLarkCardActionValue,
+  TIntegrationLarkOptions
+} from './types'
 
 type LarkConversationQueueJob = ChatLarkContext & {
   tenantId?: string
@@ -157,6 +166,7 @@ export class LarkConversationService implements OnModuleDestroy {
 
     if (isEndAction(action)) {
       await prevMessage.end()
+      await this.cancelConversation(conversationId)
       await this.clearConversationSession(userId, xpertId)
     } else if (isConfirmAction(action)) {
       await prevMessage.done()
@@ -189,6 +199,22 @@ export class LarkConversationService implements OnModuleDestroy {
       { integrationId, chatId },
       new Error(translate('integration.Lark.ActionSessionTimedOut'))
     )
+  }
+
+  private async cancelConversation(conversationId?: string): Promise<void> {
+    if (!conversationId) {
+      return
+    }
+
+    try {
+      await this.commandBus.execute(new CancelConversationCommand({ conversationId }))
+    } catch (error) {
+      this.logger.warn(
+        `Failed to cancel conversation "${conversationId}" from Lark end action: ${
+          (error as Error)?.message ?? error
+        }`
+      )
+    }
   }
 
   /**
@@ -353,8 +379,13 @@ export class LarkConversationService implements OnModuleDestroy {
       return
     }
 
+    if (!isLarkCardActionValue(action.value)) {
+      this.logger.warn(`Unsupported card action value from Lark: ${JSON.stringify(action.value)}`)
+      return
+    }
+
     await this.onAction(
-      action.value,
+      resolveLarkCardActionValue(action.value),
       {
         tenant: ctx.integration.tenant,
         organizationId: ctx.organizationId,

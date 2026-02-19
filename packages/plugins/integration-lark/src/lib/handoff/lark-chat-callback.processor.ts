@@ -13,7 +13,7 @@ import {
 	ProcessContext,
 	ProcessResult,
 } from '@xpert-ai/plugin-sdk'
-import { ChatLarkMessage } from '../chat/message'
+import { ChatLarkMessage, cloneStructuredElement } from '../chat/message'
 import { LarkConversationService } from '../conversation.service'
 import { LarkService } from '../lark.service'
 import {
@@ -25,16 +25,13 @@ import {
 import { LARK_PLUGIN_CONTEXT } from '../tokens'
 import {
 	LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
-	LarkCardElement,
 	LarkChatCallbackContext,
 	LarkChatMessageSnapshot,
 	LarkChatStreamCallbackPayload,
 	LarkEventRenderItem,
-	LarkRenderItem,
-	LarkRenderElement,
-	LarkStructuredElement
 } from './lark-chat.types'
 import { LarkChatRunState, LarkChatRunStateService } from './lark-chat-run-state.service'
+import { LarkCardElement, LarkStructuredElement } from '../types'
 
 /**
  * Callback processor for Lark stream events.
@@ -229,7 +226,7 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 					if (structuredElements.length > 0) {
 						this.appendStructuredElements(state, structuredElements)
 					}
-					message.elements = this.serializeRenderItems(state.renderItems)
+					message.renderItems = state.renderItems
 					await message.update({
 						status:
 							typeof updatePayload?.status === 'string'
@@ -314,7 +311,7 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 				}
 
 				const message = ensureLarkMessage()
-				message.elements = this.serializeRenderItems(state.renderItems)
+				message.renderItems = state.renderItems
 				await message.update()
 				break
 			}
@@ -341,7 +338,7 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 
 		if (!keepTerminalState) {
 			if (state.renderItems.length > 0 || context.reject || larkMessage.elements.length > 0) {
-				larkMessage.elements = this.serializeRenderItems(state.renderItems)
+				larkMessage.renderItems = state.renderItems
 				await larkMessage.update({
 					status: XpertAgentExecutionStatusEnum.SUCCESS
 				})
@@ -399,20 +396,20 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 			pendingEvents: {},
 			lastFlushAt: 0,
 			lastFlushedLength: 0,
-			renderItems: this.deserializeRenderItems(context.message?.elements)
+			renderItems: context.message.renderItems // this.deserializeRenderItems(context.message?.elements)
 		}
 	}
 
 	private ensureRunStateDefaults(state: LarkChatRunState): LarkChatRunState {
-		const legacyElements = this.toArrayOfUnknown((state as { renderElements?: unknown }).renderElements)
+		// const legacyElements = this.toArrayOfUnknown((state as { renderElements?: unknown }).renderElements)
 		return {
 			...state,
 			pendingEvents: state.pendingEvents ?? {},
 			lastFlushAt: state.lastFlushAt ?? 0,
 			lastFlushedLength: state.lastFlushedLength ?? 0,
-			renderItems:
-				state.renderItems ??
-				this.deserializeRenderItems(legacyElements ?? state.context?.message?.elements)
+			// renderItems:
+			// 	state.renderItems ??
+			// 	this.deserializeRenderItems(legacyElements ?? state.context?.message?.elements)
 		}
 	}
 
@@ -464,7 +461,7 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		for (const element of elements) {
 			state.renderItems.push({
 				kind: 'structured',
-				element: this.cloneStructuredElement(element)
+				element: cloneStructuredElement(element)
 			})
 		}
 	}
@@ -475,7 +472,7 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		now: number
 	) {
 		this.logger.debug(`Flushing stream content for source message "${state.sourceMessageId}", content length: ${state.responseMessageContent.length}`)
-		larkMessage.elements = this.serializeRenderItems(state.renderItems)
+		larkMessage.renderItems = state.renderItems
 		await larkMessage.update()
 		state.lastFlushAt = now
 		state.lastFlushedLength = state.responseMessageContent.length
@@ -562,87 +559,6 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		return null
 	}
 
-	private serializeRenderItems(items: readonly LarkRenderItem[] | undefined): LarkRenderElement[] {
-		const elements: LarkRenderElement[] = []
-		for (const item of items ?? []) {
-			const element = this.serializeRenderItem(item)
-			if (element) {
-				elements.push(element)
-			}
-		}
-		return elements
-	}
-
-	private serializeRenderItem(item: LarkRenderItem): LarkRenderElement | null {
-		switch (item.kind) {
-			case 'stream_text':
-				return {
-					tag: 'markdown',
-					content: item.text
-				}
-			case 'event':
-				return {
-					tag: 'markdown',
-					content: this.serializeEventContent(item)
-				}
-			case 'structured':
-				return this.cloneStructuredElement(item.element)
-			default:
-				return null
-		}
-	}
-
-	private serializeEventContent(item: LarkEventRenderItem): string {
-		const lines: string[] = []
-		if (item.eventType) {
-			lines.push(`**Event:** ${item.eventType}`)
-		}
-		if (item.tool) {
-			lines.push(`**Tool:** ${item.tool}`)
-		}
-		if (item.title) {
-			lines.push(`**Title:** ${item.title}`)
-		}
-		if (item.message) {
-			lines.push(item.message)
-		}
-		if (item.status) {
-			lines.push(`**Status:** ${item.status}`)
-		}
-		if (item.error) {
-			lines.push(`**Error:** ${item.error}`)
-		}
-		return lines.join('\n')
-	}
-
-	private deserializeRenderItems(elements: readonly unknown[] | undefined): LarkRenderItem[] {
-		const items: LarkRenderItem[] = []
-		for (const element of elements ?? []) {
-			const item = this.deserializeRenderItem(element)
-			if (item) {
-				items.push(item)
-			}
-		}
-		return items
-	}
-
-	private deserializeRenderItem(value: unknown): LarkRenderItem | null {
-		if (!this.isLarkCardElement(value)) {
-			return null
-		}
-		return {
-			kind: 'structured',
-			element: this.cloneStructuredElement(value)
-		}
-	}
-
-	private cloneStructuredElement<T extends LarkStructuredElement>(element: T): T {
-		if (element && typeof element === 'object') {
-			return { ...(element as Record<string, unknown>) } as T
-		}
-		return element
-	}
-
 	private extractStructuredElements(value: unknown): LarkStructuredElement[] {
 		if (!Array.isArray(value)) {
 			return []
@@ -672,10 +588,6 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 			return null
 		}
 		return value as Record<string, unknown>
-	}
-
-	private toArrayOfUnknown(value: unknown): unknown[] | null {
-		return Array.isArray(value) ? value : null
 	}
 
 	private toMessageSnapshot(message: ChatLarkMessage, text?: string): LarkChatMessageSnapshot {

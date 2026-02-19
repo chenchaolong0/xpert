@@ -32,8 +32,6 @@ export interface LarkChatRunState<TRenderItem extends LarkRenderItem = LarkRende
 	lastFlushedLength: number
 	/** Ordered, mixed internal render items by callback arrival time. */
 	renderItems: TRenderItem[]
-	/** @deprecated Backward-compat field for older cached states. */
-	renderElements?: unknown[]
 }
 
 @Injectable()

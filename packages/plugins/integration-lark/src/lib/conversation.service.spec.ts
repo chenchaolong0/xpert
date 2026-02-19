@@ -1,4 +1,5 @@
 import { LarkConversationService } from './conversation.service'
+import { CancelConversationCommand } from '@xpert-ai/plugin-sdk'
 import { ChatLarkContext, LARK_CONFIRM, LARK_END_CONVERSATION, LARK_REJECT } from './types'
 
 class MemoryCache {
@@ -94,8 +95,8 @@ describe('LarkConversationService', () => {
 		expect(commandBus.execute.mock.calls[0][0].options).toEqual({ confirm: true })
 	})
 
-	it('keeps existing card content on end and clears conversation session', async () => {
-		const { service, larkService } = createFixture()
+	it('keeps existing card content on end, cancels conversation and clears conversation session', async () => {
+		const { service, larkService, commandBus } = createFixture()
 		await service.setConversation(userId, xpertId, 'conversation-1')
 		await service.setActiveMessage(userId, xpertId, {
 			id: 'chat-message-id',
@@ -124,6 +125,9 @@ describe('LarkConversationService', () => {
 					element.tag === 'markdown' && element.content === 'persisted body'
 			)
 		).toBe(true)
+		expect(commandBus.execute).toHaveBeenCalledTimes(1)
+		expect(commandBus.execute.mock.calls[0][0]).toBeInstanceOf(CancelConversationCommand)
+		expect(commandBus.execute.mock.calls[0][0].input).toEqual({ conversationId: 'conversation-1' })
 		expect(await service.getConversation(userId, xpertId)).toBeUndefined()
 		expect(await service.getActiveMessage(userId, xpertId)).toBeNull()
 	})

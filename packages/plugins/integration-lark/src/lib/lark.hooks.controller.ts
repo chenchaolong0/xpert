@@ -1,5 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import { IIntegration, mapTranslationLanguage, TranslationLanguageMap } from '@metad/contracts'
+import { IIntegration } from '@metad/contracts'
 import {
 	INTEGRATION_PERMISSION_SERVICE_TOKEN,
 	IntegrationPermissionService,
@@ -7,32 +7,27 @@ import {
 	RequestContext,
 	runWithRequestContext,
 	TChatEventContext,
-	TChatEventHandlers,
 } from '@xpert-ai/plugin-sdk'
 import {
 	BadRequestException,
 	Body,
 	Controller,
 	ForbiddenException,
-	Get,
 	HttpCode,
 	Inject,
 	Param,
 	Post,
-	Query,
 	Request,
 	Response,
 	UseGuards
 } from '@nestjs/common'
 import { CommandBus } from '@nestjs/cqrs'
-import { AxiosError } from 'axios'
 import express from 'express'
 import { LarkAuthGuard } from './auth/lark-auth.guard'
 import { ChatLarkMessage } from './chat/message'
 import { LarkChatXpertCommand } from './commands/chat-xpert.command'
 import { Public } from './decorators/public.decorator'
 import { LarkChannelStrategy } from './lark-channel.strategy'
-import { LarkConversationService } from './conversation.service'
 import { LarkService } from './lark.service'
 import { LARK_PLUGIN_CONTEXT } from './tokens'
 import { TIntegrationLarkOptions } from './types'
@@ -46,8 +41,7 @@ export class LarkHooksController {
 		private readonly larkService: LarkService,
 		@Inject(LARK_PLUGIN_CONTEXT)
 		private readonly pluginContext: PluginContext,
-		private readonly larkChannel: LarkChannelStrategy,
-		private readonly conversation: LarkConversationService,
+		private readonly larkChannel: LarkChannelStrategy
 	) {}
 
 	private get integrationPermissionService(): IntegrationPermissionService {
@@ -92,22 +86,7 @@ export class LarkHooksController {
 			organizationId: integration.organizationId
 		}
 
-		const handlers: TChatEventHandlers = {
-			onMessage: async (message, eventCtx) => {
-				// Handle private chat message - delegate to ConversationService
-				await this.conversation.handleMessage(message, eventCtx)
-			},
-			onCardAction: async (action, eventCtx) => {
-				// Handle card button click
-				await this.conversation.handleCardAction(action, eventCtx)
-			},
-			onMention: async (message, eventCtx) => {
-				// Handle @mention in group chat - same as private message
-				await this.conversation.handleMessage(message, eventCtx)
-			}
-		}
-
-		const handler = this.larkChannel.createEventHandler(ctx, handlers)
+		const handler = this.larkChannel.createEventHandler(ctx)
 		const contextUser = RequestContext.currentUser() ?? (req.user as any)
 		const languageHeader = this.getHeaderValue(req.headers['language'])
 		const requestId = this.getHeaderValue(req.headers['x-request-id'])
