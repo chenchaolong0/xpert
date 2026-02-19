@@ -2,6 +2,8 @@ import { BullModule } from '@nestjs/bull'
 import { Global, Module } from '@nestjs/common'
 import { DiscoveryModule } from '@nestjs/core'
 import { CqrsModule } from '@nestjs/cqrs'
+import { RedisModule } from '@metad/server-core'
+import { ConfigModule } from '@metad/server-config'
 import { HANDOFF_QUEUE_SERVICE_TOKEN, HandoffProcessorRegistry } from '@xpert-ai/plugin-sdk'
 import {
 	XPERT_HANDOFF_QUEUE,
@@ -26,12 +28,15 @@ import { HandoffPendingResultService } from './pending-result.service'
 import { CommandHandlers } from './commands/handlers'
 import { LocalQueueTaskService } from './local-sync-task.service'
 import { Processors } from './plugins'
+import { HandoffCancelService } from './handoff-cancel.service'
 
 @Global()
 @Module({
 	imports: [
 		DiscoveryModule,
 		CqrsModule,
+		RedisModule,
+		ConfigModule,
 		BullModule.registerQueue(
 			{
 				name: XPERT_HANDOFF_QUEUE
@@ -56,6 +61,7 @@ import { Processors } from './plugins'
 		HandoffRouteResolver,
 		HandoffQueueGatewayService,
 		HandoffQueueService,
+		HandoffCancelService,
 		{ provide: HANDOFF_QUEUE_SERVICE_TOKEN, useExisting: HandoffQueueService },
 		HandoffQueueProcessor,
 		HandoffQueueRealtimeProcessor,

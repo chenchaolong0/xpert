@@ -14,6 +14,7 @@ import {
 import { MessageDispatcherService } from './message-dispatcher.service'
 import { HandoffPendingResultService } from './pending-result.service'
 import { HandoffDeadService } from './dead-letter.service'
+import { buildCanceledReason, isAbortLikeError, isCanceledReason } from './cancel-reason'
 
 const DEFAULT_HANDOFF_DISPATCHER_CONCURRENCY =
 	parseInt(process.env.XPERT_HANDOFF_DISPATCHER_CONCURRENCY || '', 10) || 20
@@ -91,7 +92,9 @@ abstract class BaseHandoffQueueProcessor {
 				return
 			}
 			case 'dead': {
-				await this.deadLetterService.record(message, result.reason)
+				if (!isCanceledReason(result.reason)) {
+					await this.deadLetterService.record(message, result.reason)
+				}
 				this.pendingResults.resolve(message.id, result)
 				return
 			}
@@ -100,6 +103,13 @@ abstract class BaseHandoffQueueProcessor {
 
 	private async handleError(message: HandoffMessage, error: unknown) {
 		const reason = this.getErrorMessage(error)
+		if (isCanceledReason(reason) || isAbortLikeError(error)) {
+			this.pendingResults.resolve(message.id, {
+				status: 'dead',
+				reason: isCanceledReason(reason) ? reason : buildCanceledReason(reason)
+			})
+			return
+		}
 		if (this.isPermanentError(reason)) {
 			await this.deadLetterService.record(message, reason)
 			this.pendingResults.resolve(message.id, {

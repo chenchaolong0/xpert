@@ -12,6 +12,8 @@ import { AGENT_CHAT_MESSAGE_TYPE, LocalQueueTaskService } from '../../local-sync
 import { AgentChatHandoffProcessor } from '../../plugins/agent-chat/agent-chat.processor'
 import { XPERT_HANDOFF_QUEUE } from '../../constants'
 import { EnqueueAgentChatMessageCommand } from '../enqueue-agent-chat-message.command'
+import { StopHandoffMessageCommand } from '../stop-handoff-message.command'
+import { ConfigService } from '@metad/server-config'
 
 const customEnvPath = process.env.SERVER_AI_E2E_ENV_PATH
 const defaultEnvPath = path.resolve(process.cwd(), 'packages/server-ai/.env.e2e.local')
@@ -19,6 +21,8 @@ const fallbackEnvPath = path.resolve(process.cwd(), '.env')
 console.log(`Using environment variables from: ${customEnvPath ?? (existsSync(defaultEnvPath) ? defaultEnvPath : fallbackEnvPath)}`)
 const resolvedEnvPath = customEnvPath ?? (existsSync(defaultEnvPath) ? defaultEnvPath : fallbackEnvPath)
 dotenv.config({ path: resolvedEnvPath })
+const fallbackHandoffRoutingPath = path.resolve(process.cwd(), 'docker/handoff-routing.example.yaml')
+process.env.HANDOFF_ROUTING_CONFIG_PATH = fallbackHandoffRoutingPath
 const redisHostFromEnv = process.env.REDIS_HOST || 'localhost'
 
 class TestHandoffProcessorRegistry {
@@ -60,6 +64,14 @@ describeWithRedis('EnqueueAgentChatMessageCommand (e2e)', () => {
 				HandoffQueueModule
 			],
 			providers: [
+				{
+					provide: ConfigService,
+					useValue: {
+						assetOptions: {
+							serverRoot: process.cwd()
+						}
+					}
+				},
 				LocalQueueTaskService,
 				AgentChatHandoffProcessor
 			]
@@ -71,6 +83,7 @@ describeWithRedis('EnqueueAgentChatMessageCommand (e2e)', () => {
 			})
 			.compile()
 
+		process.env.HANDOFF_ROUTING_CONFIG_PATH = fallbackHandoffRoutingPath
 		await testingModule.init()
 		commandBus = testingModule.get(CommandBus)
 		queue = testingModule.get<Queue>(getQueueToken(XPERT_HANDOFF_QUEUE))
@@ -109,4 +122,130 @@ describeWithRedis('EnqueueAgentChatMessageCommand (e2e)', () => {
 
 		expect(result).toEqual(expected)
 	}, 20000)
+
+	it('stops active local task by messageId', async () => {
+		const runId = `e2e-handoff-stop-message-${randomUUID()}`
+		let onTaskStarted = () => undefined
+		let onTaskAborted = () => undefined
+		const taskStarted = new Promise<void>((resolve) => {
+			onTaskStarted = resolve
+		})
+		const taskAborted = new Promise<void>((resolve) => {
+			onTaskAborted = resolve
+		})
+
+		const execution = commandBus.execute(
+			new EnqueueAgentChatMessageCommand(
+				{
+					id: runId,
+					tenantId: process.env.E2E_TENANT_ID ?? 'e2e-tenant',
+					organizationId: process.env.E2E_ORGANIZATION_ID ?? 'e2e-org',
+					userId: process.env.E2E_USER_ID ?? 'e2e-user',
+					sessionKey: `session-${Date.now()}`,
+					source: 'chat' as RunSource,
+					timeoutMs: 15000
+				},
+				async ({ signal }) => {
+					onTaskStarted()
+					await new Promise<void>((resolve) => {
+						const onAbort = () => {
+							onTaskAborted()
+							resolve()
+						}
+						if (signal.aborted) {
+							onAbort()
+							return
+						}
+						signal.addEventListener('abort', onAbort, { once: true })
+					})
+					return {
+						status: 'stopped'
+					}
+				}
+			)
+		)
+
+		const executionResult = execution
+			.then((value) => ({ value, error: null as Error | null }))
+			.catch((error: Error) => ({ value: null as unknown, error }))
+
+		await taskStarted
+
+		const stopResult = await commandBus.execute(
+			new StopHandoffMessageCommand({
+				messageIds: [runId],
+				reason: 'Canceled by user'
+			})
+		)
+
+		const settled = await executionResult
+		expect(settled.error).toBeTruthy()
+		expect(settled.error?.message).toContain('canceled:Canceled by user')
+		await taskAborted
+		expect(stopResult.aborted.messageIds).toContain(runId)
+	}, 30000)
+
+	it('stops active local task by executionId', async () => {
+		const runId = `e2e-handoff-stop-execution-${randomUUID()}`
+		const executionId = `execution-${randomUUID()}`
+		let onTaskStarted = () => undefined
+		let onTaskAborted = () => undefined
+		const taskStarted = new Promise<void>((resolve) => {
+			onTaskStarted = resolve
+		})
+		const taskAborted = new Promise<void>((resolve) => {
+			onTaskAborted = resolve
+		})
+
+		const execution = commandBus.execute(
+			new EnqueueAgentChatMessageCommand(
+				{
+					id: runId,
+					executionId,
+					tenantId: process.env.E2E_TENANT_ID ?? 'e2e-tenant',
+					organizationId: process.env.E2E_ORGANIZATION_ID ?? 'e2e-org',
+					userId: process.env.E2E_USER_ID ?? 'e2e-user',
+					sessionKey: `session-${Date.now()}`,
+					source: 'chat' as RunSource,
+					timeoutMs: 15000
+				},
+				async ({ signal }) => {
+					onTaskStarted()
+					await new Promise<void>((resolve) => {
+						const onAbort = () => {
+							onTaskAborted()
+							resolve()
+						}
+						if (signal.aborted) {
+							onAbort()
+							return
+						}
+						signal.addEventListener('abort', onAbort, { once: true })
+					})
+					return {
+						status: 'stopped'
+					}
+				}
+			)
+		)
+
+		const executionResult = execution
+			.then((value) => ({ value, error: null as Error | null }))
+			.catch((error: Error) => ({ value: null as unknown, error }))
+
+		await taskStarted
+
+		const stopResult = await commandBus.execute(
+			new StopHandoffMessageCommand({
+				executionIds: [executionId],
+				reason: 'Canceled by user'
+			})
+		)
+
+		const settled = await executionResult
+		expect(settled.error).toBeTruthy()
+		expect(settled.error?.message).toContain('canceled:Canceled by user')
+		await taskAborted
+		expect(stopResult.aborted.messageIds).toContain(runId)
+	}, 30000)
 })
