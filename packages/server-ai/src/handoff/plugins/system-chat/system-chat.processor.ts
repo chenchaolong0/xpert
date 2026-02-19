@@ -17,11 +17,6 @@ import type { Observable } from 'rxjs'
 import { XpertChatCommand } from '../../../xpert/commands/chat.command'
 import { HandoffQueueService } from '../../message-queue.service'
 
-interface MessageRequestContext {
-	user?: any
-	headers?: Record<string, string>
-}
-
 @Injectable()
 @HandoffProcessorStrategy(SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE, {
 	types: [SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE],
@@ -62,7 +57,7 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 		}
 
 		this.logger.debug(`Processing system chat dispatch message "${message.id}" with request:`, request, 'and options:', options)
-		return this.runTaskWithRequestContext(message.payload?.requestContext, async () => {
+		return this.runTaskWithRequestContext(message, async () => {
 			const observable = await this.commandBus.execute<XpertChatCommand, Observable<MessageEvent>>(
 				new XpertChatCommand(request, options)
 			)
@@ -199,25 +194,40 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 	}
 
 	private async runTaskWithRequestContext(
-		requestContext: MessageRequestContext | undefined,
+		message: HandoffMessage<SystemChatDispatchPayload>,
 		task: () => Promise<ProcessResult>
 	): Promise<ProcessResult> {
-		if (!requestContext) {
+		const userId = this.toNonEmptyString(message.headers?.userId)
+		const organizationId = this.toNonEmptyString(message.headers?.organizationId)
+		const language = this.toNonEmptyString(message.headers?.language)
+		if (!userId && !organizationId && !language) {
 			return task()
 		}
+
+		const headers: Record<string, string> = {
+			['tenant-id']: message.tenantId,
+			...(organizationId ? { ['organization-id']: organizationId } : {}),
+			...(language ? { language } : {})
+		}
+		const user = userId
+			? {
+					id: userId,
+					tenantId: message.tenantId
+				}
+			: undefined
 
 		return new Promise<ProcessResult>((resolve, reject) => {
 			runWithRequestContext(
 				{
-					user: requestContext.user,
-					headers: requestContext.headers ?? {}
+					user,
+					headers
 				},
 				{},
 				() => {
 					_runWithRequestContext(
 						{
-							user: requestContext.user,
-							headers: requestContext.headers ?? {}
+							user,
+							headers
 						},
 						() => {
 							task().then(resolve).catch(reject)
@@ -226,6 +236,10 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 				}
 			)
 		})
+	}
+
+	private toNonEmptyString(value: unknown): string | undefined {
+		return typeof value === 'string' && value.length > 0 ? value : undefined
 	}
 
 	private getErrorMessage(error: unknown): string {

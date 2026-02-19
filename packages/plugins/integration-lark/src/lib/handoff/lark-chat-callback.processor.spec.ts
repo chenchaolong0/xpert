@@ -29,11 +29,18 @@ describe('LarkChatStreamCallbackProcessor', () => {
 		jest.restoreAllMocks()
 	})
 
-	function createFixture() {
+	function createFixture(
+		config: {
+			streaming?: {
+				updateWindowMs?: number
+			}
+		} = {}
+	) {
 		const cache = new MemoryCache()
 		const runStateService = new LarkChatRunStateService(cache as any)
 		const pluginContext = {
-			resolve: jest.fn()
+			resolve: jest.fn(),
+			config
 		}
 		const larkService = {
 			patchInteractiveMessage: jest.fn().mockResolvedValue(undefined),
@@ -107,6 +114,10 @@ describe('LarkChatStreamCallbackProcessor', () => {
 			pendingEvents: pendingEvents ?? {},
 			lastFlushAt: lastFlushAt ?? 0,
 			lastFlushedLength: lastFlushedLength ?? 0,
+			renderItems: (baseContext.message?.elements ?? []).map((element) => ({
+				kind: 'structured' as const,
+				element: { ...element }
+			})),
 			...rest
 		}
 	}
@@ -218,6 +229,25 @@ describe('LarkChatStreamCallbackProcessor', () => {
 		}
 	}
 
+	function getManagedEventElements(elements: any[]) {
+		return (elements ?? []).filter(
+			(element) =>
+				element?.tag === 'markdown' &&
+				typeof element?.content === 'string' &&
+				element.content.includes('**Event:**')
+		)
+	}
+
+	function getManagedStreamTextElements(elements: any[]) {
+		return (elements ?? []).filter(
+			(element) =>
+				element?.tag === 'markdown' &&
+				typeof element?.content === 'string' &&
+				!element.content.includes('**Event:**') &&
+				!element.content.includes("color='wathet'")
+		)
+	}
+
 	it('flushes MESSAGE content when update window is reached', async () => {
 		const { processor, runStateService, larkService } = createFixture()
 		jest.useFakeTimers()
@@ -238,10 +268,9 @@ describe('LarkChatStreamCallbackProcessor', () => {
 
 		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(1)
 		const patchPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[0][2]
-		expect(patchPayload.elements[0]).toEqual({
-			tag: 'markdown',
-			content: 'hello'
-		})
+		const streamTextElements = getManagedStreamTextElements(patchPayload.elements)
+		expect(streamTextElements).toHaveLength(1)
+		expect(streamTextElements[0].content).toContain('hello')
 		const thinkingIndex = patchPayload.elements.findIndex(
 			(element: { tag?: string; content?: string }) =>
 				element.tag === 'markdown' &&
@@ -336,6 +365,120 @@ describe('LarkChatStreamCallbackProcessor', () => {
 			tag: 'markdown',
 			content: 'partial'
 		})
+	})
+
+	it('renders ON_CHAT_EVENT and updates by event id instead of appending', async () => {
+		const { processor, runStateService, larkService } = createFixture()
+		await runStateService.save(createRunState())
+
+		await processor.process(
+			createEventMessage(1, ChatMessageEventTypeEnum.ON_CHAT_EVENT, {
+				id: 'event-1',
+				title: 'Preparing',
+				message: 'Loading resources',
+				status: 'running'
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(
+			createEventMessage(2, ChatMessageEventTypeEnum.ON_CHAT_EVENT, {
+				id: 'event-1',
+				title: 'Ready',
+				message: 'Resources ready',
+				status: 'success'
+			}) as any,
+			createProcessContext() as any
+		)
+
+		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(2)
+		const patchPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[1][2]
+		const eventElements = getManagedEventElements(patchPayload.elements)
+		expect(eventElements).toHaveLength(1)
+		expect(eventElements[0].content).toContain(`**Event:** ${ChatMessageEventTypeEnum.ON_CHAT_EVENT}`)
+		expect(eventElements[0].content).toContain('**Title:** Ready')
+		expect(eventElements[0].content).toContain('Resources ready')
+		expect(eventElements[0].content).toContain('**Status:** success')
+		expect(eventElements[0].content).not.toContain('Preparing')
+		const state = await runStateService.get('run-1')
+		const eventItems = state?.renderItems.filter((item: any) => item.kind === 'event')
+		expect(eventItems).toHaveLength(1)
+		expect(eventItems?.[0]).toMatchObject({ id: 'event-1' })
+	})
+
+	it('renders tool lifecycle events and updates event content by tool id', async () => {
+		const { processor, runStateService, larkService } = createFixture()
+		await runStateService.save(createRunState())
+
+		await processor.process(
+			createEventMessage(1, ChatMessageEventTypeEnum.ON_TOOL_START, {
+				id: 'tool-1',
+				tool: 'answer_question',
+				title: 'Answer Question',
+				status: 'running'
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(
+			createEventMessage(2, ChatMessageEventTypeEnum.ON_TOOL_MESSAGE, {
+				id: 'tool-1',
+				tool: 'answer_question',
+				message: 'Querying cube'
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(
+			createEventMessage(3, ChatMessageEventTypeEnum.ON_TOOL_END, {
+				output: {
+					tool_call_id: 'tool-1'
+				},
+				tool: 'answer_question',
+				status: 'success',
+				message: 'Completed'
+			}) as any,
+			createProcessContext() as any
+		)
+
+		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(3)
+		const patchPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[2][2]
+		const eventElements = getManagedEventElements(patchPayload.elements)
+		expect(eventElements).toHaveLength(1)
+		expect(eventElements[0].content).toContain(`**Event:** ${ChatMessageEventTypeEnum.ON_TOOL_END}`)
+		expect(eventElements[0].content).toContain('**Tool:** answer_question')
+		expect(eventElements[0].content).toContain('Completed')
+		expect(eventElements[0].content).toContain('**Status:** success')
+		expect(eventElements[0].content).not.toContain('Querying cube')
+		const state = await runStateService.get('run-1')
+		const eventItems = state?.renderItems.filter((item: any) => item.kind === 'event')
+		expect(eventItems).toHaveLength(1)
+		expect(eventItems?.[0]).toMatchObject({ id: 'tool-1' })
+	})
+
+	it('renders ON_TOOL_ERROR as event and resolves id from toolCall.id', async () => {
+		const { processor, runStateService, larkService } = createFixture()
+		await runStateService.save(createRunState())
+
+		await processor.process(
+			createEventMessage(1, ChatMessageEventTypeEnum.ON_TOOL_ERROR, {
+				toolCall: {
+					id: 'tool-err-1',
+					name: 'answer_question'
+				},
+				error: 'Lexical error'
+			}) as any,
+			createProcessContext() as any
+		)
+
+		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(1)
+		const patchPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[0][2]
+		const eventElements = getManagedEventElements(patchPayload.elements)
+		expect(eventElements).toHaveLength(1)
+		expect(eventElements[0].content).toContain(`**Event:** ${ChatMessageEventTypeEnum.ON_TOOL_ERROR}`)
+		expect(eventElements[0].content).toContain('**Tool:** answer_question')
+		expect(eventElements[0].content).toContain('**Error:** Lexical error')
+		const state = await runStateService.get('run-1')
+		const eventItems = state?.renderItems.filter((item: any) => item.kind === 'event')
+		expect(eventItems).toHaveLength(1)
+		expect(eventItems?.[0]).toMatchObject({ id: 'tool-err-1' })
 	})
 
 	it('updates active message cache when ON_MESSAGE_START is received', async () => {
@@ -448,10 +591,9 @@ describe('LarkChatStreamCallbackProcessor', () => {
 
 		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(2)
 		const completePayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[1][2]
-		const markdownCount = completePayload.elements.filter((element: { tag?: string; content?: string }) =>
-			element.tag === 'markdown' && element.content === 'hello'
-		).length
-		expect(markdownCount).toBe(1)
+		const streamTextElements = getManagedStreamTextElements(completePayload.elements)
+		expect(streamTextElements).toHaveLength(1)
+		expect(streamTextElements[0].content).toContain('hello')
 	})
 
 	it('updates status to success on complete for structured update-only stream', async () => {
@@ -476,6 +618,147 @@ describe('LarkChatStreamCallbackProcessor', () => {
 				element.tag === 'markdown' && element.content === 'partial'
 		).length
 		expect(partialMarkdownCount).toBe(1)
+	})
+
+	it('keeps chart and streams text in the same card after structured update', async () => {
+		const { processor, runStateService, larkService } = createFixture()
+		jest.useFakeTimers()
+		jest.setSystemTime(1300)
+
+		await runStateService.save(
+			createRunState({
+				lastFlushAt: 1000,
+				context: {
+					streaming: {
+						updateWindowMs: 200
+					}
+				} as any
+			})
+		)
+
+		await processor.process(
+			createStreamMessage(1, {
+				type: 'update',
+				data: {
+					elements: [{ tag: 'chart', chart_spec: { type: 'line' } }]
+				}
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(createStreamMessage(2, 'analysis text') as any, createProcessContext() as any)
+		await processor.process(createCompleteMessage(3) as any, createProcessContext() as any)
+
+		// structured update + text flush + complete
+		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(3)
+
+		const streamPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[1][2]
+		expect(streamPayload.elements.some((element: { tag?: string }) => element.tag === 'chart')).toBe(true)
+		expect(
+			streamPayload.elements.some(
+				(element: { tag?: string; content?: string }) =>
+					element.tag === 'markdown' &&
+					typeof element.content === 'string' &&
+					element.content.includes('analysis text')
+			)
+		).toBe(true)
+
+		const completePayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[2][2]
+		expect(completePayload.elements.some((element: { tag?: string }) => element.tag === 'chart')).toBe(true)
+		expect(
+			completePayload.elements.some(
+				(element: { tag?: string; content?: string }) =>
+					element.tag === 'markdown' &&
+					typeof element.content === 'string' &&
+					element.content.includes('analysis text')
+			)
+		).toBe(true)
+	})
+
+	it('mixes text chart and event elements in arrival order and updates event by id', async () => {
+		const { processor, runStateService, larkService } = createFixture()
+		jest.useFakeTimers()
+		jest.setSystemTime(1000)
+
+		await runStateService.save(
+			createRunState({
+				lastFlushAt: 0,
+				context: {
+					streaming: {
+						updateWindowMs: 200
+					}
+				} as any
+			})
+		)
+
+		await processor.process(createStreamMessage(1, 'A') as any, createProcessContext() as any)
+		await processor.process(createStreamMessage(2, 'B') as any, createProcessContext() as any)
+		await processor.process(
+			createStreamMessage(3, {
+				type: 'update',
+				data: {
+					elements: [{ tag: 'chart', chart_spec: { type: 'line' } }]
+				}
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(createStreamMessage(4, 'C') as any, createProcessContext() as any)
+
+		jest.setSystemTime(1300)
+		await processor.process(createStreamMessage(5, 'D') as any, createProcessContext() as any)
+		await processor.process(
+			createEventMessage(6, ChatMessageEventTypeEnum.ON_CHAT_EVENT, {
+				id: 'event-1',
+				title: 'Preparing',
+				message: 'Loading',
+				status: 'running'
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(
+			createEventMessage(7, ChatMessageEventTypeEnum.ON_CHAT_EVENT, {
+				id: 'event-1',
+				title: 'Done',
+				message: 'Loaded',
+				status: 'success'
+			}) as any,
+			createProcessContext() as any
+		)
+		await processor.process(createCompleteMessage(8) as any, createProcessContext() as any)
+
+		const calls = (larkService.patchInteractiveMessage as jest.Mock).mock.calls
+		expect(calls.length).toBeGreaterThan(0)
+		const finalPayload = calls[calls.length - 1][2]
+		const streamTextElements = getManagedStreamTextElements(finalPayload.elements)
+		expect(streamTextElements).toHaveLength(2)
+		expect(streamTextElements[0].content).toContain('AB')
+		expect(streamTextElements[1].content).toContain('CD')
+
+		const firstTextIndex = finalPayload.elements.findIndex(
+			(element: { tag?: string; content?: string }) =>
+				element.tag === 'markdown' &&
+				typeof element.content === 'string' &&
+				element.content === 'AB'
+		)
+		const chartIndex = finalPayload.elements.findIndex((element: { tag?: string }) => element.tag === 'chart')
+		const secondTextIndex = finalPayload.elements.findIndex(
+			(element: { tag?: string; content?: string }) =>
+				element.tag === 'markdown' &&
+				typeof element.content === 'string' &&
+				element.content === 'CD'
+		)
+		expect(firstTextIndex).toBeGreaterThan(-1)
+		expect(chartIndex).toBeGreaterThan(-1)
+		expect(secondTextIndex).toBeGreaterThan(-1)
+		expect(firstTextIndex).toBeLessThan(chartIndex)
+		expect(chartIndex).toBeLessThan(secondTextIndex)
+
+		const eventElements = getManagedEventElements(finalPayload.elements)
+		expect(eventElements).toHaveLength(1)
+		expect(eventElements[0].content).toContain(`**Event:** ${ChatMessageEventTypeEnum.ON_CHAT_EVENT}`)
+		expect(eventElements[0].content).toContain('**Title:** Done')
+		expect(eventElements[0].content).toContain('Loaded')
+		expect(eventElements[0].content).toContain('**Status:** success')
+		expect(eventElements[0].content).not.toContain('Preparing')
 	})
 
 	it('keeps interrupted status when complete arrives after interrupted conversation end event', async () => {

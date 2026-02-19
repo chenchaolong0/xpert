@@ -95,6 +95,7 @@ export interface HandoffMessage<TPayload extends Record<string, unknown> = Recor
 export interface HandoffMessageHeaders extends Record<string, string> {
 	organizationId?: string
 	userId?: string
+	language?: string
 	threadId?: string
 	conversationId?: string
 	sourceAgent?: string

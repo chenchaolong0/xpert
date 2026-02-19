@@ -25,9 +25,14 @@ import {
 import { LARK_PLUGIN_CONTEXT } from '../tokens'
 import {
 	LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
+	LarkCardElement,
 	LarkChatCallbackContext,
 	LarkChatMessageSnapshot,
-	LarkChatStreamCallbackPayload
+	LarkChatStreamCallbackPayload,
+	LarkEventRenderItem,
+	LarkRenderItem,
+	LarkRenderElement,
+	LarkStructuredElement
 } from './lark-chat.types'
 import { LarkChatRunState, LarkChatRunStateService } from './lark-chat-run-state.service'
 
@@ -66,7 +71,6 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		message: HandoffMessage<LarkChatStreamCallbackPayload>,
 		_ctx: ProcessContext
 	): Promise<ProcessResult> {
-		// this.logger.debug(`Processing Lark chat callback message with id "${message.id}"`, message)
 		const payload = message.payload
 		if (!payload?.sourceMessageId) {
 			return {
@@ -211,17 +215,39 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		)
 
 		if (eventPayload.type === ChatMessageTypeEnum.MESSAGE) {
-			state.responseMessageContent += messageContentText(eventPayload.data)
+			const textDelta = messageContentText(eventPayload.data)
+			if (textDelta) {
+				state.responseMessageContent += textDelta
+				this.appendStreamTextDelta(state, textDelta)
+			}
+
 			if (typeof eventPayload.data !== 'string') {
 				if (eventPayload.data?.type === 'update') {
 					const message = ensureLarkMessage()
-					await message.update(eventPayload.data.data)
+					const updatePayload = eventPayload.data.data as Record<string, unknown> | undefined
+					const structuredElements = this.extractStructuredElements(updatePayload?.elements)
+					if (structuredElements.length > 0) {
+						this.appendStructuredElements(state, structuredElements)
+					}
+					message.elements = this.serializeRenderItems(state.renderItems)
+					await message.update({
+						status:
+							typeof updatePayload?.status === 'string'
+								? (updatePayload.status as ChatLarkMessage['status'])
+								: undefined,
+						header: updatePayload?.header,
+						language: typeof updatePayload?.language === 'string' ? updatePayload.language : undefined
+					})
 					context.message = this.toMessageSnapshot(message, context.message?.text)
 					await this.syncActiveMessageCache(context)
 					return
 				} else if (eventPayload.data?.type !== 'text') {
 					this.logger.warn('Unprocessed chat message event payload')
 				}
+			}
+
+			if (!textDelta) {
+				return
 			}
 
 			this.logger.debug(`Appended stream content for source message "${state.sourceMessageId}", current buffered length: ${state.responseMessageContent.length}`)
@@ -275,6 +301,23 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 			case ChatMessageEventTypeEnum.ON_MESSAGE_END: {
 				break
 			}
+			case ChatMessageEventTypeEnum.ON_TOOL_START:
+			case ChatMessageEventTypeEnum.ON_TOOL_END:
+			case ChatMessageEventTypeEnum.ON_TOOL_ERROR:
+			case ChatMessageEventTypeEnum.ON_TOOL_MESSAGE:
+			case ChatMessageEventTypeEnum.ON_CHAT_EVENT: {
+				console.log(eventPayload)
+				const data = (eventPayload.data ?? {}) as Record<string, unknown>
+				if (!this.upsertManagedEventElement(state, String(eventPayload.event), data)) {
+					this.logger.warn(`Skip ${String(eventPayload.event)} without id`)
+					break
+				}
+
+				const message = ensureLarkMessage()
+				message.elements = this.serializeRenderItems(state.renderItems)
+				await message.update()
+				break
+			}
 			default: {
 				this.logger.warn(
 					`Unprocessed chat event type from handoff stream: ${eventPayload.event as string}`
@@ -297,13 +340,8 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 			currentStatus === XpertAgentExecutionStatusEnum.ERROR
 
 		if (!keepTerminalState) {
-			if (state.responseMessageContent) {
-				// Force full-content overwrite to avoid duplicate append on complete.
-				larkMessage.elements = [{ tag: 'markdown', content: state.responseMessageContent }]
-				await larkMessage.update({
-					status: XpertAgentExecutionStatusEnum.SUCCESS
-				})
-			} else if (context.reject || larkMessage.elements.length > 0) {
+			if (state.renderItems.length > 0 || context.reject || larkMessage.elements.length > 0) {
+				larkMessage.elements = this.serializeRenderItems(state.renderItems)
 				await larkMessage.update({
 					status: XpertAgentExecutionStatusEnum.SUCCESS
 				})
@@ -360,16 +398,21 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 			context,
 			pendingEvents: {},
 			lastFlushAt: 0,
-			lastFlushedLength: 0
+			lastFlushedLength: 0,
+			renderItems: this.deserializeRenderItems(context.message?.elements)
 		}
 	}
 
 	private ensureRunStateDefaults(state: LarkChatRunState): LarkChatRunState {
+		const legacyElements = this.toArrayOfUnknown((state as { renderElements?: unknown }).renderElements)
 		return {
 			...state,
 			pendingEvents: state.pendingEvents ?? {},
 			lastFlushAt: state.lastFlushAt ?? 0,
-			lastFlushedLength: state.lastFlushedLength ?? 0
+			lastFlushedLength: state.lastFlushedLength ?? 0,
+			renderItems:
+				state.renderItems ??
+				this.deserializeRenderItems(legacyElements ?? state.context?.message?.elements)
 		}
 	}
 
@@ -397,22 +440,242 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		return now - state.lastFlushAt >= updateWindowMs
 	}
 
+	private appendStreamTextDelta(state: LarkChatRunState, textDelta: string): void {
+		if (!textDelta) {
+			return
+		}
+
+		const items = state.renderItems
+		const last = items[items.length - 1]
+		if (last?.kind === 'stream_text') {
+			last.text = `${last.text}${textDelta}`
+		} else {
+			items.push({
+				kind: 'stream_text',
+				text: textDelta
+			})
+		}
+	}
+
+	private appendStructuredElements(
+		state: LarkChatRunState,
+		elements: readonly LarkStructuredElement[]
+	): void {
+		for (const element of elements) {
+			state.renderItems.push({
+				kind: 'structured',
+				element: this.cloneStructuredElement(element)
+			})
+		}
+	}
+
 	private async flushStreamContent(
 		state: LarkChatRunState,
 		larkMessage: ChatLarkMessage,
 		now: number
 	) {
 		this.logger.debug(`Flushing stream content for source message "${state.sourceMessageId}", content length: ${state.responseMessageContent.length}`)
-		// Overwrite rendering: replace with one markdown block using full buffered response.
-		larkMessage.elements = [
-			{
-				tag: 'markdown',
-				content: state.responseMessageContent
-			}
-		]
+		larkMessage.elements = this.serializeRenderItems(state.renderItems)
 		await larkMessage.update()
 		state.lastFlushAt = now
 		state.lastFlushedLength = state.responseMessageContent.length
+	}
+
+	private upsertManagedEventElement(
+		state: LarkChatRunState,
+		eventType: string,
+		data: Record<string, unknown>
+	): boolean {
+		const id = this.resolveManagedEventId(data)
+		if (!id) {
+			return false
+		}
+
+		const items = state.renderItems
+		const eventItem = this.buildManagedEventItem(id, eventType, data)
+		const existingIndex = items.findIndex(
+			(item): item is LarkEventRenderItem => item.kind === 'event' && item.id === id
+		)
+		if (existingIndex >= 0) {
+			items[existingIndex] = eventItem
+		} else {
+			items.push(eventItem)
+		}
+		return true
+	}
+
+	private buildManagedEventItem(
+		id: string,
+		eventType: string,
+		data: Record<string, unknown>
+	): LarkEventRenderItem {
+		const errorData = this.toRecord(data?.error)
+		return {
+			kind: 'event',
+			id,
+			eventType,
+			tool: this.resolveManagedEventTool(data),
+			title: this.toNonEmptyString(data?.title),
+			message: this.toNonEmptyString(data?.message),
+			status: this.toNonEmptyString(data?.status),
+			error: this.toNonEmptyString(data?.error) ?? this.toNonEmptyString(errorData?.message)
+		}
+	}
+
+	private resolveManagedEventId(data: Record<string, unknown>): string | null {
+		const directId =
+			this.toNonEmptyString(data?.id) ??
+			this.toNonEmptyString(data?.tool_call_id) ??
+			this.toNonEmptyString(data?.toolCallId)
+		if (directId) {
+			return directId
+		}
+
+		const toolCall = this.toRecord(data?.toolCall)
+		const toolCallId = this.toNonEmptyString(toolCall?.id)
+		if (toolCallId) {
+			return toolCallId
+		}
+
+		const output = this.toRecord(data?.output)
+		const outputToolCallId =
+			this.toNonEmptyString(output?.tool_call_id) ?? this.toNonEmptyString(output?.toolCallId)
+		if (outputToolCallId) {
+			return outputToolCallId
+		}
+
+		return null
+	}
+
+	private resolveManagedEventTool(data: Record<string, unknown>): string | null {
+		const directTool = this.toNonEmptyString(data?.tool) ?? this.toNonEmptyString(data?.name)
+		if (directTool) {
+			return directTool
+		}
+
+		const toolCall = this.toRecord(data?.toolCall)
+		const toolCallName = this.toNonEmptyString(toolCall?.name)
+		if (toolCallName) {
+			return toolCallName
+		}
+
+		return null
+	}
+
+	private serializeRenderItems(items: readonly LarkRenderItem[] | undefined): LarkRenderElement[] {
+		const elements: LarkRenderElement[] = []
+		for (const item of items ?? []) {
+			const element = this.serializeRenderItem(item)
+			if (element) {
+				elements.push(element)
+			}
+		}
+		return elements
+	}
+
+	private serializeRenderItem(item: LarkRenderItem): LarkRenderElement | null {
+		switch (item.kind) {
+			case 'stream_text':
+				return {
+					tag: 'markdown',
+					content: item.text
+				}
+			case 'event':
+				return {
+					tag: 'markdown',
+					content: this.serializeEventContent(item)
+				}
+			case 'structured':
+				return this.cloneStructuredElement(item.element)
+			default:
+				return null
+		}
+	}
+
+	private serializeEventContent(item: LarkEventRenderItem): string {
+		const lines: string[] = []
+		if (item.eventType) {
+			lines.push(`**Event:** ${item.eventType}`)
+		}
+		if (item.tool) {
+			lines.push(`**Tool:** ${item.tool}`)
+		}
+		if (item.title) {
+			lines.push(`**Title:** ${item.title}`)
+		}
+		if (item.message) {
+			lines.push(item.message)
+		}
+		if (item.status) {
+			lines.push(`**Status:** ${item.status}`)
+		}
+		if (item.error) {
+			lines.push(`**Error:** ${item.error}`)
+		}
+		return lines.join('\n')
+	}
+
+	private deserializeRenderItems(elements: readonly unknown[] | undefined): LarkRenderItem[] {
+		const items: LarkRenderItem[] = []
+		for (const element of elements ?? []) {
+			const item = this.deserializeRenderItem(element)
+			if (item) {
+				items.push(item)
+			}
+		}
+		return items
+	}
+
+	private deserializeRenderItem(value: unknown): LarkRenderItem | null {
+		if (!this.isLarkCardElement(value)) {
+			return null
+		}
+		return {
+			kind: 'structured',
+			element: this.cloneStructuredElement(value)
+		}
+	}
+
+	private cloneStructuredElement<T extends LarkStructuredElement>(element: T): T {
+		if (element && typeof element === 'object') {
+			return { ...(element as Record<string, unknown>) } as T
+		}
+		return element
+	}
+
+	private extractStructuredElements(value: unknown): LarkStructuredElement[] {
+		if (!Array.isArray(value)) {
+			return []
+		}
+		return value.filter((item): item is LarkStructuredElement => this.isLarkCardElement(item))
+	}
+
+	private isLarkCardElement(value: unknown): value is LarkCardElement {
+		return Boolean(
+			value &&
+				typeof value === 'object' &&
+				'tag' in value &&
+				typeof (value as { tag?: unknown }).tag === 'string'
+		)
+	}
+
+	private toNonEmptyString(value: unknown): string | null {
+		if (typeof value !== 'string') {
+			return null
+		}
+		const text = value.trim()
+		return text.length ? text : null
+	}
+
+	private toRecord(value: unknown): Record<string, unknown> | null {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) {
+			return null
+		}
+		return value as Record<string, unknown>
+	}
+
+	private toArrayOfUnknown(value: unknown): unknown[] | null {
+		return Array.isArray(value) ? value : null
 	}
 
 	private toMessageSnapshot(message: ChatLarkMessage, text?: string): LarkChatMessageSnapshot {
@@ -451,10 +714,6 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		const snapshotLanguage = context.message?.language
 		if (typeof snapshotLanguage === 'string' && snapshotLanguage.length > 0) {
 			return snapshotLanguage
-		}
-		const requestLanguage = context.requestContext?.headers?.['language']
-		if (typeof requestLanguage === 'string' && requestLanguage.length > 0) {
-			return requestLanguage
 		}
 		return undefined
 	}

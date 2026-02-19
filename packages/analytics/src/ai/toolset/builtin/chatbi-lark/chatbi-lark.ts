@@ -4,8 +4,6 @@ import {
 	isEnableTool,
 	IXpertToolset,
 	JSONValue,
-	LanguagesEnum,
-	mapTranslationLanguage,
 	TAgentRunnableConfigurable
 } from '@metad/contracts'
 import { Indicator } from '@metad/ocap-core'
@@ -18,6 +16,9 @@ import { createChatAnswerTool } from './tools/answer_question'
 import { createWelcomeTool } from './tools/welcome'
 import { ChatBILarkToolsEnum } from './types'
 
+/**
+ * @deprecated use Tools in middleware/chatbi-lark instead
+ */
 export class ChatBILarkToolset extends AbstractChatBIToolset {
 	static provider = 'chatbi-lark'
 

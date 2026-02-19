@@ -7,6 +7,7 @@
  */
 
 export * from './general'
+export * from './analytics'
 export * from './operation'
 export * from './handoff'
 export * from './user'
@@ -18,6 +19,7 @@ import type {
   LLMPermission,
   VectorStorePermission
 } from './general'
+import type { AnalyticsPermission } from './analytics'
 import type { HandoffPermission } from './handoff'
 import type { UserPermission } from './user'
 
@@ -30,6 +32,7 @@ export type Permission =
   | KnowledgePermission
   | FileSystemPermission
   | IntegrationPermission
+  | AnalyticsPermission
   | UserPermission
   | HandoffPermission
 

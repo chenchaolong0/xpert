@@ -31,26 +31,6 @@ export class EnqueueAgentChatMessageHandler<T = any> implements ICommandHandler<
 		const organizationId = options.organizationId ?? RequestContext.getOrganizationId()
 		const userId = options.userId ?? requestUser?.id ?? RequestContext.currentUserId()
 		const language = RequestContext.getLanguageCode()
-		const requestContextUser = requestUser
-			? {
-					...requestUser,
-					tenantId: requestUser.tenantId ?? tenantId
-				}
-			: userId
-				? {
-						id: userId,
-						tenantId
-					}
-				: undefined
-
-		const requestContext = {
-			user: requestContextUser,
-			headers: {
-				...(organizationId ? { ['organization-id']: organizationId } : {}),
-				...(tenantId ? { ['tenant-id']: tenantId } : {}),
-				...(language ? { language } : {})
-			}
-		}
 
 		let hasOutput = false
 		let output!: T
@@ -77,12 +57,12 @@ export class EnqueueAgentChatMessageHandler<T = any> implements ICommandHandler<
 					payload: {
 						taskId,
 						executionId: options.executionId,
-						integrationId: options.integrationId,
-						requestContext
+						integrationId: options.integrationId
 					},
 					headers: {
 						...(organizationId ? { organizationId } : {}),
 						...(userId ? { userId } : {}),
+						...(language ? { language } : {}),
 						...(options.conversationId ? { conversationId: options.conversationId } : {}),
 						source: options.source,
 						handoffQueue: options.queueName ?? XPERT_HANDOFF_QUEUE,

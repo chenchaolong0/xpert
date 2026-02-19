@@ -4,7 +4,6 @@ import {
 } from '@metad/contracts'
 import {
 	HandoffMessage,
-	HandoffRequestContextPayload,
 	HANDOFF_PERMISSION_SERVICE_TOKEN,
 	HandoffPermissionService,
 	PluginContext,
@@ -64,7 +63,7 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 
 		const runId = `lark-chat-${randomUUID()}`
 		const sessionKey = conversationId ?? runId
-		const requestContext = this.buildRequestContext(tenantId, organizationId, userId)
+		const language = larkMessage.language || RequestContext.getLanguageCode()
 		const callbackContext: LarkChatCallbackContext = {
 			tenantId,
 			organizationId,
@@ -75,7 +74,6 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 			senderOpenId: larkMessage.senderOpenId,
 			reject: Boolean(command.options?.reject),
 			streaming: this.resolveStreamingOverrideFromRequest(),
-			requestContext,
 			message: this.toMessageSnapshot(larkMessage, input)
 		}
 
@@ -86,7 +84,11 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 			context: callbackContext,
 			pendingEvents: {},
 			lastFlushAt: 0,
-			lastFlushedLength: 0
+			lastFlushedLength: 0,
+			renderItems: (callbackContext.message?.elements ?? []).map((element) => ({
+				kind: 'structured' as const,
+				element: { ...element }
+			}))
 		})
 
 		await this.handoffPermissionService.enqueue(
@@ -116,7 +118,7 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 						tenantId,
 						organizationId,
 						user: RequestContext.currentUser(),
-						language: larkMessage.language as LanguagesEnum,
+						language: language as LanguagesEnum,
 						channelType: 'lark',
 						integrationId: larkMessage.integrationId,
 						chatId: larkMessage.chatId,
@@ -127,6 +129,7 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 						headers: {
 							...(organizationId ? { organizationId } : {}),
 							...(userId ? { userId } : {}),
+							...(language ? { language } : {}),
 							...(conversationId ? { conversationId } : {}),
 							source: 'lark',
 							handoffQueue: 'integration',
@@ -134,12 +137,12 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 							...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
 						},
 						context: callbackContext
-					},
-					requestContext
+					}
 				} as SystemChatDispatchPayload,
 				headers: {
 					...(organizationId ? { organizationId } : {}),
 					...(userId ? { userId } : {}),
+					...(language ? { language } : {}),
 					...(conversationId ? { conversationId } : {}),
 					source: 'lark',
 					requestedLane: 'main',
@@ -153,35 +156,6 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 		)
 
 		return larkMessage
-	}
-
-	private buildRequestContext(
-		tenantId: string,
-		organizationId: string | undefined,
-		userId: string
-	): HandoffRequestContextPayload {
-		const requestUser = RequestContext.currentUser()
-		const language = RequestContext.getLanguageCode()
-		const requestContextUser = requestUser
-			? {
-					...requestUser,
-					tenantId: requestUser.tenantId ?? tenantId
-				}
-			: userId
-				? {
-						id: userId,
-						tenantId
-					}
-				: undefined
-
-		return {
-			user: requestContextUser,
-			headers: {
-				...(organizationId ? { ['organization-id']: organizationId } : {}),
-				...(tenantId ? { ['tenant-id']: tenantId } : {}),
-				...(language ? { language } : {})
-			}
-		}
 	}
 
 	private toMessageSnapshot(message: ChatLarkMessage, text?: string): LarkChatMessageSnapshot {

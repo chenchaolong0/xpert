@@ -20,6 +20,7 @@
   "peerDependencies": {
     "@langchain/core": "*",
     "@metad/contracts": "*",
+    "@metad/ocap-core": "*",
     "@nestjs/common": "*",
     "@nestjs/core": "*",
     "@nestjs/cqrs": "*",

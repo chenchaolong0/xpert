@@ -5,7 +5,7 @@ import {
 	IHandoffProcessor,
 	ProcessContext,
 	ProcessResult,
-    runWithRequestContext
+	runWithRequestContext
 } from '@xpert-ai/plugin-sdk'
 import { runWithRequestContext as _runWithRequestContext } from '@metad/server-core'
 import {
@@ -61,29 +61,37 @@ export class AgentChatHandoffProcessor implements IHandoffProcessor {
 		message: HandoffMessage,
 		task: () => Promise<void | ProcessResult>
 	): Promise<void | ProcessResult> {
-		const requestContext = message.payload?.requestContext as
-			| {
-					user?: any
-					headers?: Record<string, string>
-			  }
-			| undefined
-
-		if (!requestContext) {
+		const userId = this.toNonEmptyString(message.headers?.userId)
+		const organizationId = this.toNonEmptyString(message.headers?.organizationId)
+		const language = this.toNonEmptyString(message.headers?.language)
+		if (!userId && !organizationId && !language) {
 			return task()
 		}
-		
+
+		const headers: Record<string, string> = {
+			['tenant-id']: message.tenantId,
+			...(organizationId ? { ['organization-id']: organizationId } : {}),
+			...(language ? { language } : {})
+		}
+		const user = userId
+			? {
+					id: userId,
+					tenantId: message.tenantId
+				}
+			: undefined
+
 		return new Promise<void | ProcessResult>((resolve, reject) => {
 			runWithRequestContext(
 				{
-					user: requestContext.user,
-					headers: requestContext.headers ?? {}
+					user,
+					headers
 				},
-                null,
+				null,
 				() => {
 					_runWithRequestContext(
 						{
-							user: requestContext.user,
-							headers: requestContext.headers ?? {}
+							user,
+							headers
 						},
 						() => {
 							task().then(resolve).catch(reject)
@@ -92,6 +100,10 @@ export class AgentChatHandoffProcessor implements IHandoffProcessor {
 				}
 			)
 		})
+	}
+
+	private toNonEmptyString(value: unknown): string | undefined {
+		return typeof value === 'string' && value.length > 0 ? value : undefined
 	}
 }
 

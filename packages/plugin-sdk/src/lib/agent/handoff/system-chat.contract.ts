@@ -3,10 +3,6 @@ import { defineSystemMessageType } from './message-type'
 
 export const SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE = defineSystemMessageType('chat_dispatch', 1)
 
-export interface HandoffRequestContextPayload {
-	user?: any
-	headers?: Record<string, string>
-}
 
 export interface SystemChatCallbackTarget {
 	messageType: string
@@ -20,7 +16,6 @@ export interface SystemChatDispatchPayload extends Record<string, unknown> {
 		xpertId: string
 	}
 	callback: SystemChatCallbackTarget
-	requestContext?: HandoffRequestContextPayload
 }
 
 export interface SystemChatCallbackEnvelopePayload extends Record<string, unknown> {

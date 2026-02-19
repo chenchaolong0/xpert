@@ -1,7 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common'
 import { CACHE_MANAGER } from '@nestjs/cache-manager'
 import { Cache } from 'cache-manager'
-import { LarkChatCallbackContext, LarkChatStreamCallbackPayload } from './lark-chat.types'
+import {
+	LarkChatCallbackContext,
+	LarkRenderItem,
+	LarkChatStreamCallbackPayload,
+} from './lark-chat.types'
 
 const DEFAULT_RUN_STATE_TTL_SECONDS = 15 * 60
 
@@ -11,7 +15,7 @@ const DEFAULT_RUN_STATE_TTL_SECONDS = 15 * 60
  * A run is keyed by sourceMessageId (the original dispatch message id from system queue).
  * The state is stored in cache only for short-term ordering/recovery, not as business persistence.
  */
-export interface LarkChatRunState {
+export interface LarkChatRunState<TRenderItem extends LarkRenderItem = LarkRenderItem> {
 	/** One source dispatch message corresponds to one callback run state. */
 	sourceMessageId: string
 	/** Next expected callback sequence for in-order processing. */
@@ -26,6 +30,10 @@ export interface LarkChatRunState {
 	lastFlushAt: number
 	/** Length of responseMessageContent already flushed to Lark. */
 	lastFlushedLength: number
+	/** Ordered, mixed internal render items by callback arrival time. */
+	renderItems: TRenderItem[]
+	/** @deprecated Backward-compat field for older cached states. */
+	renderElements?: unknown[]
 }
 
 @Injectable()
@@ -44,7 +52,10 @@ export class LarkChatRunStateService {
 	) {}
 
 	/** Save run state with TTL (default 15 minutes). */
-	async save(state: LarkChatRunState, ttlSeconds: number = DEFAULT_RUN_STATE_TTL_SECONDS): Promise<void> {
+	async save(
+		state: LarkChatRunState,
+		ttlSeconds: number = DEFAULT_RUN_STATE_TTL_SECONDS
+	): Promise<void> {
 		await this.cacheManager.set(this.buildKey(state.sourceMessageId), state, ttlSeconds * 1000)
 	}
 

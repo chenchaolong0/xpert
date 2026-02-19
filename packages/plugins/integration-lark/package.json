@@ -29,6 +29,7 @@
     "@nestjs/cqrs": ">=10",
     "@xpert-ai/plugin-sdk": "*",
     "@metad/contracts": "*",
+    "@metad/ocap-core": "*",
     "zod": ">=3.22.4"
   }
 }

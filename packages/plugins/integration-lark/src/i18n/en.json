@@ -18,6 +18,10 @@
             "Error_SelectAIntegration": "Please select an integration",
             "Error": {
                 "CredentialsFailed": "Credentials verification failed"
+            },
+            "ChatBI": {
+                "AnalysisConditions": "Analysis conditions",
+                "QueryStatement": "Query Statement"
             }
         }
     }

@@ -1,8 +1,7 @@
 import { ConfigService } from '@metad/server-config'
 import { HttpException, HttpStatus, Inject, Logger } from '@nestjs/common'
 import { IQueryHandler, QueryBus, QueryHandler } from '@nestjs/cqrs'
-import { RequestContext } from '@metad/server-core'
-import { AgentMiddlewareRegistry, ToolsetRegistry } from '@xpert-ai/plugin-sdk'
+import { AgentMiddlewareRegistry, RequestContext, ToolsetRegistry } from '@xpert-ai/plugin-sdk'
 import { existsSync, readFileSync } from 'fs'
 import * as mime from 'mime-types'
 import * as path from 'path'
@@ -36,41 +35,7 @@ export class ToolProviderIconHandler implements IQueryHandler<ToolProviderIconQu
 
 		// Step 1: Try to get from plugin registry (npm installed plugins)
 		try {
-			let pluginProvider: any = null
-			
-			// If resolvedOrganizationId is undefined, try to find in all organizations
-			// This is because the icon endpoint is @Public(), which may not have authentication context,
-			// causing organizationId to be undefined
-			if (!resolvedOrganizationId) {
-				try {
-					const allStrategies = (this.toolsetRegistry as any).strategies
-					if (allStrategies) {
-						const orgKeys = Array.from(allStrategies.keys())
-						// Iterate through all organizations to find the plugin
-						for (const orgKey of orgKeys) {
-							const orgKeyStr = String(orgKey)
-							const orgStrategies = allStrategies.get(orgKey)
-							if (orgStrategies) {
-								const providerNames = Array.from(orgStrategies.keys())
-								if (providerNames.includes(provider)) {
-									try {
-										pluginProvider = this.toolsetRegistry.get(provider, orgKeyStr)
-										break
-									} catch (getErr) {
-										// Continue to try next organization
-									}
-								}
-							}
-						}
-					}
-				} catch (listErr) {
-					// If unable to access strategies, ignore error and continue to next step
-				}
-			} else {
-				// If organizationId is specified, lookup normally
-				pluginProvider = this.toolsetRegistry.get(provider, resolvedOrganizationId)
-			}
-			
+			const pluginProvider = this.toolsetRegistry.get(provider, resolvedOrganizationId)
 			if (pluginProvider) {
 				const icon = pluginProvider.meta.icon
 				if (icon.svg) {
@@ -107,7 +72,7 @@ export class ToolProviderIconHandler implements IQueryHandler<ToolProviderIconQu
 
 		// Step 3: Try to get from middleware
 		try {
-			const middleware = this.agentMiddlewareRegistry.get(provider)
+			const middleware = this.agentMiddlewareRegistry.get(provider, resolvedOrganizationId)
 			if (middleware?.meta?.icon) {
 				const icon = middleware.meta.icon
 				let buffer: Buffer
