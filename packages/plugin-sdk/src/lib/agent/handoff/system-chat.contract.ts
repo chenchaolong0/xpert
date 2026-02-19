@@ -1,8 +1,7 @@
 import { TChatOptions, TChatRequest } from '@metad/contracts'
-import { defineSystemMessageType } from './message-type'
+import { defineAgentMessageType } from './message-type'
 
-export const SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE = defineSystemMessageType('chat_dispatch', 1)
-
+export const AGENT_CHAT_DISPATCH_MESSAGE_TYPE = defineAgentMessageType('chat_dispatch', 1)
 
 export interface SystemChatCallbackTarget {
 	messageType: string

@@ -8,7 +8,7 @@ import {
 	ProcessContext,
 	ProcessResult,
 	runWithRequestContext,
-	SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
+	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	SystemChatCallbackEnvelopePayload,
 	SystemChatCallbackTarget,
 	SystemChatDispatchPayload,
@@ -18,8 +18,8 @@ import { XpertChatCommand } from '../../../xpert/commands/chat.command'
 import { HandoffQueueService } from '../../message-queue.service'
 
 @Injectable()
-@HandoffProcessorStrategy(SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE, {
-	types: [SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE],
+@HandoffProcessorStrategy(AGENT_CHAT_DISPATCH_MESSAGE_TYPE, {
+	types: [AGENT_CHAT_DISPATCH_MESSAGE_TYPE],
 	policy: {
 		lane: 'main'
 	}

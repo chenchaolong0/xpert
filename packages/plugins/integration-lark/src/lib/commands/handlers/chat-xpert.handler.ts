@@ -8,7 +8,7 @@ import {
 	HandoffPermissionService,
 	PluginContext,
 	RequestContext,
-	SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
+	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	SystemChatDispatchPayload
 } from '@xpert-ai/plugin-sdk'
 import { Inject } from '@nestjs/common'
@@ -94,7 +94,7 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 		await this.handoffPermissionService.enqueue(
 			{
 				id: runId,
-				type: SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
+				type: AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 				version: 1,
 				tenantId,
 				sessionKey,

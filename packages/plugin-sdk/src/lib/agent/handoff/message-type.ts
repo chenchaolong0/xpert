@@ -54,20 +54,20 @@ export function defineAgentMessageType(
 	return `agent.${action}.v${version}`
 }
 
-/**
- * Unified construction of system message types.
- * Example: system.cancel.v1
- */
-export function defineSystemMessageType(
-	action: string,
-	version: number
-): StructuredHandoffMessageType {
-	assertSegment(action, 'action')
-	if (!Number.isInteger(version) || version <= 0) {
-		throw new Error(`Invalid version: "${version}"`)
-	}
-	return `system.${action}.v${version}`
-}
+// /**
+//  * Unified construction of system message types.
+//  * Example: system.cancel.v1
+//  */
+// export function defineSystemMessageType(
+// 	action: string,
+// 	version: number
+// ): StructuredHandoffMessageType {
+// 	assertSegment(action, 'action')
+// 	if (!Number.isInteger(version) || version <= 0) {
+// 		throw new Error(`Invalid version: "${version}"`)
+// 	}
+// 	return `system.${action}.v${version}`
+// }
 
 /**
  * Check if a type conforms to the structured naming convention (format only, no semantic validation).
