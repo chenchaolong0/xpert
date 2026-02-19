@@ -1,5 +1,5 @@
 import { ICommand } from '@nestjs/cqrs'
-import { ChatLarkMessage } from '../chat/message'
+import { ChatLarkMessage } from '../message'
 
 export class LarkChatXpertCommand implements ICommand {
 	static readonly type = '[Lark] Chat with Xpert'

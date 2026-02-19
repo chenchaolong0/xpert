@@ -14,7 +14,7 @@ import {
 import { Inject } from '@nestjs/common'
 import { CommandHandler, ICommandHandler } from '@nestjs/cqrs'
 import { randomUUID } from 'crypto'
-import { ChatLarkMessage } from '../../chat/message'
+import { ChatLarkMessage } from '../../message'
 import { LarkConversationService } from '../../conversation.service'
 import {
 	LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,

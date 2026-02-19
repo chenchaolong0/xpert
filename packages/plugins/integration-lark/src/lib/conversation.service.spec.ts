@@ -37,38 +37,36 @@ describe('LarkConversationService', () => {
 			execute: jest.fn().mockResolvedValue(undefined)
 		}
 		const cache = new MemoryCache()
-		const service = new LarkConversationService(commandBus as any, cache as any)
-		const larkService = {
+		const larkChannel = {
 			errorMessage: jest.fn().mockResolvedValue(undefined),
 			patchInteractiveMessage: jest.fn().mockResolvedValue(undefined),
 			interactiveMessage: jest.fn().mockResolvedValue({ data: { message_id: 'generated-lark-message-id' } })
 		}
-
-		;(service as any).larkService = larkService
+		const service = new LarkConversationService(commandBus as any, cache as any, larkChannel as any)
 
 		return {
 			service,
 			commandBus,
-			larkService
+			larkChannel
 		}
 	}
 
 	it.each([LARK_CONFIRM, LARK_REJECT, LARK_END_CONVERSATION])(
 		'returns timeout and clears caches when active message is missing (%s)',
 		async (action) => {
-			const { service, larkService } = createFixture()
+			const { service, larkChannel } = createFixture()
 			await service.setConversation(userId, xpertId, 'conversation-1')
 
 			await service.onAction(action, createChatContext(), userId, xpertId, 'action-message-id')
 
-			expect(larkService.errorMessage).toHaveBeenCalledTimes(1)
+			expect(larkChannel.errorMessage).toHaveBeenCalledTimes(1)
 			expect(await service.getConversation(userId, xpertId)).toBeUndefined()
 			expect(await service.getActiveMessage(userId, xpertId)).toBeNull()
 		}
 	)
 
 	it('uses action.messageId fallback when cached thirdPartyMessage.id is missing', async () => {
-		const { service, larkService, commandBus } = createFixture()
+		const { service, larkChannel, commandBus } = createFixture()
 		await service.setConversation(userId, xpertId, 'conversation-1')
 		await service.setActiveMessage(userId, xpertId, {
 			id: 'chat-message-id',
@@ -83,20 +81,20 @@ describe('LarkConversationService', () => {
 
 		await service.onAction(LARK_CONFIRM, createChatContext(), userId, xpertId, 'action-message-id')
 
-		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(1)
-		expect(larkService.patchInteractiveMessage).toHaveBeenCalledWith(
+		expect(larkChannel.patchInteractiveMessage).toHaveBeenCalledTimes(1)
+		expect(larkChannel.patchInteractiveMessage).toHaveBeenCalledWith(
 			'integration-1',
 			'action-message-id',
 			expect.any(Object)
 		)
-		const patchPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[0][2]
+		const patchPayload = (larkChannel.patchInteractiveMessage as jest.Mock).mock.calls[0][2]
 		expect(patchPayload.elements).toContainEqual({ tag: 'markdown', content: 'cached body' })
 		expect(commandBus.execute).toHaveBeenCalledTimes(1)
 		expect(commandBus.execute.mock.calls[0][0].options).toEqual({ confirm: true })
 	})
 
 	it('keeps existing card content on end, cancels conversation and clears conversation session', async () => {
-		const { service, larkService, commandBus } = createFixture()
+		const { service, larkChannel, commandBus } = createFixture()
 		await service.setConversation(userId, xpertId, 'conversation-1')
 		await service.setActiveMessage(userId, xpertId, {
 			id: 'chat-message-id',
@@ -112,13 +110,13 @@ describe('LarkConversationService', () => {
 
 		await service.onAction(LARK_END_CONVERSATION, createChatContext(), userId, xpertId)
 
-		expect(larkService.patchInteractiveMessage).toHaveBeenCalledTimes(1)
-		expect(larkService.patchInteractiveMessage).toHaveBeenCalledWith(
+		expect(larkChannel.patchInteractiveMessage).toHaveBeenCalledTimes(1)
+		expect(larkChannel.patchInteractiveMessage).toHaveBeenCalledWith(
 			'integration-1',
 			'cached-lark-message-id',
 			expect.any(Object)
 		)
-		const patchPayload = (larkService.patchInteractiveMessage as jest.Mock).mock.calls[0][2]
+		const patchPayload = (larkChannel.patchInteractiveMessage as jest.Mock).mock.calls[0][2]
 		expect(
 			patchPayload.elements.some(
 				(element: { tag?: string; content?: string }) =>

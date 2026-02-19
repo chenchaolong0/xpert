@@ -13,9 +13,9 @@ import {
 	ProcessContext,
 	ProcessResult,
 } from '@xpert-ai/plugin-sdk'
-import { ChatLarkMessage, cloneStructuredElement } from '../chat/message'
+import { ChatLarkMessage, cloneStructuredElement } from '../message'
 import { LarkConversationService } from '../conversation.service'
-import { LarkService } from '../lark.service'
+import { LarkChannelStrategy } from '../lark-channel.strategy'
 import {
 	DEFAULT_STREAM_UPDATE_WINDOW_MS,
 	IntegrationLarkPluginConfig,
@@ -58,7 +58,7 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 
 	constructor(
 		private readonly conversationService: LarkConversationService,
-		private readonly larkService: LarkService,
+		private readonly larkChannel: LarkChannelStrategy,
 		private readonly runStateService: LarkChatRunStateService,
 		@Inject(LARK_PLUGIN_CONTEXT)
 		private readonly pluginContext: PluginContext<IntegrationLarkPluginConfig>
@@ -373,13 +373,13 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 				userId: context.userId,
 				chatId: context.chatId,
 				senderOpenId: context.senderOpenId,
-				larkService: this.larkService
+				larkChannel: this.larkChannel
 			},
-			{
-				id: context.message?.id,
-				messageId: context.message?.messageId,
-				status: context.message?.status as any,
-				language,
+				{
+					id: context.message?.id,
+					messageId: context.message?.messageId,
+					status: context.message?.status as any,
+					language,
 				header: context.message?.header,
 				elements: [...(context.message?.elements ?? [])],
 				text: context.message?.text
@@ -627,6 +627,24 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 		if (typeof snapshotLanguage === 'string' && snapshotLanguage.length > 0) {
 			return snapshotLanguage
 		}
+
+		const preferLanguage = (context as { preferLanguage?: unknown }).preferLanguage
+		if (typeof preferLanguage === 'string' && preferLanguage.length > 0) {
+			return preferLanguage
+		}
+
+		const requestLanguage = (context as { requestContext?: { headers?: Record<string, unknown> } })
+			.requestContext?.headers?.language
+		if (typeof requestLanguage === 'string' && requestLanguage.length > 0) {
+			return requestLanguage
+		}
+		if (Array.isArray(requestLanguage)) {
+			const first = requestLanguage.find((item) => typeof item === 'string' && item.length > 0)
+			if (typeof first === 'string') {
+				return first
+			}
+		}
+
 		return undefined
 	}
 }

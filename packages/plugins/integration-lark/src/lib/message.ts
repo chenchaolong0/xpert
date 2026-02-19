@@ -1,10 +1,10 @@
 import { Serializable } from '@langchain/core/load/serializable'
 import { I18nObject, IChatMessage, TSensitiveOperation, XpertAgentExecutionStatusEnum } from '@metad/contracts'
 import { Logger } from '@nestjs/common'
-import { LarkEventRenderItem, LarkRenderItem } from '../handoff'
-import { translate } from '../i18n'
-import { LarkService } from '../lark.service'
-import { ChatLarkContext, LARK_CONFIRM, LARK_END_CONVERSATION, LARK_REJECT, LarkRenderElement, LarkStructuredElement, TLarkConversationStatus } from '../types'
+import { LarkEventRenderItem, LarkRenderItem } from './handoff'
+import { translate } from './i18n'
+import type { LarkChannelStrategy } from './lark-channel.strategy'
+import { ChatLarkContext, LARK_CONFIRM, LARK_END_CONVERSATION, LARK_REJECT, LarkRenderElement, LarkStructuredElement, TLarkConversationStatus } from './types'
 
 export type ChatLarkMessageStatus = IChatMessage['status'] | 'continuing' | 'waiting' | 'done' | TLarkConversationStatus
 
@@ -17,8 +17,10 @@ export interface ChatLarkMessageFields {
   status: ChatLarkMessageStatus
   language: string
   header: any
-  elements: any[]
+  elements: LarkRenderElement[]
 }
+
+type LarkMessageChannel = Pick<LarkChannelStrategy, 'interactiveMessage' | 'patchInteractiveMessage'>
 
 export class ChatLarkMessage extends Serializable implements ChatLarkMessageFields {
   lc_namespace: string[] = ['lark']
@@ -36,7 +38,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
   }
 
   static readonly headerTemplate = 'indigo'
-  static readonly logoImgKey = 'img_v3_02i5_2fd70b28-1f68-4618-9e17-c9140c49bbfg'
+  static readonly logoImgKey = 'img_v3_02v2_ea22de8a-06c9-4e0e-a0da-9e2b22f5de2g'
   static readonly logoIcon = {
     tag: 'custom_icon',
     img_key: ChatLarkMessage.logoImgKey,
@@ -54,8 +56,8 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
   public messageId: string
   public language: string
 
-  get larkService() {
-    return this.chatContext.larkService
+  get larkChannel() {
+    return this.chatContext.larkChannel
   }
 
   get integrationId() {
@@ -78,13 +80,13 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
   }
 
   public header = null
-  public elements = []
+  public elements: LarkRenderElement[] = []
   set renderItems(value: LarkRenderItem[]) {
     this.elements = this.serializeRenderItems(value)
   }
 
   constructor(
-    private chatContext: ChatLarkContext & { larkService: LarkService },
+    private chatContext: ChatLarkContext & { larkChannel: LarkMessageChannel },
     private options: {
       text?: string
     } & Partial<ChatLarkMessageFields>
@@ -304,7 +306,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
     const elements = await this.getCard()
     if (this.id) {
       try {
-        await this.larkService.patchInteractiveMessage(this.chatContext.integrationId, this.id, {
+        await this.larkChannel.patchInteractiveMessage(this.chatContext.integrationId, this.id, {
           ...elements,
           header: this.header ?? (await this.getHeader())
         })
@@ -312,7 +314,7 @@ export class ChatLarkMessage extends Serializable implements ChatLarkMessageFiel
         console.error(err)
       }
     } else {
-      const result = await this.larkService.interactiveMessage(this.chatContext, {
+      const result = await this.larkChannel.interactiveMessage(this.chatContext, {
         ...elements,
         header: this.header ?? (await this.getHeader())
       })

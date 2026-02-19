@@ -9,7 +9,7 @@ import { Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/commo
 import { PassportStrategy } from '@nestjs/passport'
 import express from 'express'
 import { Strategy } from 'passport'
-import { LarkService } from '../lark.service'
+import { LarkChannelStrategy } from '../lark-channel.strategy'
 import { LARK_PLUGIN_CONTEXT } from '../tokens'
 import { TIntegrationLarkOptions } from '../types'
 
@@ -22,7 +22,7 @@ export class LarkTokenStrategy extends PassportStrategy(Strategy, 'lark-token') 
 	private _integrationPermissionService: IntegrationPermissionService
 
 	constructor(
-		private readonly larkService: LarkService,
+		private readonly larkChannel: LarkChannelStrategy,
 		@Inject(LARK_PLUGIN_CONTEXT)
 		private readonly pluginContext: PluginContext,
 	) {
@@ -64,7 +64,7 @@ export class LarkTokenStrategy extends PassportStrategy(Strategy, 'lark-token') 
 				if (data.type === 'url_verification') {
 					this.success({})
 				} else {
-					const integrationClient = this.larkService.getOrCreateLarkClient(integration)
+					const integrationClient = this.larkChannel.getOrCreateLarkClient(integration)
 					let union_id = null
 					switch (data.header?.event_type) {
 						case 'card.action.trigger': {
@@ -81,7 +81,7 @@ export class LarkTokenStrategy extends PassportStrategy(Strategy, 'lark-token') 
 						throw new Error(`Can't get union_id from event of lark message`)
 					}
 
-					const user = await this.larkService.getUser(
+					const user = await this.larkChannel.getUser(
 						integrationClient.client,
 						integration.tenantId,
 						union_id,

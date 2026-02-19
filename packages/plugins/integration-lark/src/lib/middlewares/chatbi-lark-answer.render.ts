@@ -38,7 +38,7 @@ import {
   wrapMemberCaption
 } from '@metad/ocap-core'
 import { Subject, takeUntil, throwError, timeout } from 'rxjs'
-import { ChatLarkMessage } from '../chat/message'
+import { ChatLarkMessage } from '../message'
 import { translate } from '../i18n'
 
 const TABLE_PAGE_SIZE = 10

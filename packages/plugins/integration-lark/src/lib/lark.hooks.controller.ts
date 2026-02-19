@@ -7,6 +7,7 @@ import {
 	RequestContext,
 	runWithRequestContext,
 	TChatEventContext,
+	TChatEventHandlers,
 } from '@xpert-ai/plugin-sdk'
 import {
 	BadRequestException,
@@ -24,11 +25,11 @@ import {
 import { CommandBus } from '@nestjs/cqrs'
 import express from 'express'
 import { LarkAuthGuard } from './auth/lark-auth.guard'
-import { ChatLarkMessage } from './chat/message'
+import { ChatLarkMessage } from './message'
 import { LarkChatXpertCommand } from './commands/chat-xpert.command'
+import { LarkConversationService } from './conversation.service'
 import { Public } from './decorators/public.decorator'
 import { LarkChannelStrategy } from './lark-channel.strategy'
-import { LarkService } from './lark.service'
 import { LARK_PLUGIN_CONTEXT } from './tokens'
 import { TIntegrationLarkOptions } from './types'
 
@@ -38,7 +39,7 @@ export class LarkHooksController {
 
 	constructor(
 		private readonly commandBus: CommandBus,
-		private readonly larkService: LarkService,
+		private readonly conversation: LarkConversationService,
 		@Inject(LARK_PLUGIN_CONTEXT)
 		private readonly pluginContext: PluginContext,
 		private readonly larkChannel: LarkChannelStrategy
@@ -86,7 +87,19 @@ export class LarkHooksController {
 			organizationId: integration.organizationId
 		}
 
-		const handler = this.larkChannel.createEventHandler(ctx)
+		const handlers: TChatEventHandlers = {
+			onMessage: async (message, eventCtx) => {
+				await this.conversation.handleMessage(message, eventCtx)
+			},
+			onMention: async (message, eventCtx) => {
+				await this.conversation.handleMessage(message, eventCtx)
+			},
+			onCardAction: async (action, eventCtx) => {
+				await this.conversation.handleCardAction(action, eventCtx)
+			}
+		}
+
+		const handler = this.larkChannel.createEventHandler(ctx, handlers)
 		const contextUser = RequestContext.currentUser() ?? (req.user as any)
 		const languageHeader = this.getHeaderValue(req.headers['language'])
 		const requestId = this.getHeaderValue(req.headers['x-request-id'])
@@ -203,7 +216,7 @@ export class LarkHooksController {
 				userId: normalized.userId,
 				chatId: normalized.chatId,
 				senderOpenId: normalized.senderOpenId,
-				larkService: this.larkService
+				larkChannel: this.larkChannel
 			},
 			{
 				id: normalized.message?.id,
@@ -378,7 +391,7 @@ export class LarkHooksController {
 	// 			})
 	// 		)
 	// 	}
-	// 	const client = await this.larkService.getOrCreateLarkClientById(id)
+	// 	const client = await this.larkChannel.getOrCreateLarkClientById(id)
 	// 	try {
 	// 		const result = await client.im.chat.list()
 	// 		const items = result.data.items
@@ -404,7 +417,7 @@ export class LarkHooksController {
 	// 			})
 	// 		)
 	// 	}
-	// 	const client = await this.larkService.getOrCreateLarkClientById(id)
+	// 	const client = await this.larkChannel.getOrCreateLarkClientById(id)
 
 	// 	try {
 	// 		const result = await client.contact.user.list({

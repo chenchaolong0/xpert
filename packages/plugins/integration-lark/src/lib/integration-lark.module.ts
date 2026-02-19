@@ -3,7 +3,6 @@ import { XpertServerPlugin, IOnPluginBootstrap, IOnPluginDestroy } from '@xpert-
 import { CqrsModule } from '@nestjs/cqrs'
 import { DiscoveryModule } from '@nestjs/core'
 
-import { LarkService } from './lark.service'
 import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LarkIntegrationStrategy } from './lark-integration.strategy'
 import { LarkHooksController } from './lark.hooks.controller'
@@ -23,7 +22,6 @@ import { ChatBILarkMiddleware } from './middlewares'
 	],
 	controllers: [LarkHooksController],
 	providers: [
-		LarkService,
 		LarkConversationService,
 		LarkChannelStrategy,
 		LarkIntegrationStrategy,
@@ -33,7 +31,7 @@ import { ChatBILarkMiddleware } from './middlewares'
 		LarkTokenStrategy,
 		ChatBILarkMiddleware
 	],
-	exports: [LarkService, LarkChannelStrategy, LarkIntegrationStrategy, ChatBILarkMiddleware]
+	exports: [LarkChannelStrategy, LarkIntegrationStrategy, ChatBILarkMiddleware]
 })
 export class IntegrationLarkPlugin implements IOnPluginBootstrap, IOnPluginDestroy {
 	private logEnabled = true

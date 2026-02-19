@@ -40,7 +40,7 @@ import {
 } from '@xpert-ai/plugin-sdk'
 import { firstValueFrom, switchMap, throwError, timeout } from 'rxjs'
 import { z } from 'zod/v3'
-import { ChatLarkMessage } from '../chat/message'
+import { ChatLarkMessage } from '../message'
 import { drawChatAnswerCard } from './chatbi-lark-answer.render'
 import { LARK_PLUGIN_CONTEXT } from '../tokens'
 import { iconImage } from '../types'

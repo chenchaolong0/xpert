@@ -50,6 +50,7 @@ export interface LarkChatCallbackContext extends Record<string, unknown> {
 	organizationId?: string
 	userId: string
 	xpertId: string
+	preferLanguage?: string
 	integrationId?: string
 	chatId?: string
 	senderOpenId?: string

@@ -1,6 +1,6 @@
 import type { XpertPlugin } from '@xpert-ai/plugin-sdk'
 import { join } from 'node:path'
-import { IntegrationLarkPlugin } from './lib/integration-lark.plugin'
+import { IntegrationLarkPlugin } from './lib/integration-lark.module'
 import { IntegrationLarkPluginConfig, IntegrationLarkPluginConfigSchema } from './lib/plugin-config'
 import { LARK_PLUGIN_CONTEXT } from './lib/tokens'
 import { iconImage } from './lib/types'

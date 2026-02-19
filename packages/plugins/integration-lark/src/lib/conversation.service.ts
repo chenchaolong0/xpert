@@ -1,5 +1,5 @@
 import { CACHE_MANAGER } from '@nestjs/cache-manager'
-import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
+import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
 import { CommandBus } from '@nestjs/cqrs'
 import {
   CancelConversationCommand,
@@ -12,11 +12,11 @@ import {
 import Bull, { Queue } from 'bull'
 import { Cache } from 'cache-manager'
 import type { Observable } from 'rxjs'
-import { ChatLarkMessage } from './chat/message'
+import { ChatLarkMessage } from './message'
 import { LarkMessageCommand } from './commands'
 import { LarkChatXpertCommand } from './commands/chat-xpert.command'
 import { translate } from './i18n'
-import { LarkService } from './lark.service'
+import { LarkChannelStrategy } from './lark-channel.strategy'
 import {
   ChatLarkContext,
   isConfirmAction,
@@ -47,9 +47,6 @@ type LarkActiveMessage = {
 export class LarkConversationService implements OnModuleDestroy {
   private readonly logger = new Logger(LarkConversationService.name)
 
-  @Inject(forwardRef(() => LarkService))
-  private readonly larkService: LarkService
-
   public static readonly prefix = 'lark:chat'
   private static readonly cacheTtlMs = 60 * 10 * 1000 // 10 min
 
@@ -58,7 +55,8 @@ export class LarkConversationService implements OnModuleDestroy {
   constructor(
     private readonly commandBus: CommandBus,
     @Inject(CACHE_MANAGER)
-    private readonly cacheManager: Cache
+    private readonly cacheManager: Cache,
+    private readonly larkChannel: LarkChannelStrategy
   ) {}
 
   /**
@@ -149,7 +147,7 @@ export class LarkConversationService implements OnModuleDestroy {
     }
 
     const prevMessage = new ChatLarkMessage(
-      { ...chatContext, larkService: this.larkService },
+      { ...chatContext, larkChannel: this.larkChannel },
       {
         id: larkMessageId,
         messageId: activeMessage.id || thirdPartyMessage.messageId,
@@ -160,7 +158,7 @@ export class LarkConversationService implements OnModuleDestroy {
       } as any
     )
 
-    const newMessage = new ChatLarkMessage({ ...chatContext, larkService: this.larkService }, {
+    const newMessage = new ChatLarkMessage({ ...chatContext, larkChannel: this.larkChannel }, {
       language: thirdPartyMessage.language
     } as any)
 
@@ -195,7 +193,7 @@ export class LarkConversationService implements OnModuleDestroy {
 
   private async replyActionSessionTimedOut(chatContext: ChatLarkContext): Promise<void> {
     const { integrationId, chatId } = chatContext
-    await this.larkService.errorMessage(
+    await this.larkChannel.errorMessage(
       { integrationId, chatId },
       new Error(translate('integration.Lark.ActionSessionTimedOut'))
     )
@@ -239,7 +237,7 @@ export class LarkConversationService implements OnModuleDestroy {
           return
         }
 
-        const user = await this.larkService.getUserById(tenantId, job.data.userId)
+        const user = await this.larkChannel.getUserById(tenantId, job.data.userId)
         if (!user) {
           this.logger.warn(`User ${job.data.userId} not found, skip job ${job.id}`)
           return

@@ -1,64 +1,88 @@
 import * as lark from '@larksuiteoapi/node-sdk'
+import { IIntegration, IUser, RolesEnum } from '@metad/contracts'
+import { CACHE_MANAGER } from '@nestjs/cache-manager'
 import { Inject, Injectable, Logger } from '@nestjs/common'
-import { IIntegration } from '@metad/contracts'
-import { Request, Response, NextFunction } from 'express'
+import { isEqual } from 'date-fns'
+import { NextFunction, Request, Response } from 'express'
 import {
-	IChatChannel,
+	CHAT_CHANNEL_TEXT_LIMITS,
 	ChatChannel,
-	TChatChannelMeta,
+	getErrorMessage,
+	IChatChannel,
+	INTEGRATION_PERMISSION_SERVICE_TOKEN,
+	IntegrationPermissionService,
+	PluginContext,
+	TChatCardAction,
 	TChatChannelCapabilities,
+	TChatChannelMeta,
 	TChatContext,
-	TChatSendResult,
 	TChatEventContext,
 	TChatEventHandlers,
 	TChatInboundMessage,
-	TChatCardAction,
-	CHAT_CHANNEL_TEXT_LIMITS
+	TChatSendResult,
+	USER_PERMISSION_SERVICE_TOKEN,
+	UserPermissionService,
 } from '@xpert-ai/plugin-sdk'
-import { LarkService } from './lark.service'
-import { isLarkCardActionValue, LarkCardActionValue, TIntegrationLarkOptions } from './types'
-import { LarkConversationService } from './conversation.service'
+import { Cache } from 'cache-manager'
+import { LARK_PLUGIN_CONTEXT } from './tokens'
+import {
+	ChatLarkContext,
+	isLarkCardActionValue,
+	LarkCardActionValue,
+	LarkMessage,
+	TIntegrationLarkOptions,
+	TLarkUserProvisionOptions
+} from './types'
 
-/**
- * Lark Chat Channel Strategy
- *
- * Implements IChatChannel for bidirectional messaging with Lark (Feishu) platform.
- * Supports receiving messages via webhook and sending messages back.
- *
- * Features:
- * - Receive text messages from users
- * - Handle @mentions in group chats
- * - Send text, markdown, and interactive card messages
- * - Update existing messages (streaming support)
- * - Handle card button interactions
- *
- * @example
- * ```typescript
- * // Get the channel from registry
- * const channel = chatChannelRegistry.get('lark')
- *
- * // Send a text message
- * await channel.sendText(ctx, 'Hello!')
- *
- * // Send a markdown message
- * await channel.sendMarkdown(ctx, '**Bold** text')
- *
- * // Send an interactive card
- * await channel.sendCard(ctx, {
- *   header: { title: { tag: 'plain_text', content: 'Title' } },
- *   elements: [{ tag: 'markdown', content: 'Card content' }]
- * })
- * ```
- */
+type LarkClientCacheEntry = {
+	integration: IIntegration<TIntegrationLarkOptions>
+	client: lark.Client
+	bot:
+		| {
+				app_name: string
+				avatar_url: string
+				ip_white_list: string[]
+				open_id: string
+		  }
+		| null
+}
+
 @Injectable()
 @ChatChannel('lark')
 export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions> {
 	private readonly logger = new Logger(LarkChannelStrategy.name)
 
-	@Inject(LarkConversationService)
-	private readonly conversation: LarkConversationService
+	@Inject(CACHE_MANAGER)
+	private readonly cacheManager: Cache
 
-	constructor(private readonly larkService: LarkService) {}
+	private _integrationPermissionService: IntegrationPermissionService
+	private _userPermissionService: UserPermissionService
+
+	constructor(
+		@Inject(LARK_PLUGIN_CONTEXT)
+		private readonly pluginContext: PluginContext,
+	) {}
+
+	private get integrationPermissionService(): IntegrationPermissionService {
+		if (!this._integrationPermissionService) {
+			this._integrationPermissionService = this.pluginContext.resolve(
+				INTEGRATION_PERMISSION_SERVICE_TOKEN
+			)
+		}
+		return this._integrationPermissionService
+	}
+
+	private get userPermissionService(): UserPermissionService {
+		if (!this._userPermissionService) {
+			this._userPermissionService = this.pluginContext.resolve(USER_PERMISSION_SERVICE_TOKEN)
+		}
+		return this._userPermissionService
+	}
+
+	/**
+	 * Cache of Lark clients by integration ID
+	 */
+	private clients = new Map<string, LarkClientCacheEntry>()
 
 	meta: TChatChannelMeta = {
 		type: 'lark',
@@ -85,46 +109,26 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		updateMessage: true,
 		mention: true,
 		group: true,
-		thread: false, // Lark does not support thread
+		thread: false,
 		media: true,
-		textChunkLimit: CHAT_CHANNEL_TEXT_LIMITS['lark'], // 4000
-		streamingUpdate: true // Support streaming update
+		textChunkLimit: CHAT_CHANNEL_TEXT_LIMITS['lark'],
+		streamingUpdate: true
+	}
+
+	private getBotInfoUrl(isLark?: boolean): string {
+		return isLark
+			? 'https://open.larksuite.com/open-apis/bot/v3/info'
+			: 'https://open.feishu.cn/open-apis/bot/v3/info'
 	}
 
 	// ==================== Inbound (Receive Messages) ====================
 
-	/**
-	 * Create Webhook/Event handler
-	 *
-	 * Returns Express middleware that handles inbound webhooks from Lark.
-	 * The middleware:
-	 * 1. Validates request (signature, token)
-	 * 2. Parses events
-	 * 3. Calls appropriate handlers (onMessage, onMention, onCardAction)
-	 *
-	 * @param ctx - Event context containing integration config
-	 * @param handlers - Callback functions for different event types
-	 * @returns Express middleware
-	 */
 	createEventHandler(
 		ctx: TChatEventContext<TIntegrationLarkOptions>,
+		handlers: TChatEventHandlers
 	): (req: Request, res: Response, next?: NextFunction) => Promise<void> {
 		const { integration } = ctx
-
-		const handlers: TChatEventHandlers = {
-			onMessage: async (message, eventCtx) => {
-				// Handle private chat message - delegate to ConversationService
-				await this.conversation.handleMessage(message, eventCtx)
-			},
-			onCardAction: async (action, eventCtx) => {
-				// Handle card button click
-				await this.conversation.handleCardAction(action, eventCtx)
-			},
-			onMention: async (message, eventCtx) => {
-				// Handle @mention in group chat - same as private message
-				await this.conversation.handleMessage(message, eventCtx)
-			}
-		}
+		const eventHandlers = handlers ?? {}
 
 		const dispatcher = new lark.EventDispatcher({
 			verificationToken: integration.options.verificationToken,
@@ -132,7 +136,6 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 			loggerLevel: lark.LoggerLevel.debug
 		})
 
-		// Register message event
 		dispatcher.register({
 			'im.message.receive_v1': async (data) => {
 				this.logger.verbose('im.message.receive_v1:', data)
@@ -143,15 +146,13 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 				}
 
 				try {
-					// Group chat: check if bot is mentioned
 					if (message.chatType === 'group') {
 						const botInfo = await this.getBotInfo(integration)
 						if (this.isBotMentioned(message, botInfo.id)) {
-							await handlers.onMention?.(message, ctx)
+							await eventHandlers.onMention?.(message, ctx)
 						}
 					} else {
-						// Private chat: directly call onMessage
-						await handlers.onMessage?.(message, ctx)
+						await eventHandlers.onMessage?.(message, ctx)
 					}
 				} catch (error) {
 					this.logger.error('Error handling message:', error)
@@ -159,14 +160,13 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 
 				return true
 			},
-
 			'card.action.trigger': async (data: any) => {
 				this.logger.verbose('card.action.trigger:', data)
 
 				const action = this.parseCardAction(data, ctx)
 				if (action) {
 					try {
-						await handlers.onCardAction?.(action, ctx)
+						await eventHandlers.onCardAction?.(action, ctx)
 					} catch (error) {
 						this.logger.error('Error handling card action:', error)
 					}
@@ -179,16 +179,11 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		return lark.adaptExpress(dispatcher, { autoChallenge: true })
 	}
 
-	/**
-	 * Parse inbound event to unified message format
-	 *
-	 * @param event - Platform raw event
-	 * @param ctx - Event context
-	 * @returns Parsed message or null if not a message event
-	 */
 	parseInboundMessage(event: any, _ctx: TChatEventContext<TIntegrationLarkOptions>): TChatInboundMessage | null {
 		const { message, sender } = event
-		if (!message) return null
+		if (!message) {
+			return null
+		}
 
 		let content = ''
 		let contentType: TChatInboundMessage['contentType'] = 'text'
@@ -200,7 +195,6 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 			content = message.content
 		}
 
-		// Determine contentType based on message_type
 		switch (message.message_type) {
 			case 'text':
 				contentType = 'text'
@@ -233,19 +227,14 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Parse card action event
-	 *
-	 * @param event - Platform raw event
-	 * @param ctx - Event context
-	 * @returns Parsed card action or null if not a card action event
-	 */
 	parseCardAction(
 		event: any,
 		_ctx: TChatEventContext<TIntegrationLarkOptions>
 	): TChatCardAction<LarkCardActionValue> | null {
 		const { action, context, operator } = event
-		if (!action || !context) return null
+		if (!action || !context) {
+			return null
+		}
 		const value = action.value ?? action.option
 		if (!isLarkCardActionValue(value)) {
 			this.logger.warn(`Unsupported Lark card action value: ${JSON.stringify(value)}`)
@@ -262,29 +251,15 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Check if bot is mentioned in the message
-	 *
-	 * @param message - Inbound message
-	 * @param botId - Bot's platform user ID
-	 * @returns true if bot is mentioned
-	 */
 	isBotMentioned(message: TChatInboundMessage, botId: string): boolean {
 		return message.mentions?.some((m) => m.id === botId) ?? false
 	}
 
 	// ==================== Outbound (Send Messages) ====================
 
-	/**
-	 * Send text message
-	 *
-	 * @param ctx - Chat context (supports chatId for group or userId for private)
-	 * @param content - Text content
-	 * @returns Send result
-	 */
 	async sendText(ctx: TChatContext, content: string): Promise<TChatSendResult> {
 		try {
-			const client = await this.larkService.getOrCreateLarkClientById(ctx.integration.id)
+			const client = await this.getOrCreateLarkClientById(ctx.integration.id)
 			const { receiveIdType, receiveId } = this.resolveReceiveId(ctx)
 
 			const result = await client.im.message.create({
@@ -302,18 +277,9 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Send markdown message
-	 *
-	 * Note: Lark does not support pure markdown messages, so we use interactive card
-	 *
-	 * @param ctx - Chat context (supports chatId for group or userId for private)
-	 * @param content - Markdown content
-	 * @returns Send result
-	 */
 	async sendMarkdown(ctx: TChatContext, content: string): Promise<TChatSendResult> {
 		try {
-			const client = await this.larkService.getOrCreateLarkClientById(ctx.integration.id)
+			const client = await this.getOrCreateLarkClientById(ctx.integration.id)
 			const { receiveIdType, receiveId } = this.resolveReceiveId(ctx)
 
 			const result = await client.im.message.create({
@@ -333,16 +299,9 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Send interactive card
-	 *
-	 * @param ctx - Chat context (supports chatId for group or userId for private)
-	 * @param card - Card content (Lark message card format)
-	 * @returns Send result
-	 */
 	async sendCard(ctx: TChatContext, card: any): Promise<TChatSendResult> {
 		try {
-			const client = await this.larkService.getOrCreateLarkClientById(ctx.integration.id)
+			const client = await this.getOrCreateLarkClientById(ctx.integration.id)
 			const { receiveIdType, receiveId } = this.resolveReceiveId(ctx)
 
 			const result = await client.im.message.create({
@@ -360,13 +319,6 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Send media message (image, file)
-	 *
-	 * @param ctx - Chat context
-	 * @param media - Media info
-	 * @returns Send result
-	 */
 	async sendMedia(
 		ctx: TChatContext,
 		media: {
@@ -377,10 +329,8 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	): Promise<TChatSendResult> {
 		try {
-			const client = await this.larkService.getOrCreateLarkClientById(ctx.integration.id)
+			const client = await this.getOrCreateLarkClientById(ctx.integration.id)
 
-			// For now, only support image_key if url is provided
-			// Full implementation would need to upload the file first
 			if (media.type === 'image' && media.url) {
 				const result = await client.im.message.create({
 					params: { receive_id_type: 'chat_id' },
@@ -400,17 +350,9 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Update/edit existing message
-	 *
-	 * @param ctx - Chat context
-	 * @param messageId - Message ID to update
-	 * @param content - New content (string for text, object for card)
-	 * @returns Send result
-	 */
 	async updateMessage(ctx: TChatContext, messageId: string, content: string | any): Promise<TChatSendResult> {
 		try {
-			const client = await this.larkService.getOrCreateLarkClientById(ctx.integration.id)
+			const client = await this.getOrCreateLarkClientById(ctx.integration.id)
 			const contentStr = typeof content === 'string' ? JSON.stringify({ text: content }) : JSON.stringify(content)
 
 			await client.im.message.patch({
@@ -424,58 +366,306 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	// ==================== Utility Methods ====================
+	// ==================== Core Client Management ====================
 
-	/**
-	 * Resolve receive ID and type from chat context
-	 * Supports both chatId (group) and userId (private message)
-	 *
-	 * @param ctx - Chat context
-	 * @returns receive_id_type and receive_id
-	 */
+	createClient(integration: IIntegration<TIntegrationLarkOptions>): lark.Client {
+		return this.createClientFromConfig(integration.options)
+	}
+
+	createClientFromConfig(config: TIntegrationLarkOptions): lark.Client {
+		return new lark.Client({
+			appId: config.appId,
+			appSecret: config.appSecret,
+			appType: lark.AppType.SelfBuild,
+			domain: config.isLark ? lark.Domain.Lark : lark.Domain.Feishu,
+			loggerLevel: lark.LoggerLevel.debug
+		})
+	}
+
+	getOrCreateLarkClient(integration: IIntegration<TIntegrationLarkOptions>): LarkClientCacheEntry {
+		let item = this.clients.get(integration.id)
+		if (!item || !isEqual(item.integration.updatedAt, integration.updatedAt)) {
+			const client = this.createClient(integration)
+			item = {
+				integration,
+				client,
+				bot: null
+			}
+			this.clients.set(integration.id, item)
+			this.fetchBotInfo(client, integration.options?.isLark).then((bot) => (item.bot = bot))
+		}
+		return item
+	}
+
+	async getOrCreateLarkClientById(id: string): Promise<lark.Client> {
+		const integration = await this.integrationPermissionService.read<IIntegration<TIntegrationLarkOptions>>(id)
+		if (!integration) {
+			throw new Error(`Integration ${id} not found`)
+		}
+		return this.getOrCreateLarkClient(integration).client
+	}
+
+	getClient(id: string): lark.Client | undefined {
+		return this.clients.get(id)?.client
+	}
+
+	private async fetchBotInfo(client: lark.Client, isLark?: boolean) {
+		const res = await client.request({
+			method: 'GET',
+			url: this.getBotInfoUrl(isLark),
+			data: {},
+			params: {}
+		})
+		return res.bot
+	}
+
+	async test(integration: IIntegration<TIntegrationLarkOptions>) {
+		const client = this.createClient(integration)
+		return await this.fetchBotInfo(client, integration.options?.isLark)
+	}
+
+	// ==================== User Management ====================
+
+	async getUser(
+		client: lark.Client,
+		tenantId: string,
+		unionId: string,
+		userProvision?: TLarkUserProvisionOptions
+	): Promise<IUser | null> {
+		if (!tenantId || !unionId) {
+			return null
+		}
+
+		const larkUserCacheKey = this.getUserByUnionIdCacheKey(tenantId, unionId)
+		let user = await this.getUserByCacheOrDatabase(larkUserCacheKey, {
+			tenantId,
+			thirdPartyId: unionId
+		})
+		if (user) {
+			await this.setUserByIdCache(tenantId, user)
+			return user
+		}
+
+		if (!this.isAutoProvisionUserEnabled(userProvision)) {
+			return null
+		}
+
+		const larkUser = await this.safeGetLarkUser(client, unionId)
+		try {
+			user = await this.userPermissionService.provisionByThirdPartyIdentity<IUser>({
+				tenantId,
+				thirdPartyId: unionId,
+				profile: {
+					username: larkUser?.data?.user?.user_id,
+					email: larkUser?.data?.user?.email,
+					mobile: larkUser?.data?.user?.mobile,
+					imageUrl: larkUser?.data?.user?.avatar?.avatar_240,
+					firstName: larkUser?.data?.user?.name
+				},
+				defaults: {
+					roleName: this.resolveAutoProvisionRoleName(userProvision)
+				}
+			})
+		} catch (error) {
+			this.logger.warn(
+				`Failed to auto provision user for tenant "${tenantId}" and unionId "${unionId}": ${getErrorMessage(error)}`
+			)
+			return null
+		}
+
+		if (user) {
+			await this.cacheManager.set(larkUserCacheKey, user)
+			await this.setUserByIdCache(tenantId, user)
+		}
+
+		return user
+	}
+
+	async getUserById(tenantId: string, userId: string): Promise<IUser | null> {
+		if (!tenantId || !userId) {
+			return null
+		}
+
+		return this.getUserByCacheOrDatabase(this.getUserByIdCacheKey(tenantId, userId), {
+			tenantId,
+			id: userId
+		})
+	}
+
+	private getUserByUnionIdCacheKey(tenantId: string, unionId: string): string {
+		return `lark:user:union:${tenantId}:${unionId}`
+	}
+
+	private getUserByIdCacheKey(tenantId: string, userId: string): string {
+		return `lark:user:id:${tenantId}:${userId}`
+	}
+
+	private async setUserByIdCache(tenantId: string, user: IUser): Promise<void> {
+		if (!user?.id) {
+			return
+		}
+		await this.cacheManager.set(this.getUserByIdCacheKey(tenantId, user.id), user)
+	}
+
+	private async getUserByCacheOrDatabase(
+		cacheKey: string,
+		criteria: Record<string, any>
+	): Promise<IUser | null> {
+		const cached = await this.cacheManager.get<IUser>(cacheKey)
+		if (cached) {
+			return cached
+		}
+
+		const user = await this.userPermissionService.read<IUser>(criteria)
+		if (user) {
+			await this.cacheManager.set(cacheKey, user)
+		}
+
+		return user
+	}
+
+	private async safeGetLarkUser(client: lark.Client, unionId: string) {
+		try {
+			return await client.contact.user.get({
+				params: { user_id_type: 'union_id' },
+				path: { user_id: unionId }
+			})
+		} catch {
+			return null
+		}
+	}
+
+	private isAutoProvisionUserEnabled(userProvision?: TLarkUserProvisionOptions): boolean {
+		return userProvision?.autoProvision ?? false
+	}
+
+	private resolveAutoProvisionRoleName(userProvision?: TLarkUserProvisionOptions): string {
+		return userProvision?.roleName || RolesEnum.EMPLOYEE
+	}
+
+	// ==================== Legacy Message Helpers ====================
+
+	async createMessage(integrationId: string, message: LarkMessage) {
+		try {
+			const client = await this.getOrCreateLarkClientById(integrationId)
+			return await client.im.message.create(message)
+		} catch (err: any) {
+			this.logger.error(getErrorMessage(err), err?.stack)
+			return null
+		}
+	}
+
+	async patchMessage(
+		integrationId: string,
+		payload?: {
+			data: { content: string }
+			path: { message_id: string }
+		}
+	) {
+		if (!payload) {
+			return null
+		}
+		try {
+			const client = await this.getOrCreateLarkClientById(integrationId)
+			return await client.im.message.patch(payload)
+		} catch (err: any) {
+			this.logger.error(err)
+			return null
+		}
+	}
+
+	async errorMessage({ integrationId, chatId }: { integrationId: string; chatId?: string }, err: Error) {
+		await this.createMessage(integrationId, {
+			params: { receive_id_type: 'chat_id' },
+			data: {
+				receive_id: chatId,
+				content: JSON.stringify({ text: `Error: ${err.message}` }),
+				msg_type: 'text'
+			}
+		} as LarkMessage)
+	}
+
+	async textMessage(context: { integrationId: string; chatId: string; messageId?: string }, content: string) {
+		const { chatId, messageId } = context
+		if (messageId) {
+			return await this.patchMessage(context.integrationId, {
+				data: { content: JSON.stringify({ text: content }) },
+				path: { message_id: messageId }
+			})
+		}
+		return await this.createMessage(context.integrationId, {
+			params: { receive_id_type: 'chat_id' },
+			data: {
+				receive_id: chatId,
+				content: JSON.stringify({ text: content }),
+				msg_type: 'text'
+			}
+		} as LarkMessage)
+	}
+
+	async interactiveMessage(context: ChatLarkContext, data: any) {
+		return await this.createMessage(context.integrationId, {
+			params: { receive_id_type: 'chat_id' },
+			data: {
+				receive_id: context.chatId,
+				content: JSON.stringify(data),
+				msg_type: 'interactive'
+			}
+		} as LarkMessage)
+	}
+
+	async markdownMessage(context: ChatLarkContext, content: string) {
+		await this.createMessage(context.integrationId, {
+			params: { receive_id_type: 'chat_id' },
+			data: {
+				receive_id: context.chatId,
+				content: JSON.stringify({
+					elements: [{ tag: 'markdown', content }]
+				}),
+				msg_type: 'interactive'
+			}
+		} as LarkMessage)
+	}
+
+	async patchInteractiveMessage(integrationId: string, messageId: string, data: any) {
+		return await this.patchMessage(integrationId, {
+			data: { content: JSON.stringify(data) },
+			path: { message_id: messageId }
+		})
+	}
+
+	// ==================== Utility ====================
+
 	private resolveReceiveId(ctx: TChatContext): {
 		receiveIdType: 'chat_id' | 'open_id' | 'user_id'
 		receiveId: string
 	} {
-		// Prefer chatId for group chats
 		if (ctx.chatId) {
 			return { receiveIdType: 'chat_id', receiveId: ctx.chatId }
 		}
-		// Fall back to userId for private messages (using open_id type)
 		if (ctx.userId) {
 			return { receiveIdType: 'open_id', receiveId: ctx.userId }
 		}
-		// Should not reach here, but default to empty chatId
 		this.logger.warn('No chatId or userId provided in context')
 		return { receiveIdType: 'chat_id', receiveId: '' }
 	}
 
-	/**
-	 * Get bot info
-	 *
-	 * @param integration - Integration config
-	 * @returns Bot info (ID, name, avatar)
-	 */
 	async getBotInfo(integration: IIntegration<TIntegrationLarkOptions>): Promise<{
 		id: string
 		name?: string
 		avatar?: string
 	}> {
-		const client = this.larkService.createClient(integration)
-		const bot = await this.larkService.getBotInfo(client, integration.options?.isLark)
+		const item = this.getOrCreateLarkClient(integration)
+		if (!item.bot) {
+			item.bot = await this.fetchBotInfo(item.client, integration.options?.isLark)
+		}
 		return {
-			id: bot?.open_id,
-			name: bot?.app_name,
-			avatar: bot?.avatar_url
+			id: item.bot?.open_id,
+			name: item.bot?.app_name,
+			avatar: item.bot?.avatar_url
 		}
 	}
 
-	/**
-	 * Validate integration config by actually testing the connection
-	 *
-	 * @param config - Config to validate
-	 * @returns Validation result
-	 */
 	async validateConfig(config: TIntegrationLarkOptions): Promise<{
 		valid: boolean
 		errors?: string[]
@@ -494,15 +684,11 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 			return { valid: false, errors }
 		}
 
-		// Actually test the connection by calling Lark API
 		try {
-			const client = this.larkService.createClientFromConfig(config)
-			const botInfoUrl = config?.isLark
-				? 'https://open.larksuite.com/open-apis/bot/v3/info'
-				: 'https://open.feishu.cn/open-apis/bot/v3/info'
+			const client = this.createClientFromConfig(config)
 			const res = await client.request({
 				method: 'GET',
-				url: botInfoUrl,
+				url: this.getBotInfoUrl(config?.isLark),
 				data: {},
 				params: {}
 			})
@@ -519,12 +705,6 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		}
 	}
 
-	/**
-	 * Test connection
-	 *
-	 * @param integration - Integration to test
-	 * @returns Test result
-	 */
 	async testConnection(integration: IIntegration<TIntegrationLarkOptions>): Promise<{
 		success: boolean
 		message?: string
