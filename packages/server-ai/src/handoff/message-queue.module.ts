@@ -70,7 +70,8 @@ import { HandoffCancelService } from './handoff-cancel.service'
 		LocalQueueTaskService,
 		...Processors,
 		...CommandHandlers
-	]
+	],
+	exports: [HandoffQueueService]
 })
 export class HandoffQueueModule {
 	constructor() {

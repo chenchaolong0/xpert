@@ -1,12 +1,9 @@
 import { Observable, of } from 'rxjs'
+import { AGENT_CHAT_DISPATCH_MESSAGE_TYPE } from '@xpert-ai/plugin-sdk'
 import {
-	SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
-	SYSTEM_CHAT_MESSAGE_UPSERT_MESSAGE_TYPE
-} from '@xpert-ai/plugin-sdk'
-import {
-	SystemChatDispatchHandoffProcessor,
-	SystemChatMessageUpsertHandoffProcessor
+	SystemChatDispatchHandoffProcessor
 } from './system-chat.processor'
+import { SystemChatCallbackNoopHandoffProcessor } from './system-chat-callback-noop.processor'
 
 describe('SystemChatDispatchHandoffProcessor', () => {
 	const createContext = () => ({
@@ -17,7 +14,7 @@ describe('SystemChatDispatchHandoffProcessor', () => {
 
 	const createMessage = (payload: Record<string, unknown>) => ({
 		id: 'message-id',
-		type: SYSTEM_CHAT_DISPATCH_MESSAGE_TYPE,
+		type: AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 		version: 1,
 		tenantId: 'tenant-id',
 		sessionKey: 'session-id',
@@ -123,89 +120,54 @@ describe('SystemChatDispatchHandoffProcessor', () => {
 	})
 })
 
-describe('SystemChatMessageUpsertHandoffProcessor', () => {
-	it('returns dead when messageId is missing', async () => {
-		const commandBus = { execute: jest.fn() }
-		const processor = new SystemChatMessageUpsertHandoffProcessor(commandBus as any)
-
-		const result = await processor.process(
-			{
-				id: 'message-id',
-				type: SYSTEM_CHAT_MESSAGE_UPSERT_MESSAGE_TYPE,
-				version: 1,
-				tenantId: 'tenant-id',
-				sessionKey: 'session-id',
-				businessKey: 'business-id',
-				attempt: 1,
-				maxAttempts: 1,
-				enqueuedAt: Date.now(),
-				traceId: 'trace-id',
-				payload: {
-					thirdPartyMessage: {}
-				}
-			} as any
-		)
-
-		expect(result).toEqual({
-			status: 'dead',
-			reason: 'Missing messageId in system chat message upsert payload'
-		})
-	})
-
-	it('returns dead when thirdPartyMessage is missing', async () => {
-		const commandBus = { execute: jest.fn() }
-		const processor = new SystemChatMessageUpsertHandoffProcessor(commandBus as any)
-
-		const result = await processor.process(
-			{
-				id: 'message-id',
-				type: SYSTEM_CHAT_MESSAGE_UPSERT_MESSAGE_TYPE,
-				version: 1,
-				tenantId: 'tenant-id',
-				sessionKey: 'session-id',
-				businessKey: 'business-id',
-				attempt: 1,
-				maxAttempts: 1,
-				enqueuedAt: Date.now(),
-				traceId: 'trace-id',
-				payload: {
-					messageId: 'chat-message-id'
-				}
-			} as any
-		)
-
-		expect(result).toEqual({
-			status: 'dead',
-			reason: 'Missing thirdPartyMessage in system chat message upsert payload'
-		})
-	})
-
-	it('executes upsert command when payload is valid', async () => {
-		const commandBus = { execute: jest.fn().mockResolvedValue(undefined) }
-		const processor = new SystemChatMessageUpsertHandoffProcessor(commandBus as any)
-
-		const result = await processor.process(
-			{
-				id: 'message-id',
-				type: SYSTEM_CHAT_MESSAGE_UPSERT_MESSAGE_TYPE,
-				version: 1,
-				tenantId: 'tenant-id',
-				sessionKey: 'session-id',
-				businessKey: 'business-id',
-				attempt: 1,
-				maxAttempts: 1,
-				enqueuedAt: Date.now(),
-				traceId: 'trace-id',
-				payload: {
-					messageId: 'chat-message-id',
-					thirdPartyMessage: {
-						id: 'lark-message-id'
+describe('SystemChatCallbackNoopHandoffProcessor', () => {
+	it.each(['stream', 'complete', 'error'] as const)(
+		'returns ok for %s callback envelopes',
+		async (kind) => {
+		const processor = new SystemChatCallbackNoopHandoffProcessor()
+		const payload =
+			kind === 'stream'
+				? {
+						kind,
+						sourceMessageId: 'source-id',
+						sequence: 1,
+						event: { type: 'message', data: 'hello' }
 					}
-				}
+				: kind === 'error'
+					? {
+							kind,
+							sourceMessageId: 'source-id',
+							sequence: 1,
+							error: 'boom'
+						}
+					: {
+							kind,
+							sourceMessageId: 'source-id',
+							sequence: 1
+						}
+
+		const result = await processor.process(
+			{
+				id: 'callback-id',
+				type: 'system.chat_callback.noop.v1',
+				version: 1,
+				tenantId: 'tenant-id',
+				sessionKey: 'session-id',
+				businessKey: 'business-id',
+				attempt: 1,
+				maxAttempts: 1,
+				enqueuedAt: Date.now(),
+				traceId: 'trace-id',
+				payload
+			} as any,
+			{
+				runId: 'run-id',
+				traceId: 'trace-id',
+				abortSignal: new AbortController().signal
 			} as any
 		)
 
 		expect(result).toEqual({ status: 'ok' })
-		expect(commandBus.execute).toHaveBeenCalledTimes(1)
-	})
+		}
+	)
 })

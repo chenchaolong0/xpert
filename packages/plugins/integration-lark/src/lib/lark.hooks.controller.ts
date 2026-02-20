@@ -22,24 +22,23 @@ import {
 	Response,
 	UseGuards
 } from '@nestjs/common'
-import { CommandBus } from '@nestjs/cqrs'
 import express from 'express'
 import { LarkAuthGuard } from './auth/lark-auth.guard'
 import { ChatLarkMessage } from './message'
-import { LarkChatXpertCommand } from './commands/chat-xpert.command'
 import { LarkConversationService } from './conversation.service'
 import { Public } from './decorators/public.decorator'
 import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LARK_PLUGIN_CONTEXT } from './tokens'
 import { TIntegrationLarkOptions } from './types'
+import { LarkChatDispatchService } from './handoff'
 
 @Controller('lark')
 export class LarkHooksController {
 	private _integrationPermissionService: IntegrationPermissionService
 
 	constructor(
-		private readonly commandBus: CommandBus,
 		private readonly conversation: LarkConversationService,
+		private readonly dispatchService: LarkChatDispatchService,
 		@Inject(LARK_PLUGIN_CONTEXT)
 		private readonly pluginContext: PluginContext,
 		private readonly larkChannel: LarkChannelStrategy
@@ -240,15 +239,13 @@ export class LarkHooksController {
 				},
 				{},
 				() => {
-					this.commandBus
-						.execute(
-							new LarkChatXpertCommand(
-								normalized.xpertId,
-								normalized.input,
-								larkMessage,
-								normalized.options
-							)
-						)
+					this.dispatchService
+						.enqueueDispatch({
+							xpertId: normalized.xpertId,
+							input: normalized.input,
+							larkMessage,
+							options: normalized.options
+						})
 						.then(() => resolve())
 						.catch(reject)
 				}

@@ -2,34 +2,51 @@ import {
 	LanguagesEnum,
 	TChatOptions
 } from '@metad/contracts'
+import { forwardRef, Inject, Injectable } from '@nestjs/common'
 import {
+	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	HandoffMessage,
 	HANDOFF_PERMISSION_SERVICE_TOKEN,
 	HandoffPermissionService,
 	PluginContext,
 	RequestContext,
-	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	SystemChatDispatchPayload
 } from '@xpert-ai/plugin-sdk'
-import { Inject } from '@nestjs/common'
-import { CommandHandler, ICommandHandler } from '@nestjs/cqrs'
 import { randomUUID } from 'crypto'
-import { ChatLarkMessage } from '../../message'
-import { LarkConversationService } from '../../conversation.service'
+import { LarkConversationService } from '../conversation.service'
+import { ChatLarkMessage } from '../message'
+import { LARK_PLUGIN_CONTEXT } from '../tokens'
+import { LarkChatRunStateService } from './lark-chat-run-state.service'
 import {
 	LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
 	LarkChatCallbackContext,
 	LarkChatMessageSnapshot
-} from '../../handoff/lark-chat.types'
-import { LarkChatRunStateService } from '../../handoff/lark-chat-run-state.service'
-import { LARK_PLUGIN_CONTEXT } from '../../tokens'
-import { LarkChatXpertCommand } from '../chat-xpert.command'
+} from './lark-chat.types'
 
-@CommandHandler(LarkChatXpertCommand)
-export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertCommand> {
+export type TLarkChatDispatchInput = {
+	xpertId: string
+	input?: string
+	larkMessage: ChatLarkMessage
+	options?: {
+		confirm?: boolean
+		reject?: boolean
+	}
+}
+
+/**
+ * Builds and enqueues handoff messages for Lark chat requests.
+ *
+ * Responsibilities:
+ * - Translate Lark-side input/message context into system chat dispatch payloads.
+ * - Persist stream/run callback state used by incremental UI updates.
+ * - Update active message/session cache so follow-up actions can resume context.
+ */
+@Injectable()
+export class LarkChatDispatchService {
 	private _handoffPermissionService: HandoffPermissionService
 
 	constructor(
+		@Inject(forwardRef(() => LarkConversationService))
 		private readonly conversationService: LarkConversationService,
 		private readonly runStateService: LarkChatRunStateService,
 		@Inject(LARK_PLUGIN_CONTEXT)
@@ -43,8 +60,16 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 		return this._handoffPermissionService
 	}
 
-	public async execute(command: LarkChatXpertCommand) {
-		const { xpertId, input, larkMessage } = command
+	async enqueueDispatch(input: TLarkChatDispatchInput): Promise<ChatLarkMessage> {
+		const message = await this.buildDispatchMessage(input)
+		await this.handoffPermissionService.enqueue(message, {
+			delayMs: 0
+		})
+		return input.larkMessage
+	}
+
+	async buildDispatchMessage(input: TLarkChatDispatchInput): Promise<HandoffMessage<SystemChatDispatchPayload>> {
+		const { xpertId, larkMessage } = input
 		const userId = RequestContext.currentUserId()
 		const tenantId = RequestContext.currentTenantId()
 		if (!tenantId) {
@@ -72,9 +97,9 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 			integrationId: larkMessage.integrationId,
 			chatId: larkMessage.chatId,
 			senderOpenId: larkMessage.senderOpenId,
-			reject: Boolean(command.options?.reject),
+			reject: Boolean(input.options?.reject),
 			streaming: this.resolveStreamingOverrideFromRequest(),
-			message: this.toMessageSnapshot(larkMessage, input)
+			message: this.toMessageSnapshot(larkMessage, input.input)
 		}
 
 		await this.runStateService.save({
@@ -91,71 +116,64 @@ export class LarkChatXpertHandler implements ICommandHandler<LarkChatXpertComman
 			}))
 		})
 
-		await this.handoffPermissionService.enqueue(
-			{
-				id: runId,
-				type: AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
-				version: 1,
-				tenantId,
-				sessionKey,
-				businessKey: sessionKey,
-				attempt: 1,
-				maxAttempts: 1,
-				enqueuedAt: Date.now(),
-				traceId: runId,
-				payload: {
-					request: {
-						input: {
-							input
-						},
-						conversationId,
-						confirm: command.options?.confirm
+		return {
+			id: runId,
+			type: AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
+			version: 1,
+			tenantId,
+			sessionKey,
+			businessKey: sessionKey,
+			attempt: 1,
+			maxAttempts: 1,
+			enqueuedAt: Date.now(),
+			traceId: runId,
+			payload: {
+				request: {
+					input: {
+						input: input.input
 					},
-					options: {
-						xpertId,
-						from: 'feishu',
-						fromEndUserId: userId,
-						tenantId,
-						organizationId,
-						user: RequestContext.currentUser(),
-						language: language as LanguagesEnum,
-						channelType: 'lark',
-						integrationId: larkMessage.integrationId,
-						chatId: larkMessage.chatId,
-						channelUserId: larkMessage.senderOpenId
-					} as TChatOptions & { xpertId: string },
-					callback: {
-						messageType: LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
-						headers: {
-							...(organizationId ? { organizationId } : {}),
-							...(userId ? { userId } : {}),
-							...(language ? { language } : {}),
-							...(conversationId ? { conversationId } : {}),
-							source: 'lark',
-							handoffQueue: 'integration',
-							requestedLane: 'main',
-							...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
-						},
-						context: callbackContext
-					}
-				} as SystemChatDispatchPayload,
-				headers: {
-					...(organizationId ? { organizationId } : {}),
-					...(userId ? { userId } : {}),
-					...(language ? { language } : {}),
-					...(conversationId ? { conversationId } : {}),
-					source: 'lark',
-					requestedLane: 'main',
-					handoffQueue: 'realtime',
-					...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
+					conversationId,
+					confirm: input.options?.confirm
+				},
+				options: {
+					xpertId,
+					from: 'feishu',
+					fromEndUserId: userId,
+					tenantId,
+					organizationId,
+					user: RequestContext.currentUser(),
+					language: language as LanguagesEnum,
+					channelType: 'lark',
+					integrationId: larkMessage.integrationId,
+					chatId: larkMessage.chatId,
+					channelUserId: larkMessage.senderOpenId
+				} as TChatOptions & { xpertId: string },
+				callback: {
+					messageType: LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
+					headers: {
+						...(organizationId ? { organizationId } : {}),
+						...(userId ? { userId } : {}),
+						...(language ? { language } : {}),
+						...(conversationId ? { conversationId } : {}),
+						source: 'lark',
+						handoffQueue: 'integration',
+						requestedLane: 'main',
+						...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
+					},
+					context: callbackContext
 				}
-			} as HandoffMessage<SystemChatDispatchPayload>,
-			{
-				delayMs: 0
+			} as SystemChatDispatchPayload,
+			headers: {
+				...(organizationId ? { organizationId } : {}),
+				...(userId ? { userId } : {}),
+				...(language ? { language } : {}),
+				...(conversationId ? { conversationId } : {}),
+				source: 'lark',
+				requestedLane: 'main',
+				handoffQueue: 'realtime',
+				...(larkMessage.integrationId ? { integrationId: larkMessage.integrationId } : {})
 			}
-		)
-
-		return larkMessage
+		}
 	}
 
 	private toMessageSnapshot(message: ChatLarkMessage, text?: string): LarkChatMessageSnapshot {

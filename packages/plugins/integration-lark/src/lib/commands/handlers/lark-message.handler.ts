@@ -4,14 +4,15 @@ import {
 	PluginContext,
 } from '@xpert-ai/plugin-sdk'
 import { Inject } from '@nestjs/common'
-import { CommandBus, CommandHandler, ICommandHandler } from '@nestjs/cqrs'
+import { CommandHandler, ICommandHandler } from '@nestjs/cqrs'
 import { ChatLarkMessage } from '../../message'
 import { LarkConversationService } from '../../conversation.service'
 import { LarkChannelStrategy } from '../../lark-channel.strategy'
+import { LarkTriggerStrategy } from '../../workflow/lark-trigger.strategy'
 import { LARK_PLUGIN_CONTEXT } from '../../tokens'
-import { LarkChatXpertCommand } from '../chat-xpert.command'
 import { LarkMessageCommand } from '../mesage.command'
 import { TIntegrationLarkOptions } from '../../types'
+import { LarkChatDispatchService } from '../../handoff'
 
 @CommandHandler(LarkMessageCommand)
 export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
@@ -20,9 +21,10 @@ export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
 	constructor(
 		private readonly larkChannel: LarkChannelStrategy,
 		private readonly conversationService: LarkConversationService,
+		private readonly dispatchService: LarkChatDispatchService,
+		private readonly larkTriggerStrategy: LarkTriggerStrategy,
 		@Inject(LARK_PLUGIN_CONTEXT)
-		private readonly pluginContext: PluginContext,
-		private readonly commandBus: CommandBus
+		private readonly pluginContext: PluginContext
 	) {}
 
 	private get integrationPermissionService(): IntegrationPermissionService {
@@ -42,19 +44,22 @@ export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
 			throw new Error(`Integration ${integrationId} not found`)
 		}
 
-		if (integration.options?.xpertId) {
-			let text = input
-			if (!text && message) {
-				const { content } = message.message
-				const textContent = JSON.parse(content)
+		let text = input
+		if (!text && message?.message?.content) {
+			try {
+				const textContent = JSON.parse(message.message.content)
 				text = textContent.text as string
+			} catch {
+				text = message.message.content
 			}
+		}
 
-			const activeMessage = await this.conversationService.getActiveMessage(
-				userId,
-				integration.options.xpertId
-			)
+		const triggerXpertId = this.larkTriggerStrategy.getBoundXpertId(integrationId)
+		const fallbackXpertId = integration.options?.xpertId
+		const targetXpertId = triggerXpertId ?? fallbackXpertId
 
+		if (targetXpertId) {
+			const activeMessage = await this.conversationService.getActiveMessage(userId, targetXpertId)
 			const larkMessage = new ChatLarkMessage(
 				{ ...options, larkChannel: this.larkChannel },
 				{
@@ -65,9 +70,22 @@ export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
 				}
 			)
 
-			return await this.commandBus.execute(
-				new LarkChatXpertCommand(integration.options.xpertId, text, larkMessage)
-			)
+			const handledByTrigger = await this.larkTriggerStrategy.handleInboundMessage({
+				integrationId,
+				input: text,
+				larkMessage
+			})
+			if (handledByTrigger) {
+				return larkMessage
+			}
+
+			if (fallbackXpertId) {
+				return await this.dispatchService.enqueueDispatch({
+					xpertId: fallbackXpertId,
+					input: text,
+					larkMessage
+				})
+			}
 		}
 
 		await this.larkChannel.errorMessage(
