@@ -8,22 +8,14 @@ import {
 function createBaseConfig(): LarkNotifyMiddlewareConfig {
   return {
     integrationId: 'integration-default',
+    recipients: [{ type: 'chat_id', id: 'chat-default' }],
     template: {
       enabled: true,
       strict: false
     },
     defaults: {
-      recipients: [{ type: 'chat_id', id: 'chat-default' }],
       postLocale: 'en_us',
       timeoutMs: 1000
-    },
-    tools: {
-      send_text_notification: true,
-      send_rich_notification: true,
-      update_message: true,
-      recall_message: true,
-      list_users: true,
-      list_chats: true
     }
   }
 }
@@ -44,10 +36,6 @@ function mergeConfig(partial?: Partial<LarkNotifyMiddlewareConfig>): LarkNotifyM
     defaults: {
       ...base.defaults,
       ...(partial.defaults ?? {})
-    },
-    tools: {
-      ...base.tools,
-      ...(partial.tools ?? {})
     }
   }
 }
@@ -115,8 +103,10 @@ async function createFixture(config?: Partial<LarkNotifyMiddlewareConfig>) {
       }
     },
     contact: {
-      user: {
-        list: listUsers
+      v3: {
+        user: {
+          findByDepartment: listUsers
+        }
       }
     }
   }
@@ -131,7 +121,6 @@ async function createFixture(config?: Partial<LarkNotifyMiddlewareConfig>) {
   return {
     middleware,
     larkChannel,
-    client,
     messageCreate,
     messagePatch,
     messageDelete,
@@ -167,30 +156,22 @@ describe('LarkNotifyMiddleware', () => {
     ])
   })
 
-  it('respects tools switch flags', async () => {
-    const { middleware } = await createFixture({
-      tools: {
-        send_text_notification: false,
-        send_rich_notification: false,
-        update_message: false,
-        recall_message: false,
-        list_users: false,
-        list_chats: false
+  it('uses middleware integration and default recipients even when tool params provide overrides', async () => {
+    const { middleware, larkChannel, messageCreate } = await createFixture({
+      integrationId: 'integration-from-config',
+      recipients: [{ type: 'chat_id', id: 'chat-from-config' }],
+      defaults: {
+        postLocale: 'en_us',
+        timeoutMs: 1000
       }
     })
-
-    expect(middleware.tools).toHaveLength(0)
-  })
-
-  it('uses tool integrationId over middleware integrationId', async () => {
-    const { middleware, larkChannel } = await createFixture({ integrationId: 'integration-from-config' })
 
     await getTool(middleware, 'lark_send_text_notification').invoke(
       {
         integrationId: 'integration-from-args',
-        recipients: [{ type: 'chat_id', id: 'chat-1' }],
+        recipients: [{ type: 'chat_id', id: 'chat-from-args' }],
         content: 'hello'
-      },
+      } as any,
       {
         metadata: {
           tool_call_id: 'tool-call-id'
@@ -198,14 +179,21 @@ describe('LarkNotifyMiddleware', () => {
       }
     )
 
-    expect(larkChannel.getOrCreateLarkClientById).toHaveBeenCalledWith('integration-from-args')
+    expect(larkChannel.getOrCreateLarkClientById).toHaveBeenCalledWith('integration-from-config')
+    expect(messageCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          receive_id: 'chat-from-config'
+        })
+      })
+    )
   })
 
-  it('renders mustache variables from runtime state for integration, recipients and content', async () => {
+  it('resolves state paths for integrationId and recipients while rendering template content', async () => {
     const { middleware, messageCreate } = await createFixture({
-      integrationId: '{{runtime.integrationId}}',
+      integrationId: 'runtime.integrationId',
+      recipients: [{ type: 'chat_id', id: 'runtime.chatId' }],
       defaults: {
-        recipients: [{ type: 'chat_id', id: '{{runtime.chatId}}' }],
         timeoutMs: 1000,
         postLocale: 'en_us'
       }
@@ -244,12 +232,129 @@ describe('LarkNotifyMiddleware', () => {
     expect(content.text).toBe('Hi Alice')
   })
 
+  it('resolves default recipient id as state path when id is a variable name', async () => {
+    const { middleware, messageCreate } = await createFixture({
+      recipients: [{ type: 'chat_id', id: 'runtime.chatId' }],
+      defaults: {
+        timeoutMs: 1000,
+        postLocale: 'en_us'
+      }
+    })
+
+    jest.spyOn(langgraph, 'getCurrentTaskInput').mockReturnValue({
+      runtime: {
+        chatId: 'chat-from-path'
+      }
+    } as any)
+
+    await getTool(middleware, 'lark_send_text_notification').invoke(
+      {
+        content: 'path-based recipient'
+      },
+      {
+        metadata: {
+          tool_call_id: 'tool-call-id'
+        }
+      }
+    )
+
+    expect(messageCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          receive_id: 'chat-from-path'
+        })
+      })
+    )
+  })
+
+  it('expands recipient ids when state path resolves to an array', async () => {
+    const { middleware, messageCreate } = await createFixture({
+      recipients: [{ type: 'chat_id', id: 'runtime.chatIds' }],
+      defaults: {
+        timeoutMs: 1000,
+        postLocale: 'en_us'
+      }
+    })
+
+    jest.spyOn(langgraph, 'getCurrentTaskInput').mockReturnValue({
+      runtime: {
+        chatIds: ['chat-ok', 'chat-failed']
+      }
+    } as any)
+
+    messageCreate.mockImplementation(({ data }) => {
+      if (data.receive_id === 'chat-failed') {
+        throw new Error('mock failure')
+      }
+      return Promise.resolve({
+        data: {
+          message_id: `msg-${data.receive_id}`
+        }
+      })
+    })
+
+    const result = await getTool(middleware, 'lark_send_text_notification').invoke(
+      {
+        content: 'batch-notify'
+      },
+      {
+        metadata: {
+          tool_call_id: 'tool-call-id'
+        }
+      }
+    )
+
+    expect(messageCreate).toHaveBeenCalledTimes(2)
+    expect(result.update.lark_notify_last_result.successCount).toBe(1)
+    expect(result.update.lark_notify_last_result.failureCount).toBe(1)
+    expect(result.update.lark_notify_last_result.results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: 'chat_id:chat-ok', success: true }),
+        expect.objectContaining({ target: 'chat_id:chat-failed', success: false })
+      ])
+    )
+  })
+
+  it('falls back to raw recipient id when state path is missing', async () => {
+    const { middleware, messageCreate } = await createFixture({
+      recipients: [{ type: 'chat_id', id: 'runtime.missingChatId' }],
+      defaults: {
+        timeoutMs: 1000,
+        postLocale: 'en_us'
+      }
+    })
+
+    jest.spyOn(langgraph, 'getCurrentTaskInput').mockReturnValue({
+      runtime: {
+        chatId: 'chat-existing'
+      }
+    } as any)
+
+    await getTool(middleware, 'lark_send_text_notification').invoke(
+      {
+        content: 'fallback-recipient'
+      },
+      {
+        metadata: {
+          tool_call_id: 'tool-call-id'
+        }
+      }
+    )
+
+    expect(messageCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          receive_id: 'runtime.missingChatId'
+        })
+      })
+    )
+  })
+
   it('sends text notification and writes state fields', async () => {
     const { middleware, messageCreate } = await createFixture()
 
     const result = await getTool(middleware, 'lark_send_text_notification').invoke(
       {
-        recipients: [{ type: 'chat_id', id: 'chat-a' }],
         content: 'text-notify'
       },
       {
@@ -266,50 +371,11 @@ describe('LarkNotifyMiddleware', () => {
     expect(result.update.lark_notify_last_message_ids).toEqual(['msg-default'])
   })
 
-  it('returns partial success for batch text notifications', async () => {
-    const { middleware, messageCreate } = await createFixture()
-    messageCreate.mockImplementation(({ data }) => {
-      if (data.receive_id === 'chat-failed') {
-        throw new Error('mock failure')
-      }
-      return Promise.resolve({
-        data: {
-          message_id: `msg-${data.receive_id}`
-        }
-      })
-    })
-
-    const result = await getTool(middleware, 'lark_send_text_notification').invoke(
-      {
-        recipients: [
-          { type: 'chat_id', id: 'chat-ok' },
-          { type: 'chat_id', id: 'chat-failed' }
-        ],
-        content: 'batch-notify'
-      },
-      {
-        metadata: {
-          tool_call_id: 'tool-call-id'
-        }
-      }
-    )
-
-    expect(result.update.lark_notify_last_result.successCount).toBe(1)
-    expect(result.update.lark_notify_last_result.failureCount).toBe(1)
-    expect(result.update.lark_notify_last_result.results).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ target: 'chat_id:chat-ok', success: true }),
-        expect.objectContaining({ target: 'chat_id:chat-failed', success: false })
-      ])
-    )
-  })
-
   it('sends rich notification in post mode', async () => {
     const { middleware, messageCreate } = await createFixture()
 
     await getTool(middleware, 'lark_send_rich_notification').invoke(
       {
-        recipients: [{ type: 'chat_id', id: 'chat-post' }],
         mode: 'post',
         locale: 'zh_cn',
         markdown: '## hello'
@@ -336,7 +402,6 @@ describe('LarkNotifyMiddleware', () => {
 
     await getTool(middleware, 'lark_send_rich_notification').invoke(
       {
-        recipients: [{ type: 'chat_id', id: 'chat-card' }],
         mode: 'interactive',
         card
       },
@@ -399,7 +464,7 @@ describe('LarkNotifyMiddleware', () => {
   })
 
   it('lists users and chats with pagination and keyword filter', async () => {
-    const { middleware } = await createFixture()
+    const { middleware, listUsers, listChats } = await createFixture()
 
     const usersResult = await getTool(middleware, 'lark_list_users').invoke(
       {
@@ -427,6 +492,22 @@ describe('LarkNotifyMiddleware', () => {
       }
     )
 
+    expect(listUsers).toHaveBeenCalledWith({
+      params: {
+        user_id_type: 'open_id',
+        department_id_type: 'open_department_id',
+        department_id: '0',
+        page_size: 50,
+        page_token: 'token-u'
+      }
+    })
+    expect(listChats).toHaveBeenCalledWith({
+      params: {
+        page_size: 50,
+        page_token: 'token-c'
+      }
+    })
+
     expect(usersResult.update.lark_notify_last_result.data).toEqual(
       expect.objectContaining({
         hasMore: true,
@@ -447,8 +528,8 @@ describe('LarkNotifyMiddleware', () => {
   it('throws clear errors when integration or recipients is missing', async () => {
     const noIntegration = await createFixture({
       integrationId: null,
+      recipients: [{ type: 'chat_id', id: 'chat-1' }],
       defaults: {
-        recipients: [{ type: 'chat_id', id: 'chat-1' }],
         postLocale: 'en_us',
         timeoutMs: 1000
       }
@@ -461,8 +542,8 @@ describe('LarkNotifyMiddleware', () => {
     ).rejects.toThrow('integrationId is required')
 
     const noRecipients = await createFixture({
+      recipients: [],
       defaults: {
-        recipients: [],
         postLocale: 'en_us',
         timeoutMs: 1000
       }

@@ -24,13 +24,10 @@ const MAX_BATCH_CONCURRENCY = 5
 const RecipientTypeSchema = z.enum(['chat_id', 'open_id', 'user_id', 'union_id', 'email'])
 const PostLocaleSchema = z.enum(['en_us', 'zh_cn', 'ja_jp'])
 
-const RecipientSchema = z.object({
-  type: RecipientTypeSchema.describe('Lark receive_id_type'),
-  id: z.string().describe('Lark receive_id value')
-})
-
 const middlewareConfigSchema = z.object({
   integrationId: z.string().optional().nullable(),
+  recipient_type: RecipientTypeSchema.describe('Lark receive_id_type'),
+  recipient_id: z.string().describe('Lark receive_id value'),
   template: z
     .object({
       enabled: z.boolean().default(true),
@@ -39,21 +36,10 @@ const middlewareConfigSchema = z.object({
     .default({}),
   defaults: z
     .object({
-      recipients: z.array(RecipientSchema).default([]),
       postLocale: PostLocaleSchema.default(DEFAULT_POST_LOCALE),
       timeoutMs: z.number().int().min(100).default(DEFAULT_TIMEOUT_MS)
     })
     .default({}),
-  tools: z
-    .object({
-      send_text_notification: z.boolean().default(true),
-      send_rich_notification: z.boolean().default(true),
-      update_message: z.boolean().default(true),
-      recall_message: z.boolean().default(true),
-      list_users: z.boolean().default(true),
-      list_chats: z.boolean().default(true)
-    })
-    .default({})
 })
 
 const larkNotifyStateSchema = z.object({
@@ -62,15 +48,11 @@ const larkNotifyStateSchema = z.object({
 })
 
 const sendTextNotificationSchema = z.object({
-  integrationId: z.string().optional().nullable().describe('Lark integration id, overrides middleware config when provided'),
-  recipients: z.array(RecipientSchema).optional().nullable().describe('Target recipients. Use type + id pairs.'),
   content: z.string().describe('Text content to send'),
   timeoutMs: z.number().int().min(100).optional().nullable().describe('Request timeout in milliseconds')
 })
 
 const sendRichNotificationSchema = z.object({
-  integrationId: z.string().optional().nullable().describe('Lark integration id, overrides middleware config when provided'),
-  recipients: z.array(RecipientSchema).optional().nullable().describe('Target recipients. Use type + id pairs.'),
   mode: z.enum(['post', 'interactive']).describe('post=rich text, interactive=card'),
   markdown: z.string().optional().nullable().describe('Markdown content for post mode'),
   card: z.record(z.any()).optional().nullable().describe('Lark interactive card payload for interactive mode'),
@@ -79,7 +61,6 @@ const sendRichNotificationSchema = z.object({
 })
 
 const updateMessageSchema = z.object({
-  integrationId: z.string().optional().nullable().describe('Lark integration id, overrides middleware config when provided'),
   messageId: z.string().describe('Lark message id to update'),
   mode: z.enum(['text', 'interactive']).describe('text updates text content, interactive updates card content'),
   content: z.string().optional().nullable().describe('Text content for text mode'),
@@ -89,13 +70,11 @@ const updateMessageSchema = z.object({
 })
 
 const recallMessageSchema = z.object({
-  integrationId: z.string().optional().nullable().describe('Lark integration id, overrides middleware config when provided'),
   messageId: z.string().describe('Lark message id to recall'),
   timeoutMs: z.number().int().min(100).optional().nullable().describe('Request timeout in milliseconds')
 })
 
 const listUsersSchema = z.object({
-  integrationId: z.string().optional().nullable().describe('Lark integration id, overrides middleware config when provided'),
   keyword: z.string().optional().nullable().describe('Filter keyword for users'),
   pageSize: z.number().int().min(1).max(100).optional().nullable().default(20).describe('Lark users page size'),
   pageToken: z.string().optional().nullable().describe('Lark users page token'),
@@ -103,14 +82,11 @@ const listUsersSchema = z.object({
 })
 
 const listChatsSchema = z.object({
-  integrationId: z.string().optional().nullable().describe('Lark integration id, overrides middleware config when provided'),
   keyword: z.string().optional().nullable().describe('Filter keyword for chats'),
   pageSize: z.number().int().min(1).max(100).optional().nullable().default(20).describe('Lark chats page size'),
   pageToken: z.string().optional().nullable().describe('Lark chats page token'),
   timeoutMs: z.number().int().min(100).optional().nullable().describe('Request timeout in milliseconds')
 })
-
-export type LarkRecipient = z.infer<typeof RecipientSchema>
 
 export type LarkNotifyResultItem = {
   target: string
@@ -128,6 +104,7 @@ export type LarkNotifyResult = {
   data?: Record<string, unknown>
 }
 
+type LarkRecipient = {type: z.infer<typeof RecipientTypeSchema>; id: string}
 type LarkNotifyState = z.infer<typeof larkNotifyStateSchema>
 type LarkNotifyMiddlewareConfig = InferInteropZodInput<typeof middlewareConfigSchema>
 
@@ -257,27 +234,73 @@ function normalizeIntInRange(value: unknown, fallback: number, min: number, max:
   return integer
 }
 
-function normalizeRecipients(value: unknown): LarkRecipient[] {
+function normalizeRecipientIdValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => normalizeRecipientIdValues(item))
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? [trimmed] : []
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return [String(value)]
+  }
+
+  return []
+}
+
+function normalizeRecipients(value: unknown, state: Record<string, unknown>): LarkRecipient[] {
   const recipientTypes = RecipientTypeSchema.options as readonly string[]
   if (!Array.isArray(value)) {
     return []
   }
 
   return value.reduce<LarkRecipient[]>((acc, item) => {
-    const type = normalizeString((item as LarkRecipient)?.type)
-    const id = normalizeString((item as LarkRecipient)?.id)
-    if (!type || !id) {
+    if (!isPlainObject(item)) {
+      return acc
+    }
+
+    const type = normalizeString(item.type)
+    if (!type) {
       return acc
     }
     if (!recipientTypes.includes(type)) {
       return acc
     }
-    acc.push({
-      type: type as LarkRecipient['type'],
-      id
+
+    const rawId = item.id
+    const path = normalizeString(rawId)
+    const resolvedValue = path ? getValueByPath(state, path) : undefined
+    const resolvedIds =
+      resolvedValue === undefined ? [] : normalizeRecipientIdValues(resolvedValue)
+    const ids = resolvedIds.length ? resolvedIds : normalizeRecipientIdValues(rawId)
+
+    ids.forEach((id) => {
+      acc.push({
+        type: type as LarkRecipient['type'],
+        id
+      })
     })
+
     return acc
   }, [])
+}
+
+function resolveStateBackedString(value: unknown, state: Record<string, unknown>): string | null {
+  const normalized = normalizeString(value)
+  if (!normalized) {
+    return null
+  }
+
+  const resolved = getValueByPath(state, normalized)
+  if (resolved === undefined) {
+    return normalized
+  }
+
+  const resolvedValues = normalizeRecipientIdValues(resolved)
+  return resolvedValues[0] ?? normalized
 }
 
 function collectMessageIds(result: LarkNotifyResult): string[] {
@@ -350,7 +373,31 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
           },
           'x-ui': {
             component: 'remoteSelect',
-            selectUrl: '/api/integration/select-options?provider=lark'
+            selectUrl: '/api/integration/select-options?provider=lark',
+            variable: true,
+            span: 2,
+          }
+        },
+        recipient_type: {
+          type: 'string',
+          enum: ['chat_id', 'open_id', 'user_id', 'union_id', 'email'],
+          title: {
+            en_US: 'Recipient type',
+            zh_Hans: '收件人类型'
+          },
+        },
+        recipient_id: {
+          type: 'string',
+          'x-ui': {
+            component: 'remoteSelect',
+            selectUrl: '/api/lark/user-select-options?integration=lark',
+            variable: true,
+            depends: [
+              {
+                name: 'integrationId',
+                alias: 'integration',
+              }
+            ]
           }
         },
         template: {
@@ -372,31 +419,14 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
                 zh_Hans: '模板严格模式'
               }
             }
+          },
+          'x-ui': {
+            span: 2
           }
         },
         defaults: {
           type: 'object',
           properties: {
-            recipients: {
-              type: 'array',
-              title: {
-                en_US: 'Default Recipients',
-                zh_Hans: '默认收件人'
-              },
-              items: {
-                type: 'object',
-                properties: {
-                  type: {
-                    type: 'string',
-                    enum: ['chat_id', 'open_id', 'user_id', 'union_id', 'email']
-                  },
-                  id: {
-                    type: 'string'
-                  }
-                },
-                required: ['type', 'id']
-              }
-            },
             postLocale: {
               type: 'string',
               enum: ['en_us', 'zh_cn', 'ja_jp'],
@@ -415,19 +445,11 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
                 zh_Hans: '超时毫秒'
               }
             }
+          },
+          'x-ui': {
+            span: 2
           }
         },
-        tools: {
-          type: 'object',
-          properties: {
-            send_text_notification: { type: 'boolean', default: true },
-            send_rich_notification: { type: 'boolean', default: true },
-            update_message: { type: 'boolean', default: true },
-            recall_message: { type: 'boolean', default: true },
-            list_users: { type: 'boolean', default: true },
-            list_chats: { type: 'boolean', default: true }
-          }
-        }
       }
     } as TAgentMiddlewareMeta['configSchema']
   }
@@ -449,22 +471,13 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
       strict: parsed.template?.strict === true
     }
 
-    const enabledTools = {
-      sendText: parsed.tools?.send_text_notification !== false,
-      sendRich: parsed.tools?.send_rich_notification !== false,
-      updateMessage: parsed.tools?.update_message !== false,
-      recallMessage: parsed.tools?.recall_message !== false,
-      listUsers: parsed.tools?.list_users !== false,
-      listChats: parsed.tools?.list_chats !== false
-    }
-
     const resolveInput = <T extends Record<string, unknown>>(value: T) => {
       const state = getCurrentStateSafe()
       const renderedInput = renderTemplateValue(value, state, templateOptions)
+      const renderedRecipients = renderTemplateValue([{type: parsed.recipient_type, id: parsed.recipient_id}], state, templateOptions)
       const renderedDefaults = renderTemplateValue(parsed.defaults, state, templateOptions)
       const renderedIntegration = renderTemplateValue(parsed.integrationId, state, templateOptions)
-      const integrationId =
-        normalizeString((renderedInput as Record<string, unknown>)?.integrationId) || normalizeString(renderedIntegration)
+      const integrationId = resolveStateBackedString(renderedIntegration, state)
       const timeoutMs = normalizeTimeout(
         (renderedInput as Record<string, unknown>)?.timeoutMs,
         normalizeTimeout(renderedDefaults.timeoutMs, DEFAULT_TIMEOUT_MS)
@@ -473,30 +486,27 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
       return {
         state,
         renderedInput,
+        renderedRecipients,
         renderedDefaults,
         integrationId,
         timeoutMs
       }
     }
 
-    const resolveRecipients = (renderedInput: Record<string, unknown>, renderedDefaults: Record<string, unknown>) => {
-      const parameterRecipients = normalizeRecipients(renderedInput.recipients)
-      if (parameterRecipients.length) {
-        return parameterRecipients
-      }
-      return normalizeRecipients(renderedDefaults.recipients)
+    const resolveRecipients = (renderedRecipients: unknown, state: Record<string, unknown>) => {
+      return normalizeRecipients(renderedRecipients, state)
     }
 
     const requireIntegrationId = (integrationId: string | null, toolName: string) => {
       if (!integrationId) {
-        throw new Error(`[${toolName}] integrationId is required. Configure middleware integration or pass integrationId in tool parameters.`)
+        throw new Error(`[${toolName}] integrationId is required. Configure middleware integration.`)
       }
       return integrationId
     }
 
     const requireRecipients = (recipients: LarkRecipient[], toolName: string) => {
       if (!recipients.length) {
-        throw new Error(`[${toolName}] recipients is required. Configure defaults.recipients or pass recipients in tool parameters.`)
+        throw new Error(`[${toolName}] recipients is required. Configure recipients.`)
       }
       return recipients
     }
@@ -587,428 +597,416 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
     }
 
     const tools = []
+    tools.push(
+      tool(
+        async (parameters, config) => {
+          const toolName = 'lark_send_text_notification'
+          const toolCallId = getToolCallIdFromConfig(config)
+          const { state, renderedInput, renderedRecipients, integrationId, timeoutMs } = resolveInput(parameters)
+          const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
+          const recipients = requireRecipients(resolveRecipients(renderedRecipients, state), toolName)
+          const content = normalizeString(renderedInput.content)
 
-    if (enabledTools.sendText) {
-      tools.push(
-        tool(
-          async (parameters, config) => {
-            const toolName = 'lark_send_text_notification'
-            const toolCallId = getToolCallIdFromConfig(config)
-            const { renderedInput, renderedDefaults, integrationId, timeoutMs } = resolveInput(parameters)
-            const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
-            const recipients = requireRecipients(resolveRecipients(renderedInput, renderedDefaults), toolName)
-            const content = normalizeString(renderedInput.content)
-
-            if (!content) {
-              throw new Error(`[${toolName}] content is required`)
-            }
-
-            const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
-
-            const result = await runSendTaskBatch({
-              integrationId: resolvedIntegrationId,
-              toolName,
-              recipients,
-              timeoutMs,
-              task: async (recipient) => {
-                const response = await client.im.message.create({
-                  params: {
-                    receive_id_type: recipient.type
-                  },
-                  data: {
-                    receive_id: recipient.id,
-                    msg_type: 'text',
-                    content: JSON.stringify({ text: content })
-                  }
-                })
-
-                return {
-                  messageId: response?.data?.message_id ?? null
-                }
-              }
-            })
-
-            return buildCommand(toolName, toolCallId, result)
-          },
-          {
-            name: 'lark_send_text_notification',
-            description: 'Send text notifications to Lark users/chats with partial-success batch semantics.',
-            schema: sendTextNotificationSchema,
-            verboseParsingErrors: true
+          if (!content) {
+            throw new Error(`[${toolName}] content is required`)
           }
-        )
+
+          const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
+
+          const result = await runSendTaskBatch({
+            integrationId: resolvedIntegrationId,
+            toolName,
+            recipients,
+            timeoutMs,
+            task: async (recipient) => {
+              const response = await client.im.message.create({
+                params: {
+                  receive_id_type: recipient.type
+                },
+                data: {
+                  receive_id: recipient.id,
+                  msg_type: 'text',
+                  content: JSON.stringify({ text: content })
+                }
+              })
+
+              return {
+                messageId: response?.data?.message_id ?? null
+              }
+            }
+          })
+
+          return buildCommand(toolName, toolCallId, result)
+        },
+        {
+          name: 'lark_send_text_notification',
+          description: 'Send text notifications to Lark users/chats with partial-success batch semantics.',
+          schema: sendTextNotificationSchema,
+          verboseParsingErrors: true
+        }
       )
-    }
+    )
 
-    if (enabledTools.sendRich) {
-      tools.push(
-        tool(
-          async (parameters, config) => {
-            const toolName = 'lark_send_rich_notification'
-            const toolCallId = getToolCallIdFromConfig(config)
-            const { renderedInput, renderedDefaults, integrationId, timeoutMs } = resolveInput(parameters)
-            const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
-            const recipients = requireRecipients(resolveRecipients(renderedInput, renderedDefaults), toolName)
-            const mode = renderedInput.mode as 'post' | 'interactive'
-            const localeCandidate =
-              normalizeString(renderedInput.locale) ||
-              normalizeString(renderedDefaults.postLocale) ||
-              DEFAULT_POST_LOCALE
+    tools.push(
+      tool(
+        async (parameters, config) => {
+          const toolName = 'lark_send_rich_notification'
+          const toolCallId = getToolCallIdFromConfig(config)
+          const { state, renderedInput, renderedRecipients, renderedDefaults, integrationId, timeoutMs } =
+            resolveInput(parameters)
+          const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
+          const recipients = requireRecipients(resolveRecipients(renderedRecipients, state), toolName)
+          const mode = renderedInput.mode as 'post' | 'interactive'
+          const localeCandidate =
+            normalizeString(renderedInput.locale) ||
+            normalizeString(renderedDefaults.postLocale) ||
+            DEFAULT_POST_LOCALE
 
-            if (!PostLocaleSchema.options.includes(localeCandidate as any)) {
-              throw new Error(`[${toolName}] locale must be one of: ${PostLocaleSchema.options.join(', ')}`)
+          if (!PostLocaleSchema.options.includes(localeCandidate as any)) {
+            throw new Error(`[${toolName}] locale must be one of: ${PostLocaleSchema.options.join(', ')}`)
+          }
+          const locale = localeCandidate as z.infer<typeof PostLocaleSchema>
+
+          const markdown = normalizeString(renderedInput.markdown)
+          const card = isPlainObject(renderedInput.card) ? renderedInput.card : null
+
+          if (mode === 'post' && !markdown) {
+            throw new Error(`[${toolName}] markdown is required when mode=post`)
+          }
+          if (mode === 'interactive' && !card && !markdown) {
+            throw new Error(`[${toolName}] card or markdown is required when mode=interactive`)
+          }
+
+          const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
+
+          const result = await runSendTaskBatch({
+            integrationId: resolvedIntegrationId,
+            toolName,
+            recipients,
+            timeoutMs,
+            task: async (recipient) => {
+              const response = await client.im.message.create({
+                params: {
+                  receive_id_type: recipient.type
+                },
+                data: {
+                  receive_id: recipient.id,
+                  msg_type: mode === 'post' ? 'post' : 'interactive',
+                  content:
+                    mode === 'post'
+                      ? JSON.stringify({
+                          [locale]: {
+                            content: [
+                              [
+                                {
+                                  tag: 'md',
+                                  text: markdown
+                                }
+                              ]
+                            ]
+                          }
+                        })
+                      : JSON.stringify(
+                          card || {
+                            elements: [{ tag: 'markdown', content: markdown }]
+                          }
+                        )
+                }
+              })
+
+              return {
+                messageId: response?.data?.message_id ?? null
+              }
             }
-            const locale = localeCandidate as z.infer<typeof PostLocaleSchema>
+          })
 
-            const markdown = normalizeString(renderedInput.markdown)
+          return buildCommand(toolName, toolCallId, result)
+        },
+        {
+          name: 'lark_send_rich_notification',
+          description: 'Send post/interactive notifications to Lark users/chats with partial-success batch semantics.',
+          schema: sendRichNotificationSchema,
+          verboseParsingErrors: true
+        }
+      )
+    )
+
+    tools.push(
+      tool(
+        async (parameters, config) => {
+          const toolName = 'lark_update_message'
+          const toolCallId = getToolCallIdFromConfig(config)
+          const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
+          const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
+          const messageId = normalizeString(renderedInput.messageId)
+          const mode = renderedInput.mode as 'text' | 'interactive'
+
+          if (!messageId) {
+            throw new Error(`[${toolName}] messageId is required`)
+          }
+
+          let content: string = null
+          if (mode === 'text') {
+            const text = normalizeString(renderedInput.content)
+            if (!text) {
+              throw new Error(`[${toolName}] content is required when mode=text`)
+            }
+            content = JSON.stringify({ text })
+          } else {
             const card = isPlainObject(renderedInput.card) ? renderedInput.card : null
-
-            if (mode === 'post' && !markdown) {
-              throw new Error(`[${toolName}] markdown is required when mode=post`)
-            }
-            if (mode === 'interactive' && !card && !markdown) {
+            const markdown = normalizeString(renderedInput.markdown)
+            if (!card && !markdown) {
               throw new Error(`[${toolName}] card or markdown is required when mode=interactive`)
             }
-
-            const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
-
-            const result = await runSendTaskBatch({
-              integrationId: resolvedIntegrationId,
-              toolName,
-              recipients,
-              timeoutMs,
-              task: async (recipient) => {
-                const response = await client.im.message.create({
-                  params: {
-                    receive_id_type: recipient.type
-                  },
-                  data: {
-                    receive_id: recipient.id,
-                    msg_type: mode === 'post' ? 'post' : 'interactive',
-                    content:
-                      mode === 'post'
-                        ? JSON.stringify({
-                            [locale]: {
-                              content: [
-                                [
-                                  {
-                                    tag: 'md',
-                                    text: markdown
-                                  }
-                                ]
-                              ]
-                            }
-                          })
-                        : JSON.stringify(
-                            card || {
-                              elements: [{ tag: 'markdown', content: markdown }]
-                            }
-                          )
-                  }
-                })
-
-                return {
-                  messageId: response?.data?.message_id ?? null
-                }
+            content = JSON.stringify(
+              card || {
+                elements: [{ tag: 'markdown', content: markdown }]
               }
+            )
+          }
+
+          const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
+          try {
+            await withTimeout(
+              client.im.message.patch({
+                path: { message_id: messageId },
+                data: { content }
+              }),
+              timeoutMs,
+              `[${toolName}] update message '${messageId}'`
+            )
+          } catch (error) {
+            throw new Error(`[${toolName}] Failed to update message '${messageId}': ${formatError(error)}`)
+          }
+
+          const result: LarkNotifyResult = {
+            tool: toolName,
+            integrationId: resolvedIntegrationId,
+            successCount: 1,
+            failureCount: 0,
+            results: [
+              {
+                target: `message:${messageId}`,
+                success: true,
+                messageId
+              }
+            ]
+          }
+
+          this.logger.log(
+            `[${toolName}] integrationId=${resolvedIntegrationId}, recipientCount=1, successCount=1, failureCount=0`
+          )
+
+          return buildCommand(toolName, toolCallId, result)
+        },
+        {
+          name: 'lark_update_message',
+          description: 'Update an existing Lark message.',
+          schema: updateMessageSchema,
+          verboseParsingErrors: true
+        }
+      )
+    )
+
+    tools.push(
+      tool(
+        async (parameters, config) => {
+          const toolName = 'lark_recall_message'
+          const toolCallId = getToolCallIdFromConfig(config)
+          const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
+          const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
+          const messageId = normalizeString(renderedInput.messageId)
+
+          if (!messageId) {
+            throw new Error(`[${toolName}] messageId is required`)
+          }
+
+          const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
+          try {
+            await withTimeout(
+              (client.im.message as any).delete({
+                path: { message_id: messageId }
+              }),
+              timeoutMs,
+              `[${toolName}] recall message '${messageId}'`
+            )
+          } catch (error) {
+            throw new Error(`[${toolName}] Failed to recall message '${messageId}': ${formatError(error)}`)
+          }
+
+          const result: LarkNotifyResult = {
+            tool: toolName,
+            integrationId: resolvedIntegrationId,
+            successCount: 1,
+            failureCount: 0,
+            results: [
+              {
+                target: `message:${messageId}`,
+                success: true,
+                messageId
+              }
+            ]
+          }
+
+          this.logger.log(
+            `[${toolName}] integrationId=${resolvedIntegrationId}, recipientCount=1, successCount=1, failureCount=0`
+          )
+
+          return buildCommand(toolName, toolCallId, result)
+        },
+        {
+          name: 'lark_recall_message',
+          description: 'Recall an existing Lark message.',
+          schema: recallMessageSchema,
+          verboseParsingErrors: true
+        }
+      )
+    )
+
+    tools.push(
+      tool(
+        async (parameters, config) => {
+          const toolName = 'lark_list_users'
+          const toolCallId = getToolCallIdFromConfig(config)
+          const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
+          const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
+          const keyword = normalizeString(renderedInput.keyword)?.toLowerCase()
+          const pageSize = normalizeIntInRange(renderedInput.pageSize, 20, 1, 100)
+          const pageToken = normalizeString(renderedInput.pageToken)
+
+          const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
+          let response: Awaited<ReturnType<typeof client.contact.v3.user.findByDepartment>>;
+          try {
+            response = await withTimeout(
+              client.contact.v3.user.findByDepartment({
+                params: {
+                  user_id_type: 'open_id',
+                  department_id_type: 'open_department_id',
+                  department_id: '0',
+                  page_size: pageSize,
+                  page_token: pageToken || undefined
+                },
+              }),
+              timeoutMs,
+              `[${toolName}] list users`
+            )
+          } catch (error) {
+            throw new Error(`[${toolName}] Failed to list users: ${formatError(error)}`)
+          }
+
+          const items = (response?.data?.items ?? [])
+            .map((item) => ({
+              open_id: item?.open_id ?? null,
+              union_id: item?.union_id ?? null,
+              user_id: item?.user_id ?? null,
+              name: item?.name ?? null,
+              email: item?.email ?? null,
+              mobile: item?.mobile ?? null,
+              avatar: item?.avatar?.avatar_240 ?? null
+            }))
+            .filter((item) => {
+              if (!keyword) {
+                return true
+              }
+              const values = [item.name, item.email, item.mobile, item.user_id, item.open_id, item.union_id]
+              return values.some((value) => String(value || '').toLowerCase().includes(keyword))
             })
 
-            return buildCommand(toolName, toolCallId, result)
-          },
-          {
-            name: 'lark_send_rich_notification',
-            description: 'Send post/interactive notifications to Lark users/chats with partial-success batch semantics.',
-            schema: sendRichNotificationSchema,
-            verboseParsingErrors: true
+          const result: LarkNotifyResult = {
+            tool: toolName,
+            integrationId: resolvedIntegrationId,
+            successCount: 1,
+            failureCount: 0,
+            results: [{ target: 'users', success: true }],
+            data: {
+              items,
+              pageToken: response?.data?.page_token ?? null,
+              hasMore: response?.data?.has_more ?? false
+            }
           }
-        )
+
+          this.logger.log(`[${toolName}] integrationId=${resolvedIntegrationId}, successCount=1, failureCount=0`)
+
+          return buildCommand(toolName, toolCallId, result)
+        },
+        {
+          name: 'lark_list_users',
+          description: 'List users available for Lark notifications.',
+          schema: listUsersSchema,
+          verboseParsingErrors: true
+        }
       )
-    }
+    )
 
-    if (enabledTools.updateMessage) {
-      tools.push(
-        tool(
-          async (parameters, config) => {
-            const toolName = 'lark_update_message'
-            const toolCallId = getToolCallIdFromConfig(config)
-            const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
-            const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
-            const messageId = normalizeString(renderedInput.messageId)
-            const mode = renderedInput.mode as 'text' | 'interactive'
+    tools.push(
+      tool(
+        async (parameters, config) => {
+          const toolName = 'lark_list_chats'
+          const toolCallId = getToolCallIdFromConfig(config)
+          const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
+          const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
+          const keyword = normalizeString(renderedInput.keyword)?.toLowerCase()
+          const pageSize = normalizeIntInRange(renderedInput.pageSize, 20, 1, 100)
+          const pageToken = normalizeString(renderedInput.pageToken)
 
-            if (!messageId) {
-              throw new Error(`[${toolName}] messageId is required`)
-            }
-
-            let content: string = null
-            if (mode === 'text') {
-              const text = normalizeString(renderedInput.content)
-              if (!text) {
-                throw new Error(`[${toolName}] content is required when mode=text`)
-              }
-              content = JSON.stringify({ text })
-            } else {
-              const card = isPlainObject(renderedInput.card) ? renderedInput.card : null
-              const markdown = normalizeString(renderedInput.markdown)
-              if (!card && !markdown) {
-                throw new Error(`[${toolName}] card or markdown is required when mode=interactive`)
-              }
-              content = JSON.stringify(
-                card || {
-                  elements: [{ tag: 'markdown', content: markdown }]
+          const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
+          let response: Awaited<ReturnType<typeof client.im.chat.list>>;
+          try {
+            response = await withTimeout(
+              client.im.chat.list({
+                params: {
+                  page_size: pageSize,
+                  page_token: pageToken || undefined
                 }
-              )
-            }
-
-            const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
-            try {
-              await withTimeout(
-                client.im.message.patch({
-                  path: { message_id: messageId },
-                  data: { content }
-                }),
-                timeoutMs,
-                `[${toolName}] update message '${messageId}'`
-              )
-            } catch (error) {
-              throw new Error(`[${toolName}] Failed to update message '${messageId}': ${formatError(error)}`)
-            }
-
-            const result: LarkNotifyResult = {
-              tool: toolName,
-              integrationId: resolvedIntegrationId,
-              successCount: 1,
-              failureCount: 0,
-              results: [
-                {
-                  target: `message:${messageId}`,
-                  success: true,
-                  messageId
-                }
-              ]
-            }
-
-            this.logger.log(
-              `[${toolName}] integrationId=${resolvedIntegrationId}, recipientCount=1, successCount=1, failureCount=0`
+              }),
+              timeoutMs,
+              `[${toolName}] list chats`
             )
-
-            return buildCommand(toolName, toolCallId, result)
-          },
-          {
-            name: 'lark_update_message',
-            description: 'Update an existing Lark message.',
-            schema: updateMessageSchema,
-            verboseParsingErrors: true
+          } catch (error) {
+            throw new Error(`[${toolName}] Failed to list chats: ${formatError(error)}`)
           }
-        )
-      )
-    }
 
-    if (enabledTools.recallMessage) {
-      tools.push(
-        tool(
-          async (parameters, config) => {
-            const toolName = 'lark_recall_message'
-            const toolCallId = getToolCallIdFromConfig(config)
-            const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
-            const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
-            const messageId = normalizeString(renderedInput.messageId)
-
-            if (!messageId) {
-              throw new Error(`[${toolName}] messageId is required`)
-            }
-
-            const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
-            try {
-              await withTimeout(
-                (client.im.message as any).delete({
-                  path: { message_id: messageId }
-                }),
-                timeoutMs,
-                `[${toolName}] recall message '${messageId}'`
-              )
-            } catch (error) {
-              throw new Error(`[${toolName}] Failed to recall message '${messageId}': ${formatError(error)}`)
-            }
-
-            const result: LarkNotifyResult = {
-              tool: toolName,
-              integrationId: resolvedIntegrationId,
-              successCount: 1,
-              failureCount: 0,
-              results: [
-                {
-                  target: `message:${messageId}`,
-                  success: true,
-                  messageId
-                }
-              ]
-            }
-
-            this.logger.log(
-              `[${toolName}] integrationId=${resolvedIntegrationId}, recipientCount=1, successCount=1, failureCount=0`
-            )
-
-            return buildCommand(toolName, toolCallId, result)
-          },
-          {
-            name: 'lark_recall_message',
-            description: 'Recall an existing Lark message.',
-            schema: recallMessageSchema,
-            verboseParsingErrors: true
-          }
-        )
-      )
-    }
-
-    if (enabledTools.listUsers) {
-      tools.push(
-        tool(
-          async (parameters, config) => {
-            const toolName = 'lark_list_users'
-            const toolCallId = getToolCallIdFromConfig(config)
-            const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
-            const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
-            const keyword = normalizeString(renderedInput.keyword)?.toLowerCase()
-            const pageSize = normalizeIntInRange(renderedInput.pageSize, 20, 1, 100)
-            const pageToken = normalizeString(renderedInput.pageToken)
-
-            const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
-            let response: Awaited<ReturnType<typeof client.contact.v3.user.findByDepartment>>;
-            try {
-              response = await withTimeout(
-                client.contact.v3.user.findByDepartment({
-                  params: {
-                    user_id_type: 'open_id',
-                    department_id_type: 'open_department_id',
-                    department_id: '0',
-                    page_size: pageSize,
-                    page_token: pageToken || undefined
-                  },
-                }),
-                timeoutMs,
-                `[${toolName}] list users`
-              )
-            } catch (error) {
-              throw new Error(`[${toolName}] Failed to list users: ${formatError(error)}`)
-            }
-
-            const items = (response?.data?.items ?? [])
-              .map((item) => ({
-                open_id: item?.open_id ?? null,
-                union_id: item?.union_id ?? null,
-                user_id: item?.user_id ?? null,
-                name: item?.name ?? null,
-                email: item?.email ?? null,
-                mobile: item?.mobile ?? null,
-                avatar: item?.avatar?.avatar_240 ?? null
-              }))
-              .filter((item) => {
-                if (!keyword) {
-                  return true
-                }
-                const values = [item.name, item.email, item.mobile, item.user_id, item.open_id, item.union_id]
-                return values.some((value) => String(value || '').toLowerCase().includes(keyword))
-              })
-
-            const result: LarkNotifyResult = {
-              tool: toolName,
-              integrationId: resolvedIntegrationId,
-              successCount: 1,
-              failureCount: 0,
-              results: [{ target: 'users', success: true }],
-              data: {
-                items,
-                pageToken: response?.data?.page_token ?? null,
-                hasMore: response?.data?.has_more ?? false
+          const items = (response?.data?.items ?? [])
+            .map((item) => ({
+              ...item,
+              chat_id: item?.chat_id ?? null,
+              name: item?.name ?? null,
+              avatar: item?.avatar ?? null,
+              description: item?.description ?? null,
+            }))
+            .filter((item) => {
+              if (!keyword) {
+                return true
               }
+              const values = [item.name, item.chat_id, item.description]
+              return values.some((value) => String(value || '').toLowerCase().includes(keyword))
+            })
+
+          const result: LarkNotifyResult = {
+            tool: toolName,
+            integrationId: resolvedIntegrationId,
+            successCount: 1,
+            failureCount: 0,
+            results: [{ target: 'chats', success: true }],
+            data: {
+              items,
+              pageToken: response?.data?.page_token ?? null,
+              hasMore: response?.data?.has_more ?? false
             }
-
-            this.logger.log(`[${toolName}] integrationId=${resolvedIntegrationId}, successCount=1, failureCount=0`)
-
-            return buildCommand(toolName, toolCallId, result)
-          },
-          {
-            name: 'lark_list_users',
-            description: 'List users available for Lark notifications.',
-            schema: listUsersSchema,
-            verboseParsingErrors: true
           }
-        )
+
+          this.logger.log(`[${toolName}] integrationId=${resolvedIntegrationId}, successCount=1, failureCount=0`)
+
+          return buildCommand(toolName, toolCallId, result)
+        },
+        {
+          name: 'lark_list_chats',
+          description: 'List chats available for Lark notifications.',
+          schema: listChatsSchema,
+          verboseParsingErrors: true
+        }
       )
-    }
-
-    if (enabledTools.listChats) {
-      tools.push(
-        tool(
-          async (parameters, config) => {
-            const toolName = 'lark_list_chats'
-            const toolCallId = getToolCallIdFromConfig(config)
-            const { renderedInput, integrationId, timeoutMs } = resolveInput(parameters)
-            const resolvedIntegrationId = requireIntegrationId(integrationId, toolName)
-            const keyword = normalizeString(renderedInput.keyword)?.toLowerCase()
-            const pageSize = normalizeIntInRange(renderedInput.pageSize, 20, 1, 100)
-            const pageToken = normalizeString(renderedInput.pageToken)
-
-            const client = await getClient(resolvedIntegrationId, timeoutMs, toolName)
-            let response: Awaited<ReturnType<typeof client.im.chat.list>>;
-            try {
-              response = await withTimeout(
-                client.im.chat.list({
-                  params: {
-                    page_size: pageSize,
-                    page_token: pageToken || undefined
-                  }
-                }),
-                timeoutMs,
-                `[${toolName}] list chats`
-              )
-            } catch (error) {
-              throw new Error(`[${toolName}] Failed to list chats: ${formatError(error)}`)
-            }
-
-            const items = (response?.data?.items ?? [])
-              .map((item) => ({
-                ...item,
-                chat_id: item?.chat_id ?? null,
-                name: item?.name ?? null,
-                avatar: item?.avatar ?? null,
-                description: item?.description ?? null,
-              }))
-              .filter((item) => {
-                if (!keyword) {
-                  return true
-                }
-                const values = [item.name, item.chat_id, item.description]
-                return values.some((value) => String(value || '').toLowerCase().includes(keyword))
-              })
-
-            const result: LarkNotifyResult = {
-              tool: toolName,
-              integrationId: resolvedIntegrationId,
-              successCount: 1,
-              failureCount: 0,
-              results: [{ target: 'chats', success: true }],
-              data: {
-                items,
-                pageToken: response?.data?.page_token ?? null,
-                hasMore: response?.data?.has_more ?? false
-              }
-            }
-
-            this.logger.log(`[${toolName}] integrationId=${resolvedIntegrationId}, successCount=1, failureCount=0`)
-
-            return buildCommand(toolName, toolCallId, result)
-          },
-          {
-            name: 'lark_list_chats',
-            description: 'List chats available for Lark notifications.',
-            schema: listChatsSchema,
-            verboseParsingErrors: true
-          }
-        )
-      )
-    }
+    )
 
     return {
       name: LARK_NOTIFY_MIDDLEWARE_NAME,

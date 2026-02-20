@@ -556,6 +556,9 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 			.filter((middleware) => middleware?.tools?.length)
 			.flatMap((middleware) =>
 				middleware.tools.map((tool) => {
+					if (team.agentConfig?.tools?.[tool.name]?.description) {
+						tool.description = team.agentConfig.tools[tool.name].description
+					}
 					toolMap.set(tool.name, tool)
 					return {
 						toolset: {
@@ -563,7 +566,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 							title: tool.name,
 						},
 						caller: agent.key,
-						tool
+						tool,
+						variables: team.agentConfig?.tools?.[tool.name]?.memories || team.agentConfig?.toolsMemory?.[tool.name]
 					}
 				})
 			)

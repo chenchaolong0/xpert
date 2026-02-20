@@ -5,7 +5,7 @@ import { DiscoveryModule } from '@nestjs/core'
 
 import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LarkIntegrationStrategy } from './lark-integration.strategy'
-import { LarkHooksController } from './lark.hooks.controller'
+import { LarkHooksController } from './lark.controller'
 import { LarkConversationService } from './conversation.service'
 import { LarkTokenStrategy } from './auth/lark-token.strategy'
 import { CommandHandlers } from './commands/handlers'

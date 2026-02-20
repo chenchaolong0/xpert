@@ -14,14 +14,18 @@ import {
 	Body,
 	Controller,
 	ForbiddenException,
+	Get,
 	HttpCode,
 	Inject,
 	Param,
 	Post,
+	Query,
 	Request,
 	Response,
 	UseGuards
 } from '@nestjs/common'
+import { AxiosError } from 'axios'
+import { t } from 'i18next'
 import express from 'express'
 import { LarkAuthGuard } from './auth/lark-auth.guard'
 import { ChatLarkMessage } from './message'
@@ -31,6 +35,7 @@ import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LARK_PLUGIN_CONTEXT } from './tokens'
 import { TIntegrationLarkOptions } from './types'
 import { LarkChatDispatchService } from './handoff'
+
 
 @Controller('lark')
 export class LarkHooksController {
@@ -169,6 +174,55 @@ export class LarkHooksController {
 
 	private getHeaderValue(value: string | string[] | undefined): string | undefined {
 		return Array.isArray(value) ? value[0] : value
+	}
+
+	@Get('chat-select-options')
+	async getChatSelectOptions(@Query('integration') id: string) {
+		if (!id) {
+			throw new BadRequestException(t('integration.Lark.Error_SelectAIntegration'))
+		}
+		const client = await this.larkChannel.getOrCreateLarkClientById(id)
+		try {
+			const result = await client.im.chat.list()
+			const items = result.data.items
+			return items.map((item) => ({
+				value: item.chat_id,
+				label: item.name,
+				icon: item.avatar
+			}))
+		} catch (err: any) {
+			if ((<AxiosError>err).response?.data) {
+				throw new BadRequestException(err.response.data.msg)
+			}
+			throw new BadRequestException(err)
+		}
+	}
+
+	@Get('user-select-options')
+	async getUserSelectOptions(@Query('integration') id: string) {
+		if (!id) {
+			throw new BadRequestException(t('integration.Lark.Error_SelectAIntegration'))
+		}
+		const client = await this.larkChannel.getOrCreateLarkClientById(id)
+
+		try {
+			const result = await client.contact.user.list({
+				params: {}
+			})
+			const items = result.data.items
+
+			// Use open_id to match resolveReceiveId() in LarkChannelStrategy
+			return items.map((item) => ({
+				value: item.open_id,
+				label: item.name || item.email || item.mobile,
+				icon: item.avatar
+			}))
+		} catch (err: any) {
+			if ((<AxiosError>err).response?.data) {
+				throw new BadRequestException(err.response.data.msg)
+			}
+			throw new BadRequestException(err)
+		}
 	}
 
 	@Public()
@@ -378,61 +432,4 @@ export class LarkHooksController {
 			}
 		}
 	}
-
-	// @Get('chat-select-options')
-	// async getChatSelectOptions(@Query('integration') id: string) {
-	// 	if (!id) {
-	// 		throw new BadRequestException(
-	// 			await this.core.i18n.t('integration.Lark.Error_SelectAIntegration', {
-	// 				lang: mapTranslationLanguage(RequestContext.getLanguageCode())
-	// 			})
-	// 		)
-	// 	}
-	// 	const client = await this.larkChannel.getOrCreateLarkClientById(id)
-	// 	try {
-	// 		const result = await client.im.chat.list()
-	// 		const items = result.data.items
-	// 		return items.map((item) => ({
-	// 			value: item.chat_id,
-	// 			label: item.name,
-	// 			icon: item.avatar
-	// 		}))
-	// 	} catch (err: any) {
-	// 		if ((<AxiosError>err).response?.data) {
-	// 			throw new BadRequestException(err.response.data.msg)
-	// 		}
-	// 		throw new BadRequestException(err)
-	// 	}
-	// }
-
-	// @Get('user-select-options')
-	// async getUserSelectOptions(@Query('integration') id: string) {
-	// 	if (!id) {
-	// 		throw new BadRequestException(
-	// 			await this.core.i18n.t('integration.Lark.Error_SelectAIntegration', {
-	// 				lang: mapTranslationLanguage(RequestContext.getLanguageCode())
-	// 			})
-	// 		)
-	// 	}
-	// 	const client = await this.larkChannel.getOrCreateLarkClientById(id)
-
-	// 	try {
-	// 		const result = await client.contact.user.list({
-	// 			params: {}
-	// 		})
-	// 		const items = result.data.items
-
-	// 		// Use open_id to match resolveReceiveId() in LarkChannelStrategy
-	// 		return items.map((item) => ({
-	// 			value: item.open_id,
-	// 			label: item.name || item.email || item.mobile,
-	// 			icon: item.avatar
-	// 		}))
-	// 	} catch (err: any) {
-	// 		if ((<AxiosError>err).response?.data) {
-	// 			throw new BadRequestException(err.response.data.msg)
-	// 		}
-	// 		throw new BadRequestException(err)
-	// 	}
-	// }
 }

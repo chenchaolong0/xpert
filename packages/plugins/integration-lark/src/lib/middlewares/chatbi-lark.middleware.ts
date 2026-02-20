@@ -152,16 +152,6 @@ const middlewareConfigSchema = z.object({
   dataPermission: z.boolean().optional().nullable().default(false),
   dataLimit: z.number().int().min(1).default(100),
   timeouts: z.number().int().min(100).default(DEFAULT_TIMEOUT_MS),
-  tools: z
-    .object({
-      welcome: z.boolean().default(true),
-      answer_question: z.boolean().default(true),
-      get_available_cubes: z.boolean().default(true),
-      get_cube_context: z.boolean().default(true),
-      dimension_member_retriever: z.boolean().default(true),
-      create_indicator: z.boolean().default(true)
-    })
-    .default({})
 })
 
 const chatBIStateSchema = z.object({
@@ -542,17 +532,6 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
           default: DEFAULT_TIMEOUT_MS,
           minimum: 100
         },
-        tools: {
-          type: 'object',
-          properties: {
-            welcome: { type: 'boolean', default: true },
-            answer_question: { type: 'boolean', default: true },
-            get_available_cubes: { type: 'boolean', default: true },
-            get_cube_context: { type: 'boolean', default: true },
-            dimension_member_retriever: { type: 'boolean', default: true },
-            create_indicator: { type: 'boolean', default: true }
-          }
-        }
       }
     } as TAgentMiddlewareMeta['configSchema']
   }
@@ -566,7 +545,7 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
     if (error) {
       throw new Error(`ChatBILarkMiddleware configuration error: ${error.message}`)
     }
-    const parsed = data!
+    const parsed = data! as any
     const analyticsPermissionService = this.analyticsPermissionService
     const modelIds = extractChatBIModelIds(parsed.models)
     const fallbackModels = normalizeModels(parsed.models)

@@ -41,8 +41,10 @@ POST /api/lark/webhook/:integrationId
   - `lark_recall_message`
   - `lark_list_users`
   - `lark_list_chats`
-- `integrationId` source priority: tool parameters > middleware config.
-- Runtime state variables can be injected via Mustache templates (for example: `{{channel.foo}}`).
+- `integrationId` is resolved from middleware config only (`configSchema.integrationId`).
+- Send targets are resolved from `configSchema.recipients` only.
+- `recipients[].id` supports runtime state variable paths (for example: `runtime.chatId`).
+- Runtime state variables can still be injected via Mustache templates (for example: `{{channel.foo}}`).
 
 ## License
 
