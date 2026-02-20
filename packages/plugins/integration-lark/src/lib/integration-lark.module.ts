@@ -14,7 +14,7 @@ import {
 	LarkChatRunStateService,
 	LarkChatStreamCallbackProcessor,
 } from './handoff'
-import { ChatBILarkMiddleware } from './middlewares'
+import { ChatBILarkMiddleware, LarkNotifyMiddleware } from './middlewares'
 import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 
 @XpertServerPlugin({
@@ -33,14 +33,16 @@ import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 		LarkChatStreamCallbackProcessor,
 		...CommandHandlers,
 		LarkTokenStrategy,
-		ChatBILarkMiddleware
+		ChatBILarkMiddleware,
+		LarkNotifyMiddleware
 	],
 	exports: [
 		LarkChannelStrategy,
 		LarkIntegrationStrategy,
 		LarkTriggerStrategy,
 		LarkChatDispatchService,
-		ChatBILarkMiddleware
+		ChatBILarkMiddleware,
+		LarkNotifyMiddleware
 	]
 })
 export class IntegrationLarkPlugin implements IOnPluginBootstrap, IOnPluginDestroy {

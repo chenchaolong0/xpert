@@ -352,13 +352,14 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 
 	async updateMessage(ctx: TChatContext, messageId: string, content: string | any): Promise<TChatSendResult> {
 		try {
-			const client = await this.getOrCreateLarkClientById(ctx.integration.id)
 			const contentStr = typeof content === 'string' ? JSON.stringify({ text: content }) : JSON.stringify(content)
-
-			await client.im.message.patch({
+			const result = await this.patchMessage(ctx.integration.id, {
 				path: { message_id: messageId },
 				data: { content: contentStr }
 			})
+			if (!result) {
+				return { success: false, error: 'Failed to update message' }
+			}
 			return { success: true, messageId }
 		} catch (error: any) {
 			this.logger.error('Failed to update message:', error)
@@ -568,6 +569,21 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		try {
 			const client = await this.getOrCreateLarkClientById(integrationId)
 			return await client.im.message.patch(payload)
+		} catch (err: any) {
+			this.logger.error(err)
+			return null
+		}
+	}
+
+	async deleteMessage(integrationId: string, messageId: string) {
+		if (!messageId) {
+			return null
+		}
+		try {
+			const client = await this.getOrCreateLarkClientById(integrationId)
+			return await (client.im.message as any).delete({
+				path: { message_id: messageId }
+			})
 		} catch (err: any) {
 			this.logger.error(err)
 			return null

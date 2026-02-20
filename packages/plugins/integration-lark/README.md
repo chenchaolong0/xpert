@@ -9,6 +9,7 @@ Lark (Feishu) integration plugin for Xpert AI platform.
 - Send text, markdown, and interactive card messages
 - @mention detection in group chats
 - Message update support (streaming)
+- Middleware built-in notify tools (`LarkNotifyMiddleware`)
 
 ## Installation
 
@@ -29,6 +30,19 @@ Configure the Lark integration in the Xpert AI admin panel:
 ```
 POST /api/lark/webhook/:integrationId
 ```
+
+## Migration
+
+- `feishu_create_message` (builtin `feishu_message` toolset in `server-ai`) is deprecated.
+- Use `LarkNotifyMiddleware` tools instead:
+  - `lark_send_text_notification`
+  - `lark_send_rich_notification`
+  - `lark_update_message`
+  - `lark_recall_message`
+  - `lark_list_users`
+  - `lark_list_chats`
+- `integrationId` source priority: tool parameters > middleware config.
+- Runtime state variables can be injected via Mustache templates (for example: `{{channel.foo}}`).
 
 ## License
 
