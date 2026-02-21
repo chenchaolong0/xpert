@@ -198,20 +198,34 @@ export class LarkHooksController {
 		}
 	}
 
+	@Get(':id/users')
+	async getUsers(@Param('id') id: string) {
+		return this.getUsersByIntegrationId(id)
+	}
+
 	@Get('user-select-options')
 	async getUserSelectOptions(@Query('integration') id: string) {
+		return this.getUsersByIntegrationId(id)
+	}
+
+	private async getUsersByIntegrationId(id: string) {
 		if (!id) {
 			throw new BadRequestException(t('integration.Lark.Error_SelectAIntegration'))
 		}
 		const client = await this.larkChannel.getOrCreateLarkClientById(id)
 
 		try {
-			const result = await client.contact.user.list({
-				params: {}
-			})
+			const result = await client.contact.v3.user.findByDepartment({
+                params: {
+                  user_id_type: 'open_id',
+                  department_id_type: 'open_department_id',
+                  department_id: '0',
+                  page_size: 50,
+                  page_token: undefined
+                },
+              })
 			const items = result.data.items
 
-			// Use open_id to match resolveReceiveId() in LarkChannelStrategy
 			return items.map((item) => ({
 				value: item.open_id,
 				label: item.name || item.email || item.mobile,

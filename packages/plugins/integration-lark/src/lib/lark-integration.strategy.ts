@@ -199,7 +199,7 @@ export class LarkIntegrationStrategy implements IntegrationStrategy<TIntegration
 
       const apiBaseUrl = process.env.API_BASE_URL
       return {
-        webhookUrl: `${apiBaseUrl}/api/lark/webhook/${integration.id}`
+        webhookUrl: `${apiBaseUrl}/api/lark/webhook/${integration.id || '<save_and_get_your_integration_id>'}`
       }
     } catch (error: any) {
       const axiosError = error as AxiosError<{ code?: number; msg?: string }>
