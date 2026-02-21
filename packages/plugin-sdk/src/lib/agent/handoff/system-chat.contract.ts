@@ -11,9 +11,7 @@ export interface SystemChatCallbackTarget {
 
 export interface SystemChatDispatchPayload extends Record<string, unknown> {
 	request: TChatRequest
-	options: TChatOptions & {
-		xpertId: string
-	}
+	options: TChatOptions
 	callback: SystemChatCallbackTarget
 }
 

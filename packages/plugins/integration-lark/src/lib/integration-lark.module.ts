@@ -2,6 +2,7 @@ import chalk from 'chalk'
 import { XpertServerPlugin, IOnPluginBootstrap, IOnPluginDestroy } from '@xpert-ai/plugin-sdk'
 import { CqrsModule } from '@nestjs/cqrs'
 import { DiscoveryModule } from '@nestjs/core'
+import { TypeOrmModule } from '@nestjs/typeorm'
 
 import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LarkIntegrationStrategy } from './lark-integration.strategy'
@@ -13,6 +14,8 @@ import {
 	LarkChatRunStateService,
 	LarkChatStreamCallbackProcessor,
 } from './handoff'
+import { LarkConversationBindingEntity } from './entities/lark-conversation-binding.entity'
+import { LarkTriggerBindingEntity } from './entities/lark-trigger-binding.entity'
 import { ChatBILarkMiddleware, LarkNotifyMiddleware } from './middlewares'
 import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 
@@ -20,7 +23,9 @@ import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 	imports: [
 		DiscoveryModule,
 		CqrsModule,
+		TypeOrmModule.forFeature([LarkConversationBindingEntity, LarkTriggerBindingEntity]),
 	],
+	entities: [LarkConversationBindingEntity, LarkTriggerBindingEntity],
 	controllers: [LarkHooksController],
 	providers: [
 		LarkConversationService,

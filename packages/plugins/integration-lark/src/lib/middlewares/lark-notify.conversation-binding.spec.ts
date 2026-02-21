@@ -173,6 +173,41 @@ describe('LarkNotifyMiddleware conversation binding', () => {
     )
   })
 
+  it('uses open_id key for open_id recipient and non-open_id key for email recipient', async () => {
+    const openIdFixture = await createFixture({
+      config: {
+        recipient_type: 'open_id',
+        recipient_id: 'ou_target_2'
+      }
+    })
+    await getTool(openIdFixture.middleware, 'lark_send_text_notification').invoke(
+      { content: 'open-id key' },
+      { metadata: { tool_call_id: 'tool-call-2-1' } }
+    )
+
+    const emailFixture = await createFixture({
+      config: {
+        recipient_type: 'email',
+        recipient_id: 'target2@example.com'
+      }
+    })
+    await getTool(emailFixture.middleware, 'lark_send_text_notification').invoke(
+      { content: 'email key' },
+      { metadata: { tool_call_id: 'tool-call-2-2' } }
+    )
+
+    expect(openIdFixture.conversationService.setConversation).toHaveBeenCalledWith(
+      'open_id:ou_target_2',
+      'xpert-ctx-1',
+      'conversation-ctx-1'
+    )
+    expect(emailFixture.conversationService.setConversation).toHaveBeenCalledWith(
+      'email:target2@example.com',
+      'xpert-ctx-1',
+      'conversation-ctx-1'
+    )
+  })
+
   it('skips conversation binding for chat_id recipient', async () => {
     const { middleware, conversationService } = await createFixture({
       config: {

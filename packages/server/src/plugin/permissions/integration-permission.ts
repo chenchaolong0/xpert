@@ -1,13 +1,16 @@
+import { IIntegration } from "@metad/contracts"
 import { Injectable } from "@nestjs/common"
 import { ModuleRef } from "@nestjs/core"
 import { IntegrationPermissionService } from "@xpert-ai/plugin-sdk"
-import { IntegrationService } from "../../integration"
+import { FindOneOptions } from "typeorm"
+import { IntegrationService } from "../../integration/integration.service"
+import { Integration } from "../../core/entities/internal"
 
 @Injectable()
 export class PluginIntegrationPermissionService implements IntegrationPermissionService {
   constructor(private readonly moduleRef: ModuleRef) {}
 
-  async read<TIntegration = any>(id: string, options?: Record<string, any>): Promise<TIntegration | null> {
+  async read<TIntegration = IIntegration>(id: string, options?: FindOneOptions<Integration>): Promise<TIntegration | null> {
     if (!id) {
       return null
     }
@@ -25,7 +28,7 @@ export class PluginIntegrationPermissionService implements IntegrationPermission
 		}
 
     try {
-      return (await integrationService.findOne(id, options as any)) as TIntegration
+      return (await integrationService.readOneById(id, options)) as TIntegration
     } catch {
       return null
     }

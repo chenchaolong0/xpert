@@ -1,6 +1,7 @@
 import { CACHE_MANAGER } from '@nestjs/cache-manager'
 import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
 import { CommandBus } from '@nestjs/cqrs'
+import { InjectRepository } from '@nestjs/typeorm'
 import {
   CancelConversationCommand,
   INTEGRATION_PERMISSION_SERVICE_TOKEN,
@@ -14,6 +15,7 @@ import {
 } from '@xpert-ai/plugin-sdk'
 import Bull, { Queue } from 'bull'
 import { Cache } from 'cache-manager'
+import { Repository } from 'typeorm'
 import { ChatLarkMessage } from './message'
 import {
   normalizeConversationUserKey,
@@ -34,6 +36,7 @@ import {
   TIntegrationLarkOptions,
   TLarkEvent
 } from './types'
+import { LarkConversationBindingEntity } from './entities/lark-conversation-binding.entity'
 import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 
 type LarkConversationQueueJob = ChatLarkContext & {
@@ -50,6 +53,15 @@ type LarkActiveMessage = {
     elements?: any[]
     status?: string
   }
+}
+
+export type LarkDispatchExecutionContextSource = 'exact' | 'xpert-latest' | 'request-fallback'
+
+export interface LarkDispatchExecutionContext {
+  tenantId?: string
+  organizationId?: string
+  createdById?: string
+  source: LarkDispatchExecutionContextSource
 }
 
 /**
@@ -79,6 +91,8 @@ export class LarkConversationService implements OnModuleDestroy {
     @Inject(CACHE_MANAGER)
     private readonly cacheManager: Cache,
     private readonly larkChannel: LarkChannelStrategy,
+    @InjectRepository(LarkConversationBindingEntity)
+    private readonly conversationBindingRepository: Repository<LarkConversationBindingEntity>,
     @Inject(LARK_PLUGIN_CONTEXT)
     private readonly pluginContext: PluginContext
   ) {}
@@ -111,7 +125,25 @@ export class LarkConversationService implements OnModuleDestroy {
       return undefined
     }
     const key = this.getConversationCacheKey(normalizedUserKey, normalizedXpertId)
-    return await this.cacheManager.get<string>(key)
+    const cachedConversationId = await this.cacheManager.get<string>(key)
+    if (cachedConversationId) {
+      return cachedConversationId
+    }
+
+    const binding = await this.conversationBindingRepository.findOne({
+      where: {
+        conversationUserKey: normalizedUserKey,
+        xpertId: normalizedXpertId
+      }
+    })
+
+    const conversationId = normalizeConversationUserKey(binding?.conversationId)
+    if (!conversationId) {
+      return undefined
+    }
+
+    await this.cacheConversation(normalizedUserKey, normalizedXpertId, conversationId)
+    return conversationId
   }
 
   /**
@@ -128,8 +160,101 @@ export class LarkConversationService implements OnModuleDestroy {
     if (!normalizedUserKey || !normalizedXpertId || !normalizedConversationId) {
       return
     }
-    const key = this.getConversationCacheKey(normalizedUserKey, normalizedXpertId)
-    await this.cacheManager.set(key, normalizedConversationId, LarkConversationService.cacheTtlMs)
+
+    await this.cacheConversation(normalizedUserKey, normalizedXpertId, normalizedConversationId)
+
+    const userId = this.resolveOpenIdFromConversationUserKey(normalizedUserKey)
+    const bindingContext = this.resolveBindingContext()
+    await this.conversationBindingRepository.upsert(
+      {
+        userId: userId ?? null,
+        conversationUserKey: normalizedUserKey,
+        xpertId: normalizedXpertId,
+        conversationId: normalizedConversationId,
+        tenantId: bindingContext.tenantId ?? null,
+        organizationId: bindingContext.organizationId ?? null,
+        createdById: bindingContext.createdById ?? null,
+        updatedById: bindingContext.updatedById ?? null
+      },
+      userId ? ['userId'] : ['conversationUserKey', 'xpertId']
+    )
+  }
+
+  async getLatestConversationBindingByUserId(
+    userId: string
+  ): Promise<{ xpertId: string; conversationId: string; conversationUserKey: string } | null> {
+    const normalizedUserId = normalizeConversationUserKey(userId)
+    if (!normalizedUserId) {
+      return null
+    }
+
+    const binding = await this.conversationBindingRepository.findOne({
+      where: {
+        userId: normalizedUserId
+      }
+    })
+    if (!binding?.xpertId || !binding?.conversationId || !binding?.conversationUserKey) {
+      return null
+    }
+
+    return {
+      xpertId: binding.xpertId,
+      conversationId: binding.conversationId,
+      conversationUserKey: binding.conversationUserKey
+    }
+  }
+
+  async resolveDispatchExecutionContext(
+    xpertId: string,
+    conversationUserKey?: string
+  ): Promise<LarkDispatchExecutionContext> {
+    // Lark messages must execute in the xpert creator's org/user context when possible.
+    // We first try exact conversation binding, then fallback to latest binding in the same xpert.
+    const normalizedXpertId = normalizeConversationUserKey(xpertId)
+    if (!normalizedXpertId) {
+      return { source: 'request-fallback' }
+    }
+
+    const normalizedConversationUserKey = normalizeConversationUserKey(conversationUserKey)
+    const exactBinding = normalizedConversationUserKey
+      ? await this.conversationBindingRepository.findOne({
+          where: {
+            conversationUserKey: normalizedConversationUserKey,
+            xpertId: normalizedXpertId
+          }
+        })
+      : null
+
+    const needsXpertLatestBinding = !this.hasCompleteDispatchBindingContext(exactBinding)
+    const xpertLatestBinding = needsXpertLatestBinding
+      ? await this.conversationBindingRepository.findOne({
+          where: {
+            xpertId: normalizedXpertId
+          },
+          // When exact binding is missing/incomplete, use the newest known xpert context.
+          order: {
+            updatedAt: 'DESC'
+          }
+        })
+      : null
+
+    const tenantId =
+      this.normalizeBindingContextField(exactBinding?.tenantId) ??
+      this.normalizeBindingContextField(xpertLatestBinding?.tenantId)
+    const organizationId =
+      this.normalizeBindingContextField(exactBinding?.organizationId) ??
+      this.normalizeBindingContextField(xpertLatestBinding?.organizationId)
+    const createdById =
+      this.normalizeBindingContextField(exactBinding?.createdById) ??
+      this.normalizeBindingContextField(xpertLatestBinding?.createdById)
+
+    return {
+      tenantId,
+      organizationId,
+      createdById,
+      // Source marks how dispatch context was resolved for observability and debugging.
+      source: exactBinding ? 'exact' : xpertLatestBinding ? 'xpert-latest' : 'request-fallback'
+    }
   }
 
   async getActiveMessage(conversationUserKey: string, xpertId: string): Promise<LarkActiveMessage | null> {
@@ -161,6 +286,7 @@ export class LarkConversationService implements OnModuleDestroy {
     }
     await this.cacheManager.del(this.getConversationCacheKey(normalizedUserKey, normalizedXpertId))
     await this.cacheManager.del(this.getActiveMessageCacheKey(normalizedUserKey, normalizedXpertId))
+    await this.removeConversationBindingFromStore(normalizedUserKey, normalizedXpertId)
   }
 
   async ask(xpertId: string, content: string, message: ChatLarkMessage) {
@@ -188,9 +314,13 @@ export class LarkConversationService implements OnModuleDestroy {
       }
     }
 
-    const triggerXpertId = this.larkTriggerStrategy.getBoundXpertId(integrationId)
+    const normalizedSenderOpenId = normalizeConversationUserKey(senderOpenId)
+    const latestBinding = normalizedSenderOpenId
+      ? await this.getLatestConversationBindingByUserId(normalizedSenderOpenId)
+      : null
+    const triggerXpertId = latestBinding ? null : await this.larkTriggerStrategy.getBoundXpertId(integrationId)
     const fallbackXpertId = integration.options?.xpertId
-    const targetXpertId = triggerXpertId ?? fallbackXpertId
+    const targetXpertId = latestBinding?.xpertId ?? triggerXpertId ?? fallbackXpertId
 
     if (!targetXpertId) {
       await this.larkChannel.errorMessage(
@@ -203,11 +333,21 @@ export class LarkConversationService implements OnModuleDestroy {
       return null
     }
 
-    const conversationUserKey = resolveConversationUserKey({
-      senderOpenId,
-      fallbackUserId: userId
-    })
-    const activeMessage = await this.getActiveMessage(conversationUserKey ?? userId, targetXpertId)
+    const conversationUserKey =
+      latestBinding?.conversationUserKey ??
+      resolveConversationUserKey({
+        senderOpenId,
+        fallbackUserId: userId
+      }) ??
+      userId
+    if (latestBinding?.conversationUserKey && latestBinding?.conversationId) {
+      await this.cacheConversation(
+        latestBinding.conversationUserKey,
+        latestBinding.xpertId,
+        latestBinding.conversationId
+      )
+    }
+    const activeMessage = await this.getActiveMessage(conversationUserKey, targetXpertId)
     const larkMessage = new ChatLarkMessage(
       { ...options, larkChannel: this.larkChannel },
       {
@@ -215,6 +355,14 @@ export class LarkConversationService implements OnModuleDestroy {
         language: activeMessage?.thirdPartyMessage?.language || integration.options?.preferLanguage
       }
     )
+
+    if (latestBinding) {
+      return await this.dispatchService.enqueueDispatch({
+        xpertId: targetXpertId,
+        input: text,
+        larkMessage
+      })
+    }
 
     const handledByTrigger = await this.larkTriggerStrategy.handleInboundMessage({
       integrationId,
@@ -325,6 +473,61 @@ export class LarkConversationService implements OnModuleDestroy {
         }
       })
     }
+  }
+
+  private async cacheConversation(
+    conversationUserKey: string,
+    xpertId: string,
+    conversationId: string
+  ): Promise<void> {
+    const key = this.getConversationCacheKey(conversationUserKey, xpertId)
+    await this.cacheManager.set(key, conversationId, LarkConversationService.cacheTtlMs)
+  }
+
+  private resolveOpenIdFromConversationUserKey(conversationUserKey: string): string | null {
+    if (!conversationUserKey.startsWith('open_id:')) {
+      return null
+    }
+    const openId = normalizeConversationUserKey(conversationUserKey.slice('open_id:'.length))
+    return openId ?? null
+  }
+
+  private resolveBindingContext(): {
+    tenantId: string | null
+    organizationId: string | null
+    createdById: string | null
+    updatedById: string | null
+  } {
+    const tenantId = RequestContext.currentTenantId()
+    const organizationId = RequestContext.getOrganizationId()
+    const userId = RequestContext.currentUserId()
+    return {
+      tenantId: tenantId ?? null,
+      organizationId: organizationId ?? null,
+      createdById: userId ?? null,
+      updatedById: userId ?? null
+    }
+  }
+
+  private hasCompleteDispatchBindingContext(
+    binding?: Pick<LarkConversationBindingEntity, 'tenantId' | 'organizationId' | 'createdById'> | null
+  ): boolean {
+    return Boolean(
+      this.normalizeBindingContextField(binding?.tenantId) &&
+        this.normalizeBindingContextField(binding?.organizationId) &&
+        this.normalizeBindingContextField(binding?.createdById)
+    )
+  }
+
+  private normalizeBindingContextField(value: unknown): string | undefined {
+    return normalizeConversationUserKey(value) ?? undefined
+  }
+
+  private async removeConversationBindingFromStore(conversationUserKey: string, xpertId: string): Promise<void> {
+    await this.conversationBindingRepository.delete({
+      conversationUserKey,
+      xpertId
+    })
   }
 
   private getConversationCacheKey(conversationUserKey: string, xpertId: string): string {
@@ -509,12 +712,6 @@ export class LarkConversationService implements OnModuleDestroy {
    * @param ctx - Event context containing integration info
    */
   async handleCardAction(action: TChatCardAction, ctx: TChatEventContext<TIntegrationLarkOptions>): Promise<void> {
-    const { xpertId } = ctx.integration.options ?? {}
-    if (!xpertId) {
-      this.logger.warn('No xpertId configured for integration')
-      return
-    }
-
     const user = RequestContext.currentUser()
     if (!user) {
       this.logger.warn('No user in request context, cannot handle card action')
@@ -526,10 +723,28 @@ export class LarkConversationService implements OnModuleDestroy {
       return
     }
 
+    const normalizedActionOpenId = normalizeConversationUserKey(action.userId)
     const conversationUserKey = toOpenIdConversationUserKey(action.userId)
     if (!conversationUserKey) {
       this.logger.warn('Missing Lark action user open_id, skip card action conversation handling')
       return
+    }
+
+    const latestBinding = normalizedActionOpenId
+      ? await this.getLatestConversationBindingByUserId(normalizedActionOpenId)
+      : null
+    const xpertId = latestBinding?.xpertId ?? normalizeConversationUserKey(ctx.integration.options?.xpertId)
+    if (!xpertId) {
+      this.logger.warn('No xpertId configured for integration')
+      return
+    }
+    const resolvedConversationUserKey = latestBinding?.conversationUserKey ?? conversationUserKey
+    if (latestBinding?.conversationUserKey && latestBinding?.conversationId) {
+      await this.cacheConversation(
+        latestBinding.conversationUserKey,
+        latestBinding.xpertId,
+        latestBinding.conversationId
+      )
     }
 
     await this.onAction(
@@ -543,7 +758,7 @@ export class LarkConversationService implements OnModuleDestroy {
         senderOpenId: action.userId,
         chatId: action.chatId
       } as ChatLarkContext,
-      conversationUserKey,
+      resolvedConversationUserKey,
       xpertId,
       action.messageId
     )

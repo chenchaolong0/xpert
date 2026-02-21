@@ -53,11 +53,11 @@ describe('LarkChatStreamCallbackProcessor', () => {
 		}
 
 		const processor = new LarkChatStreamCallbackProcessor(
-			conversationService as any,
 			larkChannel as any,
 			runStateService,
 			pluginContext as any
 		)
+		;(processor as any).conversationService = conversationService as any
 
 		return {
 			runStateService,

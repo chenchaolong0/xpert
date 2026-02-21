@@ -1,18 +1,33 @@
 import { environment as env, getConfig, setConfig } from '@metad/server-config'
-import { AppService, AuthGuard, initI18next, loadOrganizationPluginConfigs, PluginModule, registerPluginsAsync, ServerAppModule, SharedModule } from '@metad/server-core'
+import {
+	AppService,
+	AuthGuard,
+	coreEntities,
+	coreSubscribers,
+	getEntitiesFromPlugins,
+	getSubscribersFromPlugins,
+	initI18next,
+	loadOrganizationPluginConfigs,
+	PluginModule,
+	registerPluginsAsync,
+	ServerAppModule,
+	SharedModule
+} from '@metad/server-core'
 import { IPluginConfig } from '@metad/server-common'
-import { DynamicModule, Logger, LogLevel, Module } from '@nestjs/common'
+import { ConflictException, DynamicModule, Logger, LogLevel, Module, Type } from '@nestjs/common'
 import { NestFactory, Reflector } from '@nestjs/core'
 import { NestExpressApplication } from '@nestjs/platform-express'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import { GLOBAL_ORGANIZATION_SCOPE } from '@xpert-ai/plugin-sdk'
 import { useContainer } from 'class-validator';
+import chalk from 'chalk';
 import cookieParser from 'cookie-parser'
 import { json, text, urlencoded } from 'express'
 import expressSession from 'express-session'
 import i18next from 'i18next'
 import * as middleware from 'i18next-http-middleware'
 import path from 'path'
+import { EntitySubscriberInterface } from 'typeorm'
 import { AnalyticsModule } from '../app.module'
 import { AnalyticsService } from '../app.service'
 import { BootstrapModule } from './bootstrap.module'
@@ -121,6 +136,8 @@ export async function bootstrap(options: {title: string; version: string}) {
  * @returns A promise that resolves to the final application configuration after pre-bootstrap operations.
  */
 export async function preBootstrapApplicationConfig(applicationConfig: Partial<IPluginConfig>) {
+	console.time(chalk.yellow('✔ Pre Bootstrap Application Config Time'));
+
 	if (Object.keys(applicationConfig).length > 0) {
 		// Set initial configuration if any properties are provided
 		setConfig(applicationConfig);
@@ -128,7 +145,21 @@ export async function preBootstrapApplicationConfig(applicationConfig: Partial<I
 
 	await preBootstrapPlugins();
 
-	return getConfig()
+	// Register core and plugin entities and subscribers
+	const entities = await preBootstrapRegisterEntities(applicationConfig);
+	const subscribers = await preBootstrapRegisterSubscribers(applicationConfig);
+
+	setConfig({
+		dbConnectionOptions: {
+			entities: entities as Array<Type<any>>, // Core and plugin entities
+			subscribers: subscribers as Array<Type<EntitySubscriberInterface>> // Core and plugin subscribers
+		},
+	});
+	
+	const config = getConfig()
+	
+	console.timeEnd(chalk.yellow('✔ Pre Bootstrap Application Config Time'));
+	return config;
 }
 
 export async function preBootstrapPlugins() {
@@ -169,7 +200,21 @@ export async function preBootstrapPlugins() {
 		}
 	}
 
-	setConfig({plugins: modules});
+	const existingEntities = Array.isArray(getConfig().dbConnectionOptions?.entities)
+		? (getConfig().dbConnectionOptions.entities as Array<any>)
+		: getConfig().dbConnectionOptions?.entities
+		? Object.values(getConfig().dbConnectionOptions.entities as Record<string, any>)
+		: []
+	const pluginEntities = getEntitiesFromPlugins(modules)
+	const mergedEntities = Array.from(new Set([...existingEntities, ...pluginEntities]))
+
+	setConfig({
+		plugins: modules,
+		dbConnectionOptions: {
+			autoLoadEntities: true,
+			entities: mergedEntities
+		}
+	})
 }
 
 function origins(...urls: string[]) {
@@ -185,4 +230,97 @@ function origins(...urls: string[]) {
 	}
 	}
   return results.map((u) => u.replace(/\/+$/, ''))
+}
+
+/**
+ * Register entities from core and plugin configurations.
+ * Ensures no conflicts between core entities and plugin entities.
+ *
+ * @param config - Plugin configuration containing plugin entities.
+ * @returns A promise that resolves to an array of registered entity types.
+ */
+export async function preBootstrapRegisterEntities(
+	config: Partial<IPluginConfig>
+): Promise<Array<Type<any>>> {
+	try {
+		console.time(chalk.yellow('✔ Pre Bootstrap Register Entities Time'));
+		// Retrieve core entities and plugin entities
+		const coreEntitiesList = [...coreEntities] as Array<Type<any>>;
+		const pluginEntitiesList = getEntitiesFromPlugins(config.plugins);
+
+		// Check for conflicts and merge entities
+		const registeredEntities = mergeEntities(coreEntitiesList, pluginEntitiesList);
+
+		console.timeEnd(chalk.yellow('✔ Pre Bootstrap Register Entities Time'));
+		return registeredEntities;
+	} catch (error) {
+		console.log(chalk.red('Error registering entities:'), error);
+	}
+}
+
+
+/**
+ * Merges core entities and plugin entities, ensuring no conflicts.
+ *
+ * @param coreEntities - Array of core entities.
+ * @param pluginEntities - Array of plugin entities from the plugins.
+ * @returns The merged array of entities.
+ * @throws ConflictException if a plugin entity conflicts with a core entity.
+ */
+function mergeEntities(coreEntities: Array<Type<any>>, pluginEntities: Array<Type<any>>): Array<Type<any>> {
+	for (const pluginEntity of pluginEntities) {
+		const entityName = pluginEntity.name;
+
+		if (coreEntities.some((entity) => entity.name === entityName)) {
+			throw new ConflictException({ message: `Entity conflict: ${entityName} conflicts with core entities.` });
+		}
+
+		coreEntities.push(pluginEntity);
+	}
+
+	return coreEntities;
+}
+
+
+/**
+ * Registers subscriber entities from core and plugin configurations, ensuring no conflicts.
+ *
+ * @param config - The application configuration that might contain plugin subscribers.
+ * @returns A promise that resolves to an array of registered subscriber entity types.
+ */
+async function preBootstrapRegisterSubscribers(
+	config: Partial<IPluginConfig>
+): Promise<Array<Type<EntitySubscriberInterface>>> {
+	console.time(chalk.yellow('✔ Pre Bootstrap Register Subscribers Time'));
+
+	try {
+		// List of core subscribers
+		const subscribers = coreSubscribers as Array<Type<EntitySubscriberInterface>>;
+
+		// Get plugin subscribers from the application configuration
+		const pluginSubscribersList = getSubscribersFromPlugins(config.plugins);
+
+		// Check for conflicts and add new plugin subscribers
+		for (const pluginSubscriber of pluginSubscribersList) {
+			const subscriberName = pluginSubscriber.name;
+
+			// Check for name conflicts with core subscribers
+			if (subscribers.some((subscriber) => subscriber.name === subscriberName)) {
+				// Throw an exception if there's a conflict
+				throw new ConflictException({
+					message: `Error: ${subscriberName} conflicts with default subscribers.`
+				});
+			} else {
+				// Add the new plugin subscriber to the list if no conflict
+				subscribers.push(pluginSubscriber);
+			}
+		}
+
+		console.timeEnd(chalk.yellow('✔ Pre Bootstrap Register Subscribers Time'));
+
+		// Return the updated list of subscribers
+		return subscribers;
+	} catch (error) {
+		console.log(chalk.red('Error registering subscribers:'), error);
+	}
 }

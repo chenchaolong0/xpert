@@ -2,7 +2,7 @@ import {
 	LanguagesEnum,
 	TChatOptions
 } from '@metad/contracts'
-import { forwardRef, Inject, Injectable } from '@nestjs/common'
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common'
 import {
 	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	HandoffMessage,
@@ -44,6 +44,7 @@ export type TLarkChatDispatchInput = {
  */
 @Injectable()
 export class LarkChatDispatchService {
+	private readonly logger = new Logger(LarkChatDispatchService.name)
 	private _handoffPermissionService: HandoffPermissionService
 
 	constructor(
@@ -71,20 +72,37 @@ export class LarkChatDispatchService {
 
 	async buildDispatchMessage(input: TLarkChatDispatchInput): Promise<HandoffMessage<SystemChatDispatchPayload>> {
 		const { xpertId, larkMessage } = input
-		const userId = RequestContext.currentUserId()
-		const tenantId = RequestContext.currentTenantId()
-		if (!tenantId) {
-			throw new Error('Missing tenantId in request context')
-		}
-
-		const organizationId = RequestContext.getOrganizationId()
+		const requestUserId = RequestContext.currentUserId()
+		const requestTenantId = RequestContext.currentTenantId()
+		const requestOrganizationId = RequestContext.getOrganizationId()
 		const conversationUserKey = resolveConversationUserKey({
 			senderOpenId: larkMessage.senderOpenId,
-			fallbackUserId: userId
+			fallbackUserId: requestUserId
 		})
 		const conversationId = conversationUserKey
 			? await this.conversationService.getConversation(conversationUserKey, xpertId)
 			: undefined
+		// Dispatch must run under xpert creator context; request context is only a safety fallback.
+		const dispatchContext = await this.conversationService.resolveDispatchExecutionContext(
+			xpertId,
+			conversationUserKey
+		)
+		const tenantId = dispatchContext.tenantId ?? requestTenantId
+		const organizationId = dispatchContext.organizationId ?? requestOrganizationId
+		const executorUserId = dispatchContext.createdById ?? requestUserId
+		if (!tenantId) {
+			throw new Error('Missing tenantId in resolved dispatch context')
+		}
+		if (!executorUserId) {
+			throw new Error('Missing executor userId in resolved dispatch context')
+		}
+		this.logger.debug(
+			`Resolved Lark dispatch context: source=${dispatchContext.source}, xpertId=${xpertId}, conversationUserKey=${
+				conversationUserKey ?? 'n/a'
+			}, tenantId=${tenantId}, organizationId=${organizationId ?? 'n/a'}, executorUserId=${executorUserId}, requestUserId=${
+				requestUserId ?? 'n/a'
+			}`
+		)
 
 		await larkMessage.update({ status: 'thinking' })
 		if (conversationUserKey) {
@@ -101,7 +119,7 @@ export class LarkChatDispatchService {
 		const callbackContext: LarkChatCallbackContext = {
 			tenantId,
 			organizationId,
-			userId,
+			userId: executorUserId,
 			xpertId,
 			integrationId: larkMessage.integrationId,
 			chatId: larkMessage.chatId,
@@ -147,10 +165,15 @@ export class LarkChatDispatchService {
 				options: {
 					xpertId,
 					from: 'feishu',
-					fromEndUserId: userId,
+					// Keep the inbound Lark user as end-user identity for conversation attribution.
+					fromEndUserId: requestUserId,
 					tenantId,
 					organizationId,
-					user: RequestContext.currentUser(),
+					// Force execution user to xpert creator (minimal shape is enough for downstream context).
+					user: {
+						id: executorUserId,
+						tenantId
+					},
 					language: language as LanguagesEnum,
 					channelType: 'lark',
 					integrationId: larkMessage.integrationId,
@@ -161,7 +184,8 @@ export class LarkChatDispatchService {
 					messageType: LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
 					headers: {
 						...(organizationId ? { organizationId } : {}),
-						...(userId ? { userId } : {}),
+						// Callback/user headers must use executor user so system-chat runs in creator context.
+						...(executorUserId ? { userId: executorUserId } : {}),
 						...(language ? { language } : {}),
 						...(conversationId ? { conversationId } : {}),
 						source: 'lark',
@@ -174,7 +198,8 @@ export class LarkChatDispatchService {
 			} as SystemChatDispatchPayload,
 			headers: {
 				...(organizationId ? { organizationId } : {}),
-				...(userId ? { userId } : {}),
+				// Queue-level user header drives request context reconstruction in system-chat processor.
+				...(executorUserId ? { userId: executorUserId } : {}),
 				...(language ? { language } : {}),
 				...(conversationId ? { conversationId } : {}),
 				source: 'lark',

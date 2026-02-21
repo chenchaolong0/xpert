@@ -141,7 +141,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-function renderTemplateString(
+export function renderTemplateString(
   value: string,
   state: Record<string, unknown>,
   options: { enabled: boolean; strict: boolean }
@@ -185,7 +185,7 @@ function renderTemplateString(
   })
 }
 
-function renderTemplateValue<T>(
+export function renderTemplateValue<T>(
   value: T,
   state: Record<string, unknown>,
   options: { enabled: boolean; strict: boolean }

@@ -29,6 +29,8 @@
           "@nestjs/core",
           "@nestjs/cqrs",
           "@nestjs/microservices",
+          "@nestjs/typeorm",
+          "typeorm",
           "@larksuiteoapi/node-sdk",
           "kafkajs",
           "amqplib",
