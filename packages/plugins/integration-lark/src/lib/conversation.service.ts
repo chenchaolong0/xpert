@@ -3,6 +3,9 @@ import { forwardRef, Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs
 import { CommandBus } from '@nestjs/cqrs'
 import {
   CancelConversationCommand,
+  INTEGRATION_PERMISSION_SERVICE_TOKEN,
+  IntegrationPermissionService,
+  PluginContext,
   RequestContext,
   runWithRequestContext,
   TChatCardAction,
@@ -11,13 +14,16 @@ import {
 } from '@xpert-ai/plugin-sdk'
 import Bull, { Queue } from 'bull'
 import { Cache } from 'cache-manager'
-import type { Observable } from 'rxjs'
 import { ChatLarkMessage } from './message'
-import { LarkMessageCommand } from './commands'
-import { normalizeConversationUserKey, toOpenIdConversationUserKey } from './conversation-user-key'
+import {
+  normalizeConversationUserKey,
+  resolveConversationUserKey,
+  toOpenIdConversationUserKey
+} from './conversation-user-key'
 import { translate } from './i18n'
 import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LarkChatDispatchService } from './handoff/lark-chat-dispatch.service'
+import { LARK_PLUGIN_CONTEXT } from './tokens'
 import {
   ChatLarkContext,
   isConfirmAction,
@@ -25,8 +31,10 @@ import {
   isLarkCardActionValue,
   isRejectAction,
   resolveLarkCardActionValue,
-  TIntegrationLarkOptions
+  TIntegrationLarkOptions,
+  TLarkEvent
 } from './types'
+import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 
 type LarkConversationQueueJob = ChatLarkContext & {
   tenantId?: string
@@ -56,6 +64,8 @@ type LarkActiveMessage = {
 @Injectable()
 export class LarkConversationService implements OnModuleDestroy {
   private readonly logger = new Logger(LarkConversationService.name)
+  private _integrationPermissionService: IntegrationPermissionService
+  private _larkTriggerStrategy: LarkTriggerStrategy
 
   public static readonly prefix = 'lark:chat'
   private static readonly cacheTtlMs = 60 * 10 * 1000 // 10 min
@@ -68,8 +78,24 @@ export class LarkConversationService implements OnModuleDestroy {
     private readonly dispatchService: LarkChatDispatchService,
     @Inject(CACHE_MANAGER)
     private readonly cacheManager: Cache,
-    private readonly larkChannel: LarkChannelStrategy
+    private readonly larkChannel: LarkChannelStrategy,
+    @Inject(LARK_PLUGIN_CONTEXT)
+    private readonly pluginContext: PluginContext
   ) {}
+
+  private get integrationPermissionService(): IntegrationPermissionService {
+    if (!this._integrationPermissionService) {
+      this._integrationPermissionService = this.pluginContext.resolve(INTEGRATION_PERMISSION_SERVICE_TOKEN)
+    }
+    return this._integrationPermissionService
+  }
+
+  private get larkTriggerStrategy(): LarkTriggerStrategy {
+    if (!this._larkTriggerStrategy) {
+      this._larkTriggerStrategy = this.pluginContext.resolve(LarkTriggerStrategy)
+    }
+    return this._larkTriggerStrategy
+  }
 
   /**
    * Get conversation ID for a Lark participant to xpert.
@@ -143,6 +169,78 @@ export class LarkConversationService implements OnModuleDestroy {
       input: content,
       larkMessage: message
     })
+  }
+
+  async processMessage(options: ChatLarkContext<TLarkEvent>): Promise<unknown> {
+    const { userId, integrationId, message, input, senderOpenId } = options
+    const integration = await this.integrationPermissionService.read(integrationId)
+    if (!integration) {
+      throw new Error(`Integration ${integrationId} not found`)
+    }
+
+    let text = input
+    if (!text && message?.message?.content) {
+      try {
+        const textContent = JSON.parse(message.message.content)
+        text = textContent.text as string
+      } catch {
+        text = message.message.content as any
+      }
+    }
+
+    const triggerXpertId = this.larkTriggerStrategy.getBoundXpertId(integrationId)
+    const fallbackXpertId = integration.options?.xpertId
+    const targetXpertId = triggerXpertId ?? fallbackXpertId
+
+    if (!targetXpertId) {
+      await this.larkChannel.errorMessage(
+        {
+          integrationId,
+          chatId: options.chatId
+        },
+        new Error('No xpertId configured for this Lark integration. Please configure xpertId first.')
+      )
+      return null
+    }
+
+    const conversationUserKey = resolveConversationUserKey({
+      senderOpenId,
+      fallbackUserId: userId
+    })
+    const activeMessage = await this.getActiveMessage(conversationUserKey ?? userId, targetXpertId)
+    const larkMessage = new ChatLarkMessage(
+      { ...options, larkChannel: this.larkChannel },
+      {
+        text,
+        language: activeMessage?.thirdPartyMessage?.language || integration.options?.preferLanguage
+      }
+    )
+
+    const handledByTrigger = await this.larkTriggerStrategy.handleInboundMessage({
+      integrationId,
+      input: text,
+      larkMessage
+    })
+    if (handledByTrigger) {
+      return larkMessage
+    }
+
+    if (fallbackXpertId) {
+      return await this.dispatchService.enqueueDispatch({
+        xpertId: fallbackXpertId,
+        input: text,
+        larkMessage
+      })
+    }
+
+    await this.larkChannel.errorMessage(
+      {
+        integrationId,
+        chatId: options.chatId
+      },
+      new Error('No xpertId configured for this Lark integration. Please configure xpertId first.')
+    )
+    return null
   }
 
   /**
@@ -305,7 +403,7 @@ export class LarkConversationService implements OnModuleDestroy {
           {},
           async () => {
             try {
-              await this.commandBus.execute<LarkMessageCommand, Observable<any>>(new LarkMessageCommand(job.data))
+              await this.processMessage(job.data as ChatLarkContext<TLarkEvent>)
               return `Processed message: ${job.id}`
             } catch (err) {
               this.logger.error(err)

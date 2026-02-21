@@ -1,6 +1,11 @@
 import { LarkConversationService } from './conversation.service'
-import { CancelConversationCommand, RequestContext } from '@xpert-ai/plugin-sdk'
+import {
+	CancelConversationCommand,
+	INTEGRATION_PERMISSION_SERVICE_TOKEN,
+	RequestContext
+} from '@xpert-ai/plugin-sdk'
 import { ChatLarkContext, LARK_CONFIRM, LARK_END_CONVERSATION, LARK_REJECT } from './types'
+import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 
 class MemoryCache {
 	private readonly store = new Map<string, unknown>()
@@ -32,12 +37,44 @@ describe('LarkConversationService', () => {
 		}
 	}
 
-	function createFixture() {
+	function createFixture(params?: {
+		boundXpertId?: string | null
+		triggerHandled?: boolean
+		legacyXpertId?: string | null
+	}) {
 		const commandBus = {
 			execute: jest.fn().mockResolvedValue(undefined)
 		}
 		const dispatchService = {
-			enqueueDispatch: jest.fn().mockResolvedValue(undefined)
+			enqueueDispatch: jest.fn().mockResolvedValue('ok')
+		}
+		const integrationPermissionService = {
+			read: jest.fn().mockResolvedValue({
+				id: 'integration-1',
+				options: {
+					xpertId: params?.legacyXpertId === undefined ? 'legacy-xpert' : params.legacyXpertId,
+					preferLanguage: 'en_US'
+				}
+			})
+		}
+		const larkTriggerStrategy = {
+			getBoundXpertId: jest
+				.fn()
+				.mockReturnValue(params?.boundXpertId === undefined ? null : params.boundXpertId),
+			handleInboundMessage: jest
+				.fn()
+				.mockResolvedValue(params?.triggerHandled === undefined ? false : params.triggerHandled)
+		}
+		const pluginContext = {
+			resolve: jest.fn((token: unknown) => {
+				if (token === INTEGRATION_PERMISSION_SERVICE_TOKEN) {
+					return integrationPermissionService
+				}
+				if (token === LarkTriggerStrategy) {
+					return larkTriggerStrategy
+				}
+				throw new Error(`Unexpected token: ${String(token)}`)
+			})
 		}
 		const cache = new MemoryCache()
 		const larkChannel = {
@@ -49,14 +86,17 @@ describe('LarkConversationService', () => {
 			commandBus as any,
 			dispatchService as any,
 			cache as any,
-			larkChannel as any
+			larkChannel as any,
+			pluginContext as any
 		)
 
 		return {
 			service,
 			commandBus,
 			dispatchService,
-			larkChannel
+			larkChannel,
+			integrationPermissionService,
+			larkTriggerStrategy
 		}
 	}
 
@@ -207,5 +247,95 @@ describe('LarkConversationService', () => {
 		)
 
 		expect(onAction).not.toHaveBeenCalled()
+	})
+
+	it('processMessage looks up active message by sender open_id key', async () => {
+		const { service } = createFixture()
+
+		const getActiveMessage = jest.spyOn(service, 'getActiveMessage')
+		await service.processMessage({
+			userId: 'user-1',
+			senderOpenId: 'ou_sender_1',
+			integrationId: 'integration-1',
+			chatId: 'chat-1',
+			message: {
+				message: {
+					content: JSON.stringify({ text: 'hello' })
+				}
+			}
+		} as any)
+
+		expect(getActiveMessage).toHaveBeenCalledWith('open_id:ou_sender_1', 'legacy-xpert')
+	})
+
+	it('processMessage prioritizes trigger strategy when trigger binding exists', async () => {
+		const { service, larkTriggerStrategy, dispatchService, larkChannel } = createFixture({
+			boundXpertId: 'trigger-xpert',
+			triggerHandled: true,
+			legacyXpertId: 'legacy-xpert'
+		})
+
+		await service.processMessage({
+			userId: 'user-1',
+			senderOpenId: 'ou_sender_1',
+			integrationId: 'integration-1',
+			chatId: 'chat-1',
+			message: {
+				message: {
+					content: JSON.stringify({ text: 'hello' })
+				}
+			}
+		} as any)
+
+		expect(larkTriggerStrategy.handleInboundMessage).toHaveBeenCalledTimes(1)
+		expect(dispatchService.enqueueDispatch).not.toHaveBeenCalled()
+		expect(larkChannel.errorMessage).not.toHaveBeenCalled()
+	})
+
+	it('processMessage falls back to legacy xpert dispatch when trigger is not handled', async () => {
+		const { service, larkTriggerStrategy, dispatchService } = createFixture({
+			boundXpertId: null,
+			triggerHandled: false,
+			legacyXpertId: 'legacy-xpert'
+		})
+
+		await service.processMessage({
+			userId: 'user-1',
+			senderOpenId: 'ou_sender_1',
+			integrationId: 'integration-1',
+			chatId: 'chat-1',
+			message: {
+				message: {
+					content: JSON.stringify({ text: 'hello' })
+				}
+			}
+		} as any)
+
+		expect(larkTriggerStrategy.handleInboundMessage).toHaveBeenCalledTimes(1)
+		expect(dispatchService.enqueueDispatch).toHaveBeenCalledTimes(1)
+		expect(dispatchService.enqueueDispatch.mock.calls[0][0].xpertId).toBe('legacy-xpert')
+	})
+
+	it('processMessage returns error when neither trigger nor legacy xpert is configured', async () => {
+		const { service, dispatchService, larkChannel } = createFixture({
+			boundXpertId: null,
+			triggerHandled: false,
+			legacyXpertId: null
+		})
+
+		await service.processMessage({
+			userId: 'user-1',
+			senderOpenId: 'ou_sender_1',
+			integrationId: 'integration-1',
+			chatId: 'chat-1',
+			message: {
+				message: {
+					content: JSON.stringify({ text: 'hello' })
+				}
+			}
+		} as any)
+
+		expect(dispatchService.enqueueDispatch).not.toHaveBeenCalled()
+		expect(larkChannel.errorMessage).toHaveBeenCalledTimes(1)
 	})
 })

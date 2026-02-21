@@ -8,7 +8,6 @@ import { LarkIntegrationStrategy } from './lark-integration.strategy'
 import { LarkHooksController } from './lark.controller'
 import { LarkConversationService } from './conversation.service'
 import { LarkTokenStrategy } from './auth/lark-token.strategy'
-import { CommandHandlers } from './commands/handlers'
 import {
 	LarkChatDispatchService,
 	LarkChatRunStateService,
@@ -31,7 +30,6 @@ import { LarkTriggerStrategy } from './workflow/lark-trigger.strategy'
 		LarkChatDispatchService,
 		LarkChatRunStateService,
 		LarkChatStreamCallbackProcessor,
-		...CommandHandlers,
 		LarkTokenStrategy,
 		ChatBILarkMiddleware,
 		LarkNotifyMiddleware

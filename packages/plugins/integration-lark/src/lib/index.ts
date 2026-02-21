@@ -1,4 +1,3 @@
-export * from './commands/index'
 export * from './integration-lark.module'
 export * from './lark-channel.strategy'
 export * from './lark-integration.strategy'
