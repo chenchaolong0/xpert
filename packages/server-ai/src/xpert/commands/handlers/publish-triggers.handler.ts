@@ -20,11 +20,12 @@ export class XpertPublishTriggersHandler implements ICommandHandler<XpertPublish
 	public async execute(command: XpertPublishTriggersCommand): Promise<void> {
 		const { xpert, options } = command
 		const strict = options?.strict ?? false
+		const providers = options?.providers?.length ? new Set(options.providers) : null
 		if (options?.previousGraph) {
-			await this.stopTriggers(xpert.id, options.previousGraph, strict)
+			await this.stopTriggers(xpert.id, options.previousGraph, strict, providers)
 		}
 
-		const triggers = this.listPublishedTriggers(xpert.graph)
+		const triggers = this.listPublishedTriggers(xpert.graph, providers)
 		for await (const trigger of triggers) {
 			let provider: IWorkflowTriggerStrategy<any>
 			try {
@@ -91,8 +92,13 @@ export class XpertPublishTriggersHandler implements ICommandHandler<XpertPublish
 		)
 	}
 
-	private async stopTriggers(xpertId: string, graph: TXpertGraph, strict: boolean) {
-		const triggers = this.listPublishedTriggers(graph)
+	private async stopTriggers(
+		xpertId: string,
+		graph: TXpertGraph,
+		strict: boolean,
+		providers?: Set<string> | null
+	) {
+		const triggers = this.listPublishedTriggers(graph, providers)
 		for (const trigger of triggers) {
 			let provider: IWorkflowTriggerStrategy<any>
 			try {
@@ -122,12 +128,13 @@ export class XpertPublishTriggersHandler implements ICommandHandler<XpertPublish
 		}
 	}
 
-	private listPublishedTriggers(graph?: TXpertGraph): IWFNTrigger[] {
+	private listPublishedTriggers(graph?: TXpertGraph, providers?: Set<string> | null): IWFNTrigger[] {
 		return (
 			graph?.nodes
 				?.filter((node) => node.type === 'workflow' && node.entity.type === WorkflowNodeTypeEnum.TRIGGER)
 				.map((node) => node.entity as IWFNTrigger)
-				.filter((node) => node.from && node.from !== 'chat') ?? []
+				.filter((node) => node.from && node.from !== 'chat')
+				.filter((node) => !providers || providers.has(node.from)) ?? []
 		)
 	}
 }

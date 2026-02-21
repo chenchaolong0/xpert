@@ -18,6 +18,7 @@ import { EnvironmentModule } from '../environment'
 import { WorkflowTriggerRegistry } from '@xpert-ai/plugin-sdk'
 import { SandboxModule } from '../sandbox/sandbox.module'
 import { HandoffQueueModule } from '../handoff/message-queue.module'
+import { XpertTriggerBootstrapRecoveryService } from './jobs/trigger-bootstrap-recovery.service'
 
 @Module({
     imports: [
@@ -38,7 +39,14 @@ import { HandoffQueueModule } from '../handoff/message-queue.module'
         HandoffQueueModule
     ],
     controllers: [XpertController],
-    providers: [XpertService, AnonymousStrategy, WorkflowTriggerRegistry, ...CommandHandlers, ...QueryHandlers],
+    providers: [
+        XpertService,
+        XpertTriggerBootstrapRecoveryService,
+        AnonymousStrategy,
+        WorkflowTriggerRegistry,
+        ...CommandHandlers,
+        ...QueryHandlers
+    ],
     exports: [XpertService]
 })
 export class XpertModule { }

@@ -197,4 +197,124 @@ describe('XpertPublishTriggersHandler', () => {
 			)
 		).resolves.toBeUndefined()
 	})
+
+	it('publishes only selected providers when options.providers is set', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const schedulePublish = jest.fn()
+		const larkPublish = jest.fn()
+		triggerRegistry.get.mockImplementation((provider: string) => {
+			if (provider === 'schedule') {
+				return {
+					publish: schedulePublish,
+					stop: jest.fn()
+				}
+			}
+			if (provider === 'lark') {
+				return {
+					publish: larkPublish,
+					stop: jest.fn()
+				}
+			}
+			throw new Error(`Unexpected provider ${provider}`)
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: {
+						nodes: [
+							{
+								type: 'workflow',
+								entity: {
+									type: 'trigger',
+									from: 'schedule',
+									config: { enabled: true, cron: '* * * * *', task: 'tick' }
+								}
+							},
+							{
+								type: 'workflow',
+								entity: {
+									type: 'trigger',
+									from: 'lark',
+									config: { enabled: true, integrationId: 'integration-1' }
+								}
+							}
+						]
+					}
+				} as any,
+				{
+					strict: true,
+					providers: ['schedule']
+				}
+			)
+		)
+
+		expect(schedulePublish).toHaveBeenCalledTimes(1)
+		expect(larkPublish).not.toHaveBeenCalled()
+		expect(triggerRegistry.get).toHaveBeenCalledTimes(1)
+		expect(triggerRegistry.get).toHaveBeenCalledWith('schedule')
+	})
+
+	it('stops only selected providers from previousGraph when options.providers is set', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const scheduleStop = jest.fn()
+		const larkStop = jest.fn()
+		triggerRegistry.get.mockImplementation((provider: string) => {
+			if (provider === 'schedule') {
+				return {
+					publish: jest.fn(),
+					stop: scheduleStop
+				}
+			}
+			if (provider === 'lark') {
+				return {
+					publish: jest.fn(),
+					stop: larkStop
+				}
+			}
+			throw new Error(`Unexpected provider ${provider}`)
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: {
+						nodes: []
+					}
+				} as any,
+				{
+					strict: true,
+					providers: ['schedule'],
+					previousGraph: {
+						nodes: [
+							{
+								type: 'workflow',
+								entity: {
+									type: 'trigger',
+									from: 'schedule',
+									config: { enabled: true, cron: '* * * * *', task: 'tick' }
+								}
+							},
+							{
+								type: 'workflow',
+								entity: {
+									type: 'trigger',
+									from: 'lark',
+									config: { enabled: true, integrationId: 'integration-1' }
+								}
+							}
+						],
+						connections: []
+					} as any
+				}
+			)
+		)
+
+		expect(scheduleStop).toHaveBeenCalledTimes(1)
+		expect(larkStop).not.toHaveBeenCalled()
+		expect(triggerRegistry.get).toHaveBeenCalledTimes(1)
+		expect(triggerRegistry.get).toHaveBeenCalledWith('schedule')
+	})
 })

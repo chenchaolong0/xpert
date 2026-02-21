@@ -1,8 +1,7 @@
-import { STATE_VARIABLE_HUMAN } from '@metad/contracts'
-import { XpertEnqueueTriggerDispatchCommand } from './commands'
+import { XpertPublishCommand } from './commands'
 import { XpertService } from './xpert.service'
 
-describe('XpertService trigger dispatch facade', () => {
+describe('XpertService command facade', () => {
 	function createService() {
 		const repository = {
 			findOne: jest.fn(),
@@ -32,7 +31,6 @@ describe('XpertService trigger dispatch facade', () => {
 		const eventEmitter = { emitAsync: jest.fn() }
 		const triggerRegistry = { get: jest.fn(), list: jest.fn().mockReturnValue([]) }
 		const sandboxService = { listProviders: jest.fn().mockReturnValue([]) }
-		const redisLockService = { acquireLock: jest.fn() }
 
 		const service = new XpertService(
 			repository as any,
@@ -42,82 +40,58 @@ describe('XpertService trigger dispatch facade', () => {
 			queryBus as any,
 			eventEmitter as any,
 			triggerRegistry as any,
-			sandboxService as any,
-			redisLockService as any
+			sandboxService as any
 		)
 
 		return {
 			service,
-			commandBus
+			commandBus,
+			triggerRegistry
 		}
 	}
 
-	it('addTriggerJob forwards to XpertEnqueueTriggerDispatchCommand', async () => {
+	it('publish forwards to XpertPublishCommand', async () => {
 		const { service, commandBus } = createService()
 
-		await service.addTriggerJob(
-			'xpert-1',
-			'user-1',
-			{
-				[STATE_VARIABLE_HUMAN]: {
-					input: 'hello'
-				}
-			} as any,
-			{
-				trigger: null as any,
-				isDraft: false,
-				from: 'schedule' as any
-			}
-		)
+		await service.publish('xpert-1', true, 'env-1', 'release note')
 
 		expect(commandBus.execute).toHaveBeenCalledTimes(1)
 		const [command] = commandBus.execute.mock.calls[0]
-		expect(command).toBeInstanceOf(XpertEnqueueTriggerDispatchCommand)
+		expect(command).toBeInstanceOf(XpertPublishCommand)
 		expect(command).toEqual(
 			expect.objectContaining({
-				xpertId: 'xpert-1',
-				userId: 'user-1',
-				state: expect.objectContaining({
-					[STATE_VARIABLE_HUMAN]: {
-						input: 'hello'
-					}
-				}),
-				params: expect.objectContaining({
-					isDraft: false,
-					from: 'schedule'
-				})
+				id: 'xpert-1',
+				newVersion: true,
+				environmentId: 'env-1',
+				notes: 'release note'
 			})
 		)
 	})
 
-	it('enqueueTriggerDispatch forwards to XpertEnqueueTriggerDispatchCommand', async () => {
-		const { service, commandBus } = createService()
-
-		await service.enqueueTriggerDispatch(
-			'xpert-1',
-			'user-1',
+	it('getTriggerProviders returns providers meta from trigger registry', async () => {
+		const { service, triggerRegistry } = createService()
+		triggerRegistry.list.mockReturnValue([
 			{
-				[STATE_VARIABLE_HUMAN]: {
-					input: 'hello'
+				meta: {
+					name: 'lark'
 				}
-			} as any,
+			},
 			{
-				isDraft: true,
-				from: 'knowledge'
+				meta: {
+					name: 'schedule'
+				}
 			}
-		)
+		])
 
-		expect(commandBus.execute).toHaveBeenCalledTimes(1)
-		const [command] = commandBus.execute.mock.calls[0]
-		expect(command).toBeInstanceOf(XpertEnqueueTriggerDispatchCommand)
-		expect(command).toEqual(
-			expect.objectContaining({
-				xpertId: 'xpert-1',
-				params: expect.objectContaining({
-					isDraft: true,
-					from: 'knowledge'
-				})
-			})
-		)
+		const providers = await service.getTriggerProviders()
+
+		expect(providers).toEqual([
+			{
+				name: 'lark'
+			},
+			{
+				name: 'schedule'
+			}
+		])
 	})
 })

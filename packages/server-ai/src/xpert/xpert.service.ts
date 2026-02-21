@@ -3,27 +3,24 @@ import {
 	convertToUrlPath,
 	ICopilotStore,
 	IUser,
-	IWFNTrigger,
 	IXpertAgentExecution,
 	LongTermMemoryTypeEnum,
 	OrderTypeEnum,
 	TMemoryQA,
 	TMemoryUserProfile,
-	TXpertTeamDraft,
-	WorkflowNodeTypeEnum
+	TXpertTeamDraft
 } from '@metad/contracts'
 import { getErrorMessage } from '@metad/server-common'
 import {
 	OptionParams,
 	PaginationParams,
-	RedisLockService,
 	RequestContext,
 	TenantOrganizationAwareCrudService,
 	transformWhere,
 	UserPublicDTO,
 	UserService
 } from '@metad/server-core'
-import { HttpException, HttpStatus, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common'
+import { HttpException, HttpStatus, Injectable, NotFoundException } from '@nestjs/common'
 import { CommandBus, QueryBus } from '@nestjs/cqrs'
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { InjectRepository } from '@nestjs/typeorm'
@@ -34,10 +31,7 @@ import { CopilotStoreBulkPutCommand } from '../copilot-store'
 import { CopilotStoreService } from '../copilot-store/copilot-store.service'
 import { SandboxService } from '../sandbox/sandbox.service'
 import { GetXpertWorkspaceQuery, MyXpertWorkspaceQuery } from '../xpert-workspace'
-import {
-	XpertPublishCommand,
-	XpertPublishTriggersCommand
-} from './commands'
+import { XpertPublishCommand } from './commands'
 import { XpertIdentiDto } from './dto'
 import { GetXpertMemoryEmbeddingsQuery } from './queries'
 import { EventNameXpertValidate, XpertDraftValidateEvent } from './types'
@@ -45,9 +39,7 @@ import { FreeNodeValidator } from './validators'
 import { Xpert } from './xpert.entity'
 
 @Injectable()
-export class XpertService extends TenantOrganizationAwareCrudService<Xpert> implements OnApplicationBootstrap {
-	readonly #logger = new Logger(XpertService.name)
-
+export class XpertService extends TenantOrganizationAwareCrudService<Xpert> {
 	constructor(
 		@InjectRepository(Xpert)
 		public readonly repository: Repository<Xpert>,
@@ -57,33 +49,9 @@ export class XpertService extends TenantOrganizationAwareCrudService<Xpert> impl
 		private readonly queryBus: QueryBus,
 		private readonly eventEmitter: EventEmitter2,
 		private readonly triggerRegistry: WorkflowTriggerRegistry,
-		private readonly sandboxService: SandboxService,
-		private readonly redisLockService: RedisLockService
+		private readonly sandboxService: SandboxService
 	) {
 		super(repository)
-	}
-
-	async onApplicationBootstrap() {
-		const { items } = await this.findAll({ where: { latest: true, publishAt: Not(IsNull()) } })
-		for (const xpert of items) {
-			const triggers = xpert.graph?.nodes?.filter(
-				(node) =>
-					node.type === 'workflow' &&
-					node.entity.type === WorkflowNodeTypeEnum.TRIGGER &&
-					(<IWFNTrigger>node.entity).from !== 'chat'
-			)
-			if (triggers?.length) {
-				const lockId = await this.redisLockService.acquireLock('job:trigger:' + xpert.id, 10000)
-				if (!lockId) {
-					continue
-				}
-				await this.commandBus.execute(
-					new XpertPublishTriggersCommand(xpert, {
-						strict: false
-					})
-				)
-			}
-		}
 	}
 
 	/**

@@ -19,6 +19,7 @@ export class XpertPublishTriggersCommand implements ICommand {
 		public readonly options?: {
 			strict?: boolean
 			previousGraph?: TXpertGraph
+			providers?: string[]
 		}
 	) {}
 }

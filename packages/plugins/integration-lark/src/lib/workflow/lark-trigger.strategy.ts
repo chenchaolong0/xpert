@@ -25,7 +25,7 @@ export class LarkTriggerStrategy implements IWorkflowTriggerStrategy<TLarkTrigge
 	private readonly callbacks = new Map<string, (payload: any) => void>()
 	private _integrationPermissionService: IntegrationPermissionService
 
-	meta: TWorkflowTriggerMeta = {
+	readonly meta: TWorkflowTriggerMeta = {
 		name: LarkTrigger,
 		label: {
 			en_US: 'Lark Trigger',
@@ -60,6 +60,11 @@ export class LarkTriggerStrategy implements IWorkflowTriggerStrategy<TLarkTrigge
 			},
 			required: ['enabled', 'integrationId']
 		}
+	}
+
+	readonly bootstrap = {
+		mode: 'skip' as const,
+		critical: false
 	}
 
 	constructor(
