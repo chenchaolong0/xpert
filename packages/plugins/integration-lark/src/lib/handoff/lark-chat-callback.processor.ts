@@ -4,7 +4,7 @@ import {
 	messageContentText,
 	XpertAgentExecutionStatusEnum
 } from '@metad/contracts'
-import { Inject, Injectable, Logger } from '@nestjs/common'
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common'
 import {
 	HandoffMessage,
 	HandoffProcessorStrategy,
@@ -57,8 +57,10 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 	private readonly logger = new Logger(LarkChatStreamCallbackProcessor.name)
 	private readonly sourceLocks = new Map<string, Promise<unknown>>()
 
+	@Inject(forwardRef(() => LarkConversationService))
+	private readonly conversationService: LarkConversationService
+	
 	constructor(
-		private readonly conversationService: LarkConversationService,
 		private readonly larkChannel: LarkChannelStrategy,
 		private readonly runStateService: LarkChatRunStateService,
 		@Inject(LARK_PLUGIN_CONTEXT)
