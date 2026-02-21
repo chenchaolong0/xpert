@@ -13,6 +13,7 @@ import { LARK_PLUGIN_CONTEXT } from '../../tokens'
 import { LarkMessageCommand } from '../mesage.command'
 import { TIntegrationLarkOptions } from '../../types'
 import { LarkChatDispatchService } from '../../handoff'
+import { resolveConversationUserKey } from '../../conversation-user-key'
 
 @CommandHandler(LarkMessageCommand)
 export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
@@ -38,7 +39,7 @@ export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
 
 	public async execute(command: LarkMessageCommand): Promise<unknown> {
 		const { options } = command
-		const { userId, integrationId, message, input } = options
+		const { userId, integrationId, message, input, senderOpenId } = options
 		const integration = await this.integrationPermissionService.read(integrationId)
 		if (!integration) {
 			throw new Error(`Integration ${integrationId} not found`)
@@ -59,7 +60,14 @@ export class LarkMessageHandler implements ICommandHandler<LarkMessageCommand> {
 		const targetXpertId = triggerXpertId ?? fallbackXpertId
 
 		if (targetXpertId) {
-			const activeMessage = await this.conversationService.getActiveMessage(userId, targetXpertId)
+			const conversationUserKey = resolveConversationUserKey({
+				senderOpenId,
+				fallbackUserId: userId
+			})
+			const activeMessage = await this.conversationService.getActiveMessage(
+				conversationUserKey ?? userId,
+				targetXpertId
+			)
 			const larkMessage = new ChatLarkMessage(
 				{ ...options, larkChannel: this.larkChannel },
 				{

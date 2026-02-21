@@ -1,5 +1,5 @@
 import { LarkConversationService } from './conversation.service'
-import { CancelConversationCommand } from '@xpert-ai/plugin-sdk'
+import { CancelConversationCommand, RequestContext } from '@xpert-ai/plugin-sdk'
 import { ChatLarkContext, LARK_CONFIRM, LARK_END_CONVERSATION, LARK_REJECT } from './types'
 
 class MemoryCache {
@@ -139,5 +139,73 @@ describe('LarkConversationService', () => {
 		expect(dispatchService.enqueueDispatch).not.toHaveBeenCalled()
 		expect(await service.getConversation(userId, xpertId)).toBeUndefined()
 		expect(await service.getActiveMessage(userId, xpertId)).toBeNull()
+	})
+
+	it('resolves conversation key from card action open_id', async () => {
+		const { service } = createFixture()
+		const onAction = jest.spyOn(service, 'onAction').mockResolvedValue(undefined as any)
+		jest.spyOn(RequestContext, 'currentUser').mockReturnValue({
+			id: userId,
+			tenantId: 'tenant-1'
+		} as any)
+
+		await service.handleCardAction(
+			{
+				value: LARK_CONFIRM,
+				userId: 'ou-action-1',
+				chatId: 'chat-1',
+				messageId: 'action-message-id'
+			} as any,
+			{
+				organizationId: 'org-1',
+				integration: {
+					id: 'integration-1',
+					tenant: null,
+					options: {
+						xpertId
+					}
+				}
+			} as any
+		)
+
+		expect(onAction).toHaveBeenCalledWith(
+			LARK_CONFIRM,
+			expect.objectContaining({
+				userId,
+				senderOpenId: 'ou-action-1'
+			}),
+			'open_id:ou-action-1',
+			xpertId,
+			'action-message-id'
+		)
+	})
+
+	it('skips card action handling when action open_id is missing', async () => {
+		const { service } = createFixture()
+		const onAction = jest.spyOn(service, 'onAction').mockResolvedValue(undefined as any)
+		jest.spyOn(RequestContext, 'currentUser').mockReturnValue({
+			id: userId,
+			tenantId: 'tenant-1'
+		} as any)
+
+		await service.handleCardAction(
+			{
+				value: LARK_CONFIRM,
+				chatId: 'chat-1',
+				messageId: 'action-message-id'
+			} as any,
+			{
+				organizationId: 'org-1',
+				integration: {
+					id: 'integration-1',
+					tenant: null,
+					options: {
+						xpertId
+					}
+				}
+			} as any
+		)
+
+		expect(onAction).not.toHaveBeenCalled()
 	})
 })

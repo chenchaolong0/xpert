@@ -15,6 +15,7 @@ import {
 } from '@xpert-ai/plugin-sdk'
 import { ChatLarkMessage, cloneStructuredElement } from '../message'
 import { LarkConversationService } from '../conversation.service'
+import { resolveConversationUserKey as resolveLarkConversationUserKey } from '../conversation-user-key'
 import { LarkChannelStrategy } from '../lark-channel.strategy'
 import {
 	DEFAULT_STREAM_UPDATE_WINDOW_MS,
@@ -265,11 +266,14 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 
 		switch (eventPayload.event) {
 			case ChatMessageEventTypeEnum.ON_CONVERSATION_START: {
-				await this.conversationService.setConversation(
-					context.userId,
-					context.xpertId,
-					eventPayload.data.id
-				)
+				const conversationUserKey = this.resolveConversationUserKey(context)
+				if (conversationUserKey) {
+					await this.conversationService.setConversation(
+						conversationUserKey,
+						context.xpertId,
+						eventPayload.data.id
+					)
+				}
 				break
 			}
 			case ChatMessageEventTypeEnum.ON_MESSAGE_START: {
@@ -603,13 +607,14 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 	}
 
 	private async syncActiveMessageCache(context: LarkChatCallbackContext): Promise<void> {
-		if (!context?.userId || !context?.xpertId) {
+		const conversationUserKey = this.resolveConversationUserKey(context)
+		if (!conversationUserKey || !context?.xpertId) {
 			return
 		}
 
 		const message = context.message ?? {}
 		const language = this.resolveMessageLanguage(context)
-		await this.conversationService.setActiveMessage(context.userId, context.xpertId, {
+		await this.conversationService.setActiveMessage(conversationUserKey, context.xpertId, {
 			id: message.messageId,
 			thirdPartyMessage: {
 				id: message.id,
@@ -619,6 +624,13 @@ export class LarkChatStreamCallbackProcessor implements IHandoffProcessor<LarkCh
 				header: message.header,
 				elements: [...(message.elements ?? [])]
 			}
+		})
+	}
+
+	private resolveConversationUserKey(context: LarkChatCallbackContext): string | null {
+		return resolveLarkConversationUserKey({
+			senderOpenId: context?.senderOpenId,
+			fallbackUserId: context?.userId
 		})
 	}
 

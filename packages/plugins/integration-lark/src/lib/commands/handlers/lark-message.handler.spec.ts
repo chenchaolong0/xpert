@@ -48,22 +48,33 @@ describe('LarkMessageHandler', () => {
 			handler,
 			larkChannel,
 			larkTriggerStrategy,
-			dispatchService
+			dispatchService,
+			conversationService
 		}
 	}
 
-	function createCommand() {
+	function createCommand(overrides: Record<string, unknown> = {}) {
 		return new LarkMessageCommand({
 			userId: 'user-1',
+			senderOpenId: 'ou_sender_1',
 			integrationId: 'integration-1',
 			chatId: 'chat-1',
 			message: {
 				message: {
 					content: JSON.stringify({ text: 'hello' })
 				}
-			}
+			},
+			...overrides
 		} as any)
 	}
+
+	it('looks up active message by sender open_id key', async () => {
+		const { handler, conversationService } = createHandler()
+
+		await handler.execute(createCommand())
+
+		expect(conversationService.getActiveMessage).toHaveBeenCalledWith('open_id:ou_sender_1', 'legacy-xpert')
+	})
 
 	it('prioritizes trigger strategy when trigger binding exists', async () => {
 		const { handler, larkTriggerStrategy, dispatchService, larkChannel } = createHandler({

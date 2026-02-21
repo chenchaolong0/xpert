@@ -47,6 +47,11 @@ type LarkClientCacheEntry = {
 		| null
 }
 
+type LarkRecipient = {
+	type: 'chat_id' | 'open_id' | 'user_id' | 'union_id' | 'email'
+	id: string
+}
+
 @Injectable()
 @ChatChannel('lark')
 export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions> {
@@ -491,6 +496,78 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 			tenantId,
 			id: userId
 		})
+	}
+
+	async resolveUserByRecipient(integrationId: string, recipient: LarkRecipient): Promise<IUser | null> {
+		const recipientType = recipient?.type
+		const recipientId = recipient?.id?.trim()
+		if (!integrationId || !recipientType || !recipientId) {
+			return null
+		}
+		if (recipientType === 'chat_id') {
+			return null
+		}
+
+		const integration = await this.integrationPermissionService.read<IIntegration<TIntegrationLarkOptions>>(
+			integrationId,
+			{ relations: ['tenant'] }
+		)
+		if (!integration?.tenantId) {
+			this.logger.warn(
+				`Failed to resolve user by recipient "${recipientType}:${recipientId}": integration "${integrationId}" not found or tenantId missing`
+			)
+			return null
+		}
+
+		const client = this.getOrCreateLarkClient(integration).client
+		let unionId: string | null = null
+		try {
+			switch (recipientType) {
+				case 'union_id': {
+					unionId = recipientId
+					break
+				}
+				case 'open_id':
+				case 'user_id': {
+					const response = await client.contact.v3.user.get({
+						params: {
+							user_id_type: recipientType
+						},
+						path: {
+							user_id: recipientId
+						}
+					})
+					unionId = response?.data?.user?.union_id ?? null
+					break
+				}
+				case 'email': {
+					const response = await client.contact.v3.user.batchGetId({
+						params: {
+							user_id_type: 'union_id'
+						},
+						data: {
+							emails: [recipientId]
+						}
+					})
+					unionId = response?.data?.user_list?.[0]?.user_id ?? null
+					break
+				}
+			}
+		} catch (error) {
+			this.logger.warn(
+				`Failed to resolve recipient "${recipientType}:${recipientId}" from Lark integration "${integrationId}": ${getErrorMessage(error)}`
+			)
+			return null
+		}
+
+		if (!unionId) {
+			this.logger.warn(
+				`Skip recipient binding for "${recipientType}:${recipientId}" on integration "${integrationId}": union_id not found`
+			)
+			return null
+		}
+
+		return this.getUser(client, integration.tenantId, unionId, integration.options?.userProvision)
 	}
 
 	private getUserByUnionIdCacheKey(tenantId: string, unionId: string): string {

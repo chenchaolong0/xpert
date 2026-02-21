@@ -14,6 +14,7 @@ import {
 } from '@xpert-ai/plugin-sdk'
 import { randomUUID } from 'crypto'
 import { LarkConversationService } from '../conversation.service'
+import { resolveConversationUserKey } from '../conversation-user-key'
 import { ChatLarkMessage } from '../message'
 import { LARK_PLUGIN_CONTEXT } from '../tokens'
 import { LarkChatRunStateService } from './lark-chat-run-state.service'
@@ -77,14 +78,22 @@ export class LarkChatDispatchService {
 		}
 
 		const organizationId = RequestContext.getOrganizationId()
-		const conversationId = await this.conversationService.getConversation(userId, xpertId)
+		const conversationUserKey = resolveConversationUserKey({
+			senderOpenId: larkMessage.senderOpenId,
+			fallbackUserId: userId
+		})
+		const conversationId = conversationUserKey
+			? await this.conversationService.getConversation(conversationUserKey, xpertId)
+			: undefined
 
 		await larkMessage.update({ status: 'thinking' })
-		await this.conversationService.setActiveMessage(
-			userId,
-			xpertId,
-			this.toActiveMessageCache(larkMessage)
-		)
+		if (conversationUserKey) {
+			await this.conversationService.setActiveMessage(
+				conversationUserKey,
+				xpertId,
+				this.toActiveMessageCache(larkMessage)
+			)
+		}
 
 		const runId = `lark-chat-${randomUUID()}`
 		const sessionKey = conversationId ?? runId

@@ -492,7 +492,7 @@ describe('LarkChatStreamCallbackProcessor', () => {
 			createProcessContext() as any
 		)
 
-		expect(conversationService.setActiveMessage).toHaveBeenCalledWith('user-id', 'xpert-id', {
+		expect(conversationService.setActiveMessage).toHaveBeenCalledWith('open_id:open-id', 'xpert-id', {
 			id: 'chat-message-2',
 			thirdPartyMessage: {
 				id: 'lark-message-id',
@@ -540,7 +540,7 @@ describe('LarkChatStreamCallbackProcessor', () => {
 			createProcessContext() as any
 		)
 
-		expect(conversationService.setActiveMessage).toHaveBeenCalledWith('user-id', 'xpert-id', {
+		expect(conversationService.setActiveMessage).toHaveBeenCalledWith('open_id:open-id', 'xpert-id', {
 			id: 'chat-message-2',
 			thirdPartyMessage: {
 				id: 'lark-message-id',

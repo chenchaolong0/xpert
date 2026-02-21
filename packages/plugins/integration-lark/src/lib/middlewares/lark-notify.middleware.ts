@@ -13,6 +13,8 @@ import {
   getErrorMessage
 } from '@xpert-ai/plugin-sdk'
 import { z } from 'zod/v3'
+import { LarkConversationService } from '../conversation.service'
+import { toRecipientConversationUserKey } from '../conversation-user-key'
 import { LarkChannelStrategy } from '../lark-channel.strategy'
 import { iconImage } from '../types'
 
@@ -342,7 +344,64 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
 export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
   private readonly logger = new Logger(LarkNotifyMiddleware.name)
 
-  constructor(private readonly larkChannel: LarkChannelStrategy) {}
+  constructor(
+    private readonly larkChannel: LarkChannelStrategy,
+    private readonly conversationService: LarkConversationService
+  ) {}
+
+  private resolveTargetXpertId(context: IAgentMiddlewareContext): string | null {
+    return normalizeString(context?.xpertId)
+  }
+
+  private async tryBindConversationForRecipient(params: {
+    integrationId: string
+    recipient: LarkRecipient
+    context: IAgentMiddlewareContext
+  }): Promise<void> {
+    const { integrationId, recipient, context } = params
+    if (recipient.type === 'chat_id') {
+      this.logger.verbose(
+        `[${LARK_NOTIFY_MIDDLEWARE_NAME}] Skip conversation binding for recipient ${recipient.type}:${recipient.id}`
+      )
+      return
+    }
+
+    const conversationId = normalizeString(context?.conversationId)
+    if (!conversationId) {
+      this.logger.warn(
+        `[${LARK_NOTIFY_MIDDLEWARE_NAME}] Skip conversation binding for recipient ${recipient.type}:${recipient.id}: missing context.conversationId`
+      )
+      return
+    }
+
+    const xpertId = this.resolveTargetXpertId(context)
+    if (!xpertId) {
+      this.logger.warn(
+        `[${LARK_NOTIFY_MIDDLEWARE_NAME}] Skip conversation binding for recipient ${recipient.type}:${recipient.id}: missing xpertId`
+      )
+      return
+    }
+
+    // Note: The current notify binding key is recipient.type:id; the webhook continue chat query key is open_id:*. Therefore, to ensure "continued chat is possible after notification", it is recommended that the recipient use open_id.
+    const conversationUserKey = toRecipientConversationUserKey(recipient?.type, recipient?.id)
+    if (!conversationUserKey) {
+      this.logger.warn(
+        `[${LARK_NOTIFY_MIDDLEWARE_NAME}] Skip conversation binding for recipient ${recipient.type}:${recipient.id}: recipient key is invalid`
+      )
+      return
+    }
+
+    try {
+      await this.conversationService.setConversation(conversationUserKey, xpertId, conversationId)
+      this.logger.log(
+        `[${LARK_NOTIFY_MIDDLEWARE_NAME}] Bound "${conversationUserKey}" to conversation "${conversationId}" for xpert "${xpertId}" (integration: ${integrationId})`
+      )
+    } catch (error) {
+      this.logger.warn(
+        `[${LARK_NOTIFY_MIDDLEWARE_NAME}] Failed to bind recipient ${recipient.type}:${recipient.id} to conversation "${conversationId}": ${formatError(error)}`
+      )
+    }
+  }
 
   meta: TAgentMiddlewareMeta = {
     name: LARK_NOTIFY_MIDDLEWARE_NAME,
@@ -456,10 +515,8 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
 
   createMiddleware(
     options: LarkNotifyMiddlewareConfig,
-    _context: IAgentMiddlewareContext
+    context: IAgentMiddlewareContext
   ): PromiseOrValue<AgentMiddleware> {
-    void _context
-
     const { data, error } = interopSafeParse(middlewareConfigSchema, options ?? {})
     if (error) {
       throw new Error(`LarkNotifyMiddleware configuration error: ${error.message}`)
@@ -546,6 +603,7 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
       recipients: LarkRecipient[]
       timeoutMs: number
       task: (recipient: LarkRecipient) => Promise<{ messageId?: string | null }>
+      onSuccess?: (recipient: LarkRecipient, result: { messageId?: string | null }) => Promise<void>
     }): Promise<LarkNotifyResult> => {
       const results: LarkNotifyResultItem[] = []
 
@@ -558,6 +616,15 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
               params.timeoutMs,
               `[${params.toolName}] send to ${recipient.type}:${recipient.id}`
             )
+            if (params.onSuccess) {
+              try {
+                await params.onSuccess(recipient, result)
+              } catch (error) {
+                this.logger.warn(
+                  `[${params.toolName}] post-send hook failed for ${recipient.type}:${recipient.id}: ${formatError(error)}`
+                )
+              }
+            }
             return {
               target: `${recipient.type}:${recipient.id}`,
               success: true,
@@ -618,6 +685,13 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
             toolName,
             recipients,
             timeoutMs,
+            onSuccess: async (recipient) => {
+              await this.tryBindConversationForRecipient({
+                integrationId: resolvedIntegrationId,
+                recipient,
+                context
+              })
+            },
             task: async (recipient) => {
               const response = await client.im.message.create({
                 params: {
@@ -684,6 +758,13 @@ export class LarkNotifyMiddleware implements IAgentMiddlewareStrategy {
             toolName,
             recipients,
             timeoutMs,
+            onSuccess: async (recipient) => {
+              await this.tryBindConversationForRecipient({
+                integrationId: resolvedIntegrationId,
+                recipient,
+                context
+              })
+            },
             task: async (recipient) => {
               const response = await client.im.message.create({
                 params: {

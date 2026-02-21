@@ -14,6 +14,7 @@ import { Cache } from 'cache-manager'
 import type { Observable } from 'rxjs'
 import { ChatLarkMessage } from './message'
 import { LarkMessageCommand } from './commands'
+import { normalizeConversationUserKey, toOpenIdConversationUserKey } from './conversation-user-key'
 import { translate } from './i18n'
 import { LarkChannelStrategy } from './lark-channel.strategy'
 import { LarkChatDispatchService } from './handoff/lark-chat-dispatch.service'
@@ -71,43 +72,69 @@ export class LarkConversationService implements OnModuleDestroy {
   ) {}
 
   /**
-   * Get conversation ID for a user to xpert.
+   * Get conversation ID for a Lark participant to xpert.
    * 
-   * @param userId 
+   * @param conversationUserKey 
    * @param xpertId 
    * @returns Conversation ID
    */
-  async getConversation(userId: string, xpertId: string) {
-    const key = this.getConversationCacheKey(userId, xpertId)
+  async getConversation(conversationUserKey: string, xpertId: string) {
+    const normalizedUserKey = normalizeConversationUserKey(conversationUserKey)
+    const normalizedXpertId = normalizeConversationUserKey(xpertId)
+    if (!normalizedUserKey || !normalizedXpertId) {
+      return undefined
+    }
+    const key = this.getConversationCacheKey(normalizedUserKey, normalizedXpertId)
     return await this.cacheManager.get<string>(key)
   }
 
   /**
-   * Set conversation ID for a user to xpert.
+   * Set conversation ID for a Lark participant to xpert.
    * 
-   * @param userId 
+   * @param conversationUserKey 
    * @param xpertId 
    * @param conversationId 
    */
-  async setConversation(userId: string, xpertId: string, conversationId: string) {
-    const key = this.getConversationCacheKey(userId, xpertId)
-    await this.cacheManager.set(key, conversationId, LarkConversationService.cacheTtlMs)
+  async setConversation(conversationUserKey: string, xpertId: string, conversationId: string) {
+    const normalizedUserKey = normalizeConversationUserKey(conversationUserKey)
+    const normalizedXpertId = normalizeConversationUserKey(xpertId)
+    const normalizedConversationId = normalizeConversationUserKey(conversationId)
+    if (!normalizedUserKey || !normalizedXpertId || !normalizedConversationId) {
+      return
+    }
+    const key = this.getConversationCacheKey(normalizedUserKey, normalizedXpertId)
+    await this.cacheManager.set(key, normalizedConversationId, LarkConversationService.cacheTtlMs)
   }
 
-  async getActiveMessage(userId: string, xpertId: string): Promise<LarkActiveMessage | null> {
-    const key = this.getActiveMessageCacheKey(userId, xpertId)
+  async getActiveMessage(conversationUserKey: string, xpertId: string): Promise<LarkActiveMessage | null> {
+    const normalizedUserKey = normalizeConversationUserKey(conversationUserKey)
+    const normalizedXpertId = normalizeConversationUserKey(xpertId)
+    if (!normalizedUserKey || !normalizedXpertId) {
+      return null
+    }
+    const key = this.getActiveMessageCacheKey(normalizedUserKey, normalizedXpertId)
     const message = await this.cacheManager.get<LarkActiveMessage>(key)
     return message ?? null
   }
 
-  async setActiveMessage(userId: string, xpertId: string, message: LarkActiveMessage): Promise<void> {
-    const key = this.getActiveMessageCacheKey(userId, xpertId)
+  async setActiveMessage(conversationUserKey: string, xpertId: string, message: LarkActiveMessage): Promise<void> {
+    const normalizedUserKey = normalizeConversationUserKey(conversationUserKey)
+    const normalizedXpertId = normalizeConversationUserKey(xpertId)
+    if (!normalizedUserKey || !normalizedXpertId) {
+      return
+    }
+    const key = this.getActiveMessageCacheKey(normalizedUserKey, normalizedXpertId)
     await this.cacheManager.set(key, message, LarkConversationService.cacheTtlMs)
   }
 
-  async clearConversationSession(userId: string, xpertId: string): Promise<void> {
-    await this.cacheManager.del(this.getConversationCacheKey(userId, xpertId))
-    await this.cacheManager.del(this.getActiveMessageCacheKey(userId, xpertId))
+  async clearConversationSession(conversationUserKey: string, xpertId: string): Promise<void> {
+    const normalizedUserKey = normalizeConversationUserKey(conversationUserKey)
+    const normalizedXpertId = normalizeConversationUserKey(xpertId)
+    if (!normalizedUserKey || !normalizedXpertId) {
+      return
+    }
+    await this.cacheManager.del(this.getConversationCacheKey(normalizedUserKey, normalizedXpertId))
+    await this.cacheManager.del(this.getActiveMessageCacheKey(normalizedUserKey, normalizedXpertId))
   }
 
   async ask(xpertId: string, content: string, message: ChatLarkMessage) {
@@ -123,18 +150,18 @@ export class LarkConversationService implements OnModuleDestroy {
    * 
    * @param action 
    * @param chatContext 
-   * @param userId 
+   * @param conversationUserKey 
    * @param xpertId 
    * @returns 
    */
   async onAction(
     action: string,
     chatContext: ChatLarkContext,
-    userId: string,
+    conversationUserKey: string,
     xpertId: string,
     actionMessageId?: string
   ) {
-    const conversationId = await this.getConversation(userId, xpertId)
+    const conversationId = await this.getConversation(conversationUserKey, xpertId)
 
     if (!conversationId) {
       return this.replyActionSessionTimedOut(chatContext)
@@ -152,12 +179,12 @@ export class LarkConversationService implements OnModuleDestroy {
       return
     }
 
-    const activeMessage = await this.getActiveMessage(userId, xpertId)
+    const activeMessage = await this.getActiveMessage(conversationUserKey, xpertId)
     const thirdPartyMessage = activeMessage?.thirdPartyMessage
 
     const larkMessageId = actionMessageId || thirdPartyMessage?.id
     if (!activeMessage || !thirdPartyMessage || !larkMessageId) {
-      await this.clearConversationSession(userId, xpertId)
+      await this.clearConversationSession(conversationUserKey, xpertId)
       return this.replyActionSessionTimedOut(chatContext)
     }
 
@@ -180,7 +207,7 @@ export class LarkConversationService implements OnModuleDestroy {
     if (isEndAction(action)) {
       await prevMessage.end()
       await this.cancelConversation(conversationId)
-      await this.clearConversationSession(userId, xpertId)
+      await this.clearConversationSession(conversationUserKey, xpertId)
     } else if (isConfirmAction(action)) {
       await prevMessage.done()
       await this.dispatchService.enqueueDispatch({
@@ -202,12 +229,12 @@ export class LarkConversationService implements OnModuleDestroy {
     }
   }
 
-  private getConversationCacheKey(userId: string, xpertId: string): string {
-    return `${LarkConversationService.prefix}:${userId}:${xpertId}`
+  private getConversationCacheKey(conversationUserKey: string, xpertId: string): string {
+    return `${LarkConversationService.prefix}:${conversationUserKey}:${xpertId}`
   }
 
-  private getActiveMessageCacheKey(userId: string, xpertId: string): string {
-    return `${this.getConversationCacheKey(userId, xpertId)}:active-message`
+  private getActiveMessageCacheKey(conversationUserKey: string, xpertId: string): string {
+    return `${this.getConversationCacheKey(conversationUserKey, xpertId)}:active-message`
   }
 
   private async replyActionSessionTimedOut(chatContext: ChatLarkContext): Promise<void> {
@@ -401,6 +428,12 @@ export class LarkConversationService implements OnModuleDestroy {
       return
     }
 
+    const conversationUserKey = toOpenIdConversationUserKey(action.userId)
+    if (!conversationUserKey) {
+      this.logger.warn('Missing Lark action user open_id, skip card action conversation handling')
+      return
+    }
+
     await this.onAction(
       resolveLarkCardActionValue(action.value),
       {
@@ -409,9 +442,10 @@ export class LarkConversationService implements OnModuleDestroy {
         integrationId: ctx.integration.id,
         preferLanguage: ctx.integration.options?.preferLanguage,
         userId: user.id,
+        senderOpenId: action.userId,
         chatId: action.chatId
       } as ChatLarkContext,
-      user.id,
+      conversationUserKey,
       xpertId,
       action.messageId
     )
