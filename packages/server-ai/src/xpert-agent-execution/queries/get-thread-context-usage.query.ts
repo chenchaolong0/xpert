@@ -1,7 +1,8 @@
-import { IQuery } from '@nestjs/cqrs'
+import { Query } from '@nestjs/cqrs'
 
 export type TThreadContextUsage = {
 	thread_id: string
+	agent_key: string | null
 	run_id: string | null
 	updated_at: string | null
 	usage: {
@@ -15,8 +16,10 @@ export type TThreadContextUsage = {
 	}
 }
 
-export class GetThreadContextUsageQuery implements IQuery {
+export class GetThreadContextUsageQuery extends Query<TThreadContextUsage> {
 	static readonly type = '[Xpert Agent Execution] Get thread context usage'
 
-	constructor(public readonly threadId: string) {}
+	constructor(public readonly threadId: string, public readonly agentKey?: string) {
+		super()
+	}
 }

@@ -78,10 +78,18 @@ export class AssistantsController {
 
 function transformAssistant(xpert: IXpert) {
 	const contextSize = getAssistantContextSize(xpert)
+	const agentKey = getAssistantPrimaryAgentKey(xpert)
+	const configurable = omitBy(
+		{
+			context_size: contextSize,
+			agentKey
+		},
+		isNil
+	)
 	const config = omitBy(
 		{
 			...pick(xpert, 'agentConfig', 'options', 'summarize', 'memory', 'features'),
-			configurable: typeof contextSize === 'number' ? { context_size: contextSize } : undefined
+			configurable: Object.keys(configurable).length ? configurable : undefined
 		},
 		isNil
 	)
@@ -95,15 +103,19 @@ function transformAssistant(xpert: IXpert) {
 		created_at: xpert.createdAt.toISOString(),
 		updated_at: xpert.updatedAt.toISOString(),
 		config,
-		metadata: omitBy({
-			workspaceId: xpert.workspaceId,
-			avatar: xpert.avatar,
-			slug: xpert.slug,
-			type: xpert.type,
-			title: xpert.title,
-			tags: xpert.tags?.length ? xpert.tags : undefined,
-			context_size: contextSize
-		}, isNil),
+		metadata: omitBy(
+			{
+				workspaceId: xpert.workspaceId,
+				avatar: xpert.avatar,
+				slug: xpert.slug,
+				type: xpert.type,
+				title: xpert.title,
+				tags: xpert.tags?.length ? xpert.tags : undefined,
+				context_size: contextSize,
+				agent_key: agentKey
+			},
+			isNil
+		),
 		context: null
 	} as Assistant
 }
@@ -125,4 +137,13 @@ function transformMetadata2Where(metadata: any) {
 function getAssistantContextSize(xpert: IXpert): number | undefined {
 	const effectiveCopilotModel = (xpert.agent?.copilotModel ?? xpert.copilotModel) as ICopilotModel
 	return normalizeContextSize(effectiveCopilotModel?.options?.[ModelPropertyKey.CONTEXT_SIZE])
+}
+
+function getAssistantPrimaryAgentKey(xpert: IXpert): string | undefined {
+	const key = xpert?.agent?.key
+	if (typeof key !== 'string') {
+		return
+	}
+	const normalized = key.trim()
+	return normalized || undefined
 }

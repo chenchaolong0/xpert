@@ -290,8 +290,8 @@ export class ThreadsController {
 
 	// Others
 	@Get(':thread_id/context-usage')
-	async getThreadContextUsage(@Param('thread_id') threadId: string) {
-		return await this.queryBus.execute(new GetThreadContextUsageQuery(threadId))
+	async getThreadContextUsage(@Param('thread_id') threadId: string, @Query('agentKey') agentKey?: string) {
+		return await this.queryBus.execute(new GetThreadContextUsageQuery(threadId, agentKey))
 	}
 
 	@Get(':thread_id/usage')
