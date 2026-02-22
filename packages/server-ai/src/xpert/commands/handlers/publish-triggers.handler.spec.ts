@@ -24,6 +24,24 @@ describe('XpertPublishTriggersHandler', () => {
 		}
 	}
 
+	function triggerNode(from: string, config: Record<string, unknown>) {
+		return {
+			type: 'workflow',
+			entity: {
+				type: 'trigger',
+				from,
+				config
+			}
+		}
+	}
+
+	function graphWith(...triggers: Array<{ from: string; config: Record<string, unknown> }>) {
+		return {
+			nodes: triggers.map((trigger) => triggerNode(trigger.from, trigger.config)),
+			connections: []
+		}
+	}
+
 	it('publish callback adds trigger job', async () => {
 		const { handler, triggerRegistry, commandBus } = createHandler()
 		triggerRegistry.get.mockReturnValue({
@@ -314,6 +332,281 @@ describe('XpertPublishTriggersHandler', () => {
 
 		expect(scheduleStop).toHaveBeenCalledTimes(1)
 		expect(larkStop).not.toHaveBeenCalled()
+		expect(triggerRegistry.get).toHaveBeenCalledTimes(1)
+		expect(triggerRegistry.get).toHaveBeenCalledWith('schedule')
+	})
+
+	it('skips unchanged trigger when previousGraph has equivalent config', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const publish = jest.fn()
+		const stop = jest.fn()
+		triggerRegistry.get.mockReturnValue({
+			publish,
+			stop
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: graphWith({
+						from: 'schedule',
+						config: { b: 2, a: 1 }
+					})
+				} as any,
+				{
+					strict: true,
+					previousGraph: graphWith({
+						from: 'schedule',
+						config: { a: 1, b: 2 }
+					}) as any
+				}
+			)
+		)
+
+		expect(stop).not.toHaveBeenCalled()
+		expect(publish).not.toHaveBeenCalled()
+		expect(triggerRegistry.get).not.toHaveBeenCalled()
+	})
+
+	it('publishes added trigger only', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const publish = jest.fn()
+		const stop = jest.fn()
+		triggerRegistry.get.mockReturnValue({
+			publish,
+			stop
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: graphWith({
+						from: 'schedule',
+						config: { cron: '* * * * *', task: 'tick' }
+					})
+				} as any,
+				{
+					strict: true,
+					previousGraph: graphWith() as any
+				}
+			)
+		)
+
+		expect(publish).toHaveBeenCalledTimes(1)
+		expect(stop).not.toHaveBeenCalled()
+	})
+
+	it('stops removed trigger only', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const publish = jest.fn()
+		const stop = jest.fn()
+		triggerRegistry.get.mockReturnValue({
+			publish,
+			stop
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: graphWith()
+				} as any,
+				{
+					strict: true,
+					previousGraph: graphWith({
+						from: 'schedule',
+						config: { cron: '* * * * *', task: 'tick' }
+					}) as any
+				}
+			)
+		)
+
+		expect(stop).toHaveBeenCalledTimes(1)
+		expect(publish).not.toHaveBeenCalled()
+	})
+
+	it('reconciles changed trigger with stop then publish', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const calls: string[] = []
+		const stop = jest.fn(({ config }) => {
+			calls.push(`stop:${(config as any).version}`)
+		})
+		const publish = jest.fn(({ config }) => {
+			calls.push(`publish:${(config as any).version}`)
+		})
+		triggerRegistry.get.mockReturnValue({
+			publish,
+			stop
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: graphWith({
+						from: 'schedule',
+						config: { version: 2 }
+					})
+				} as any,
+				{
+					strict: true,
+					previousGraph: graphWith({
+						from: 'schedule',
+						config: { version: 1 }
+					}) as any
+				}
+			)
+		)
+
+		expect(calls).toEqual(['stop:1', 'publish:2'])
+	})
+
+	it('attempts rollback and throws original error when changed publish fails in strict mode', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const stop = jest.fn()
+		const publish = jest.fn(({ config }) => {
+			if ((config as any).version === 2) {
+				throw new Error('changed-publish-failed')
+			}
+		})
+		triggerRegistry.get.mockReturnValue({
+			publish,
+			stop
+		})
+
+		await expect(
+			handler.execute(
+				new XpertPublishTriggersCommand(
+					{
+						id: 'xpert-1',
+						graph: graphWith({
+							from: 'schedule',
+							config: { version: 2 }
+						})
+					} as any,
+					{
+						strict: true,
+						previousGraph: graphWith({
+							from: 'schedule',
+							config: { version: 1 }
+						}) as any
+					}
+				)
+			)
+		).rejects.toThrow('changed-publish-failed')
+
+		expect(stop).toHaveBeenCalledTimes(1)
+		expect(publish).toHaveBeenCalledTimes(2)
+		expect(publish.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				config: expect.objectContaining({ version: 2 })
+			})
+		)
+		expect(publish.mock.calls[1]?.[0]).toEqual(
+			expect.objectContaining({
+				config: expect.objectContaining({ version: 1 })
+			})
+		)
+	})
+
+	it('attempts rollback and continues when changed publish fails in non-strict mode', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const stop = jest.fn()
+		const publish = jest.fn(({ config }) => {
+			if ((config as any).version === 2) {
+				throw new Error('changed-publish-failed')
+			}
+		})
+		triggerRegistry.get.mockReturnValue({
+			publish,
+			stop
+		})
+
+		await expect(
+			handler.execute(
+				new XpertPublishTriggersCommand(
+					{
+						id: 'xpert-1',
+						graph: graphWith({
+							from: 'schedule',
+							config: { version: 2 }
+						})
+					} as any,
+					{
+						strict: false,
+						previousGraph: graphWith({
+							from: 'schedule',
+							config: { version: 1 }
+						}) as any
+					}
+				)
+			)
+		).resolves.toBeUndefined()
+
+		expect(stop).toHaveBeenCalledTimes(1)
+		expect(publish).toHaveBeenCalledTimes(2)
+	})
+
+	it('applies provider filter to delta reconciliation', async () => {
+		const { handler, triggerRegistry } = createHandler()
+		const scheduleStop = jest.fn()
+		const schedulePublish = jest.fn()
+		const larkStop = jest.fn()
+		const larkPublish = jest.fn()
+		triggerRegistry.get.mockImplementation((provider: string) => {
+			if (provider === 'schedule') {
+				return {
+					publish: schedulePublish,
+					stop: scheduleStop
+				}
+			}
+			if (provider === 'lark') {
+				return {
+					publish: larkPublish,
+					stop: larkStop
+				}
+			}
+			throw new Error(`Unexpected provider ${provider}`)
+		})
+
+		await handler.execute(
+			new XpertPublishTriggersCommand(
+				{
+					id: 'xpert-1',
+					graph: graphWith(
+						{
+							from: 'schedule',
+							config: { version: 2 }
+						},
+						{
+							from: 'lark',
+							config: { version: 2 }
+						}
+					)
+				} as any,
+				{
+					strict: true,
+					providers: ['schedule'],
+					previousGraph: graphWith(
+						{
+							from: 'schedule',
+							config: { version: 1 }
+						},
+						{
+							from: 'lark',
+							config: { version: 1 }
+						}
+					) as any
+				}
+			)
+		)
+
+		expect(scheduleStop).toHaveBeenCalledTimes(1)
+		expect(schedulePublish).toHaveBeenCalledTimes(1)
+		expect(larkStop).not.toHaveBeenCalled()
+		expect(larkPublish).not.toHaveBeenCalled()
 		expect(triggerRegistry.get).toHaveBeenCalledTimes(1)
 		expect(triggerRegistry.get).toHaveBeenCalledWith('schedule')
 	})
