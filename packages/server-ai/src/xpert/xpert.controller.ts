@@ -233,12 +233,18 @@ export class XpertController extends CrudController<Xpert> {
 		return this.service.publish(id, newVersion === 'true', body.environmentId, body.releaseNotes)
 	}
 
+	/**
+	 * @deprecated use workflow trigger instead
+	 */
 	@UseGuards(XpertGuard)
 	@Post(':id/publish/integration')
 	async publishIntegration(@Param('id') id: string, @Body() integration: Partial<IIntegration>) {
 		return this.commandBus.execute(new XpertPublishIntegrationCommand(id, integration))
 	}
 
+	/**
+	 * @deprecated use workflow trigger instead
+	 */
 	@UseGuards(XpertGuard)
 	@Delete(':id/publish/integration/:integration')
 	async deleteIntegration(@Param('id') id: string, @Param('integration') integration: string,) {
