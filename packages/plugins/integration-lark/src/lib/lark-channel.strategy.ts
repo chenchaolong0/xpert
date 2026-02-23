@@ -150,18 +150,17 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 					return true
 				}
 
-				try {
+				// Lark webhook callbacks should return within 3s, so we ack first and process in background.
+				this.runBackgroundEventHandler('message', async () => {
 					if (message.chatType === 'group') {
 						const botInfo = await this.getBotInfo(integration)
 						if (this.isBotMentioned(message, botInfo.id)) {
 							await eventHandlers.onMention?.(message, ctx)
 						}
-					} else {
-						await eventHandlers.onMessage?.(message, ctx)
+						return
 					}
-				} catch (error) {
-					this.logger.error('Error handling message:', error)
-				}
+					await eventHandlers.onMessage?.(message, ctx)
+				})
 
 				return true
 			},
@@ -170,11 +169,10 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 
 				const action = this.parseCardAction(data, ctx)
 				if (action) {
-					try {
+					// Lark webhook callbacks should return within 3s, so we ack first and process in background.
+					this.runBackgroundEventHandler('card action', async () => {
 						await eventHandlers.onCardAction?.(action, ctx)
-					} catch (error) {
-						this.logger.error('Error handling card action:', error)
-					}
+					})
 				}
 
 				return true
@@ -182,6 +180,12 @@ export class LarkChannelStrategy implements IChatChannel<TIntegrationLarkOptions
 		})
 
 		return lark.adaptExpress(dispatcher, { autoChallenge: true })
+	}
+
+	private runBackgroundEventHandler(eventName: string, handler: () => Promise<void>): void {
+		void handler().catch((error) => {
+			this.logger.error(`Error handling ${eventName}:`, error)
+		})
 	}
 
 	parseInboundMessage(event: any, _ctx: TChatEventContext<TIntegrationLarkOptions>): TChatInboundMessage | null {

@@ -75,7 +75,7 @@ const ChatBIModelSchema = z.object({
   prompts: z.array(z.string()).optional().nullable().default([]).describe('The suggestion prompts')
 })
 
-const LanguageSchema = z.enum(['en', 'zh', 'zh-Hans']).describe('Language used by user')
+const LanguageSchema = z.enum(['en', 'zh-Hans']).describe('Language used by user')
 
 const TimeSlicerSchema = z.object({
   dimension: z.string().describe('The name of time dimension'),
@@ -971,7 +971,7 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
       tools.push(
         tool(
           async ({ language, models, more }, config: LangGraphRunnableConfig) => {
-            const lang = language === 'zh' ? 'zh' : 'en'
+            const lang = language === 'zh-Hans' ? 'zh-Hans' : 'en'
             const configuredModels = await getConfiguredModels()
             const modelMap = new Map(
               configuredModels.map((item) => [`${item.modelId}/${item.cubeName}`, item] as const)
@@ -979,7 +979,7 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
             const elements = [
               {
                 tag: 'markdown',
-                content: lang === 'zh' ? '你可以从这些数据集开始提问：' : 'You can start from these datasets:'
+                content: lang === 'zh-Hans' ? '你可以从这些数据集开始提问：' : 'You can start from these datasets:'
               }
             ] as any[]
 
@@ -1022,7 +1022,7 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
             if (more?.length) {
               elements.push({
                 tag: 'markdown',
-                content: lang === 'zh' ? '更多数据集：' : 'More datasets:'
+                content: lang === 'zh-Hans' ? '更多数据集：' : 'More datasets:'
               })
               elements.push({
                 tag: 'column_set',
@@ -1059,7 +1059,7 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
               header: {
                 title: {
                   tag: 'plain_text',
-                  content: lang === 'zh' ? '欢迎' : 'Welcome'
+                  content: lang === 'zh-Hans' ? '欢迎' : 'Welcome'
                 },
                 subtitle: {
                   tag: 'plain_text',
@@ -1088,9 +1088,9 @@ export class ChatBILarkMiddleware implements IAgentMiddlewareStrategy {
           },
           {
             name: 'welcome',
-            description: 'Show welcome message to guidle user ask questions abount models.',
+            description: 'Show welcome message to guide user ask questions about models.',
             schema: z.object({
-              language: z.enum(['en', 'zh']).describe('Language used by user'),
+              language: z.enum(['en', 'zh-Hans']).describe('Language used by user'),
               models: z
                 .array(
                   z.object({

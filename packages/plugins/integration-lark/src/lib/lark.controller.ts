@@ -1,5 +1,5 @@
 import * as lark from '@larksuiteoapi/node-sdk'
-import { IIntegration } from '@metad/contracts'
+import { IIntegration, IUser } from '@metad/contracts'
 import {
 	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	INTEGRATION_PERMISSION_SERVICE_TOKEN,
@@ -105,7 +105,7 @@ export class LarkHooksController {
 		}
 
 		const handler = this.larkChannel.createEventHandler(ctx, handlers)
-		const contextUser = RequestContext.currentUser() ?? (req.user as any)
+		const contextUser = RequestContext.currentUser() ?? (req.user as IUser)
 		const languageHeader = this.getHeaderValue(req.headers['language'])
 		const requestId = this.getHeaderValue(req.headers['x-request-id'])
 		const requestHeaders: Record<string, string> = {
