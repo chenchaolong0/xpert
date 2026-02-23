@@ -1,5 +1,4 @@
 export * from './chatdb/chatdb'
 export * from './chatbi/chatbi'
 export * from './indicators/indicators'
-export * from './chatbi-wecom/chatbi-wecom'
 export * from './model/model'
