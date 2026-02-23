@@ -1,6 +1,7 @@
 import * as lark from '@larksuiteoapi/node-sdk'
 import { IIntegration } from '@metad/contracts'
 import {
+	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	INTEGRATION_PERMISSION_SERVICE_TOKEN,
 	IntegrationPermissionService,
 	PluginContext,
@@ -322,7 +323,7 @@ export class LarkHooksController {
 
 		return {
 			accepted: true,
-			messageType: 'system.chat_dispatch.v1',
+			messageType: AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 			larkMessage: {
 				id: larkMessage.id,
 				messageId: larkMessage.messageId,

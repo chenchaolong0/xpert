@@ -1,8 +1,8 @@
-import axios, { AxiosError } from 'axios'
+import axios from 'axios'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import * as dotenv from 'dotenv'
-import { getErrorMessage } from '@xpert-ai/plugin-sdk'
+import { AGENT_CHAT_DISPATCH_MESSAGE_TYPE } from '@xpert-ai/plugin-sdk'
 
 const customEnvPath = process.env.INTEGRATION_LARK_E2E_ENV_PATH
 const defaultEnvPath = path.resolve(process.cwd(), 'packages/plugins/integration-lark/.env.e2e.local')
@@ -69,7 +69,7 @@ describeWithE2E('Integration Lark handoff callback channel (real e2e)', () => {
 
 				expect(response.status).toBe(200)
 				expect(response.data?.accepted).toBe(true)
-				expect(response.data?.messageType).toBe('system.chat_dispatch.v1')
+				expect(response.data?.messageType).toBe(AGENT_CHAT_DISPATCH_MESSAGE_TYPE)
 				expect(response.data?.larkMessage).toBeDefined()
 			} catch (error: any) {
 				console.error(error.response?.data || error)

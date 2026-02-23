@@ -10,7 +10,7 @@ import {
 	HandoffPermissionService,
 	PluginContext,
 	RequestContext,
-	SystemChatDispatchPayload
+	AgentChatDispatchPayload
 } from '@xpert-ai/plugin-sdk'
 import { randomUUID } from 'crypto'
 import { LarkConversationService } from '../conversation.service'
@@ -38,7 +38,7 @@ export type TLarkChatDispatchInput = {
  * Builds and enqueues handoff messages for Lark chat requests.
  *
  * Responsibilities:
- * - Translate Lark-side input/message context into system chat dispatch payloads.
+ * - Translate Lark-side input/message context into agent chat dispatch payloads.
  * - Persist stream/run callback state used by incremental UI updates.
  * - Update active message/session cache so follow-up actions can resume context.
  */
@@ -70,7 +70,7 @@ export class LarkChatDispatchService {
 		return input.larkMessage
 	}
 
-	async buildDispatchMessage(input: TLarkChatDispatchInput): Promise<HandoffMessage<SystemChatDispatchPayload>> {
+	async buildDispatchMessage(input: TLarkChatDispatchInput): Promise<HandoffMessage<AgentChatDispatchPayload>> {
 		const { xpertId, larkMessage } = input
 		const requestUserId = RequestContext.currentUserId()
 		const requestTenantId = RequestContext.currentTenantId()
@@ -184,7 +184,7 @@ export class LarkChatDispatchService {
 					messageType: LARK_CHAT_STREAM_CALLBACK_MESSAGE_TYPE,
 					headers: {
 						...(organizationId ? { organizationId } : {}),
-						// Callback/user headers must use executor user so system-chat runs in creator context.
+						// Callback/user headers must use executor user so agent-chat runs in creator context.
 						...(executorUserId ? { userId: executorUserId } : {}),
 						...(language ? { language } : {}),
 						...(conversationId ? { conversationId } : {}),
@@ -195,10 +195,10 @@ export class LarkChatDispatchService {
 					},
 					context: callbackContext
 				}
-			} as SystemChatDispatchPayload,
+			} as AgentChatDispatchPayload,
 			headers: {
 				...(organizationId ? { organizationId } : {}),
-				// Queue-level user header drives request context reconstruction in system-chat processor.
+				// Queue-level user header drives request context reconstruction in agent-chat processor.
 				...(executorUserId ? { userId: executorUserId } : {}),
 				...(language ? { language } : {}),
 				...(conversationId ? { conversationId } : {}),

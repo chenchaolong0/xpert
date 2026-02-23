@@ -1,11 +1,11 @@
 import { Observable, of } from 'rxjs'
 import { AGENT_CHAT_DISPATCH_MESSAGE_TYPE } from '@xpert-ai/plugin-sdk'
 import {
-	SystemChatDispatchHandoffProcessor
-} from './system-chat.processor'
-import { SystemChatCallbackNoopHandoffProcessor } from './system-chat-callback-noop.processor'
+	AgentChatDispatchHandoffProcessor
+} from './agent-chat-dispatch.processor'
+import { AgentChatCallbackNoopHandoffProcessor } from './agent-chat-callback-noop.processor'
 
-describe('SystemChatDispatchHandoffProcessor', () => {
+describe('AgentChatDispatchHandoffProcessor', () => {
 	const createContext = () => ({
 		runId: 'run-id',
 		traceId: 'trace-id',
@@ -32,7 +32,7 @@ describe('SystemChatDispatchHandoffProcessor', () => {
 	it('returns dead when required payload fields are missing', async () => {
 		const commandBus = { execute: jest.fn() }
 		const handoffQueueService = { enqueue: jest.fn() }
-		const processor = new SystemChatDispatchHandoffProcessor(
+		const processor = new AgentChatDispatchHandoffProcessor(
 			commandBus as any,
 			handoffQueueService as any
 		)
@@ -47,14 +47,14 @@ describe('SystemChatDispatchHandoffProcessor', () => {
 
 		expect(result).toEqual({
 			status: 'dead',
-			reason: 'Missing request in system chat dispatch payload'
+			reason: 'Missing request in agent chat dispatch payload'
 		})
 	})
 
 	it('converts stream events to callback messages with increasing sequence', async () => {
 		const commandBus = { execute: jest.fn() }
 		const handoffQueueService = { enqueue: jest.fn().mockResolvedValue({ id: 'callback-job-id' }) }
-		const processor = new SystemChatDispatchHandoffProcessor(
+		const processor = new AgentChatDispatchHandoffProcessor(
 			commandBus as any,
 			handoffQueueService as any
 		)
@@ -91,7 +91,7 @@ describe('SystemChatDispatchHandoffProcessor', () => {
 	it('emits error callback message when source observable fails', async () => {
 		const commandBus = { execute: jest.fn() }
 		const handoffQueueService = { enqueue: jest.fn().mockResolvedValue({ id: 'callback-job-id' }) }
-		const processor = new SystemChatDispatchHandoffProcessor(
+		const processor = new AgentChatDispatchHandoffProcessor(
 			commandBus as any,
 			handoffQueueService as any
 		)
@@ -120,11 +120,11 @@ describe('SystemChatDispatchHandoffProcessor', () => {
 	})
 })
 
-describe('SystemChatCallbackNoopHandoffProcessor', () => {
+describe('AgentChatCallbackNoopHandoffProcessor', () => {
 	it.each(['stream', 'complete', 'error'] as const)(
 		'returns ok for %s callback envelopes',
 		async (kind) => {
-		const processor = new SystemChatCallbackNoopHandoffProcessor()
+		const processor = new AgentChatCallbackNoopHandoffProcessor()
 		const payload =
 			kind === 'stream'
 				? {
@@ -149,7 +149,7 @@ describe('SystemChatCallbackNoopHandoffProcessor', () => {
 		const result = await processor.process(
 			{
 				id: 'callback-id',
-				type: 'system.chat_callback.noop.v1',
+				type: 'agent.chat_callback.noop.v1',
 				version: 1,
 				tenantId: 'tenant-id',
 				sessionKey: 'session-id',

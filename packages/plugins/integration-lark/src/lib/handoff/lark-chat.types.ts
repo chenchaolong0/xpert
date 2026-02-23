@@ -1,7 +1,7 @@
 import { LanguagesEnum, TChatOptions } from '@metad/contracts'
 import {
 	defineChannelMessageType,
-	SystemChatCallbackEnvelopePayload
+	AgentChatCallbackEnvelopePayload
 } from '@xpert-ai/plugin-sdk'
 import { LarkCardElement, LarkStructuredElement } from '../types'
 
@@ -61,7 +61,7 @@ export interface LarkChatCallbackContext extends Record<string, unknown> {
 	message: LarkChatMessageSnapshot
 }
 
-export interface LarkChatStreamCallbackPayload extends SystemChatCallbackEnvelopePayload {
+export interface LarkChatStreamCallbackPayload extends AgentChatCallbackEnvelopePayload {
 	context?: LarkChatCallbackContext
 }
 

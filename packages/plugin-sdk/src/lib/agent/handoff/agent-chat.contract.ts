@@ -3,19 +3,19 @@ import { defineAgentMessageType } from './message-type'
 
 export const AGENT_CHAT_DISPATCH_MESSAGE_TYPE = defineAgentMessageType('chat_dispatch', 1)
 
-export interface SystemChatCallbackTarget {
+export interface AgentChatCallbackTarget {
 	messageType: string
 	headers?: Record<string, string>
 	context?: Record<string, unknown>
 }
 
-export interface SystemChatDispatchPayload extends Record<string, unknown> {
+export interface AgentChatDispatchPayload extends Record<string, unknown> {
 	request: TChatRequest
 	options: TChatOptions
-	callback: SystemChatCallbackTarget
+	callback: AgentChatCallbackTarget
 }
 
-export interface SystemChatCallbackEnvelopePayload extends Record<string, unknown> {
+export interface AgentChatCallbackEnvelopePayload extends Record<string, unknown> {
 	kind: 'stream' | 'complete' | 'error'
 	sourceMessageId: string
 	sequence: number

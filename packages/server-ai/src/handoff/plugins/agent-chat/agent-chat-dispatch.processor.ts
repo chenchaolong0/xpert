@@ -9,9 +9,9 @@ import {
 	ProcessResult,
 	runWithRequestContext,
 	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
-	SystemChatCallbackEnvelopePayload,
-	SystemChatCallbackTarget,
-	SystemChatDispatchPayload,
+	AgentChatCallbackEnvelopePayload,
+	AgentChatCallbackTarget,
+	AgentChatDispatchPayload,
 } from '@xpert-ai/plugin-sdk'
 import type { Observable } from 'rxjs'
 import { XpertChatCommand } from '../../../xpert/commands/chat.command'
@@ -24,15 +24,15 @@ import { HandoffQueueService } from '../../message-queue.service'
 		lane: 'main'
 	}
 })
-export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<SystemChatDispatchPayload> {
-	private readonly logger = new Logger(SystemChatDispatchHandoffProcessor.name)
+export class AgentChatDispatchHandoffProcessor implements IHandoffProcessor<AgentChatDispatchPayload> {
+	private readonly logger = new Logger(AgentChatDispatchHandoffProcessor.name)
 
 	constructor(
 		private readonly commandBus: CommandBus,
 		private readonly handoffQueueService: HandoffQueueService
 	) {}
 
-	async process(message: HandoffMessage<SystemChatDispatchPayload>, ctx: ProcessContext): Promise<ProcessResult> {
+	async process(message: HandoffMessage<AgentChatDispatchPayload>, ctx: ProcessContext): Promise<ProcessResult> {
 		const request = message.payload?.request
 		const options = message.payload?.options
 		const callback = message.payload?.callback
@@ -40,23 +40,23 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 		if (!request) {
 			return {
 				status: 'dead',
-				reason: 'Missing request in system chat dispatch payload'
+				reason: 'Missing request in agent chat dispatch payload'
 			}
 		}
 		if (!options?.xpertId) {
 			return {
 				status: 'dead',
-				reason: 'Missing xpertId in system chat dispatch payload'
+				reason: 'Missing xpertId in agent chat dispatch payload'
 			}
 		}
 		if (!callback?.messageType) {
 			return {
 				status: 'dead',
-				reason: 'Missing callback.messageType in system chat dispatch payload'
+				reason: 'Missing callback.messageType in agent chat dispatch payload'
 			}
 		}
 
-		this.logger.debug(`Processing system chat dispatch message "${message.id}" with request:`, request, 'and options:', options)
+		this.logger.debug(`Processing agent chat dispatch message "${message.id}" with request:`, request, 'and options:', options)
 		return this.runTaskWithRequestContext(message, async () => {
 			const observable = await this.commandBus.execute<XpertChatCommand, Observable<MessageEvent>>(
 				new XpertChatCommand(request, options)
@@ -67,8 +67,8 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 	}
 
 	private async forwardStreamEvents(
-		sourceMessage: HandoffMessage<SystemChatDispatchPayload>,
-		callback: SystemChatCallbackTarget,
+		sourceMessage: HandoffMessage<AgentChatDispatchPayload>,
+		callback: AgentChatCallbackTarget,
 		observable: Observable<MessageEvent>,
 		ctx: ProcessContext
 	): Promise<void> {
@@ -79,11 +79,11 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 
 		const enqueueCallback = (
 			payload: Pick<
-				SystemChatCallbackEnvelopePayload,
+				AgentChatCallbackEnvelopePayload,
 				'kind' | 'sourceMessageId' | 'event' | 'error' | 'context'
 			>
 		) => {
-			const nextPayload: SystemChatCallbackEnvelopePayload = {
+			const nextPayload: AgentChatCallbackEnvelopePayload = {
 				...payload,
 				sequence
 			}
@@ -111,7 +111,7 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 				enqueueCallback({
 					kind: 'error',
 					sourceMessageId: sourceMessage.id,
-					error: 'System chat dispatch aborted',
+					error: 'Agent chat dispatch aborted',
 					context: callback.context
 				})
 					.finally(() => {
@@ -167,10 +167,10 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 	}
 
 	private buildCallbackMessage(
-		sourceMessage: HandoffMessage<SystemChatDispatchPayload>,
-		callback: SystemChatCallbackTarget,
-		payload: SystemChatCallbackEnvelopePayload
-	): HandoffMessage<SystemChatCallbackEnvelopePayload> {
+		sourceMessage: HandoffMessage<AgentChatDispatchPayload>,
+		callback: AgentChatCallbackTarget,
+		payload: AgentChatCallbackEnvelopePayload
+	): HandoffMessage<AgentChatCallbackEnvelopePayload> {
 		const now = Date.now()
 		const messageId = `${sourceMessage.id}:callback:${payload.sequence}`
 		return {
@@ -194,7 +194,7 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 	}
 
 	private async runTaskWithRequestContext(
-		message: HandoffMessage<SystemChatDispatchPayload>,
+		message: HandoffMessage<AgentChatDispatchPayload>,
 		task: () => Promise<ProcessResult>
 	): Promise<ProcessResult> {
 		const userId = this.toNonEmptyString(message.headers?.userId)
@@ -249,6 +249,6 @@ export class SystemChatDispatchHandoffProcessor implements IHandoffProcessor<Sys
 		if (typeof error === 'string') {
 			return error
 		}
-		return 'Unknown system chat dispatch error'
+		return 'Unknown agent chat dispatch error'
 	}
 }

@@ -1,5 +1,5 @@
 export * from './message-type'
-export * from './system-chat.contract'
+export * from './agent-chat.contract'
 export * from './handoff.interface'
 export * from './handoff-processor.decorator'
 export * from './handoff-processor.registry'

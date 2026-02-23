@@ -7,11 +7,11 @@ import {
 	AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 	HandoffMessage,
 	RunSource,
-	SystemChatDispatchPayload
+	AgentChatDispatchPayload
 } from '@xpert-ai/plugin-sdk'
 import { randomUUID } from 'crypto'
 import { HandoffQueueService } from '../../../handoff/message-queue.service'
-import { SYSTEM_CHAT_CALLBACK_NOOP_MESSAGE_TYPE } from '../../../handoff/plugins/system-chat/system-chat-callback-noop.processor'
+import { AGENT_CHAT_CALLBACK_NOOP_MESSAGE_TYPE } from '../../../handoff/plugins/agent-chat/agent-chat-callback-noop.processor'
 import { XpertService } from '../../xpert.service'
 import { XpertEnqueueTriggerDispatchCommand } from '../enqueue-trigger-dispatch.command'
 
@@ -67,7 +67,7 @@ export class XpertEnqueueTriggerDispatchHandler implements ICommandHandler<Xpert
 		const runId = `xpert-trigger-${randomUUID()}`
 		const sessionKey = params.executionId ?? `${xpertId}:trigger:${runId}`
 		const input = this.normalizeHumanInput(state)
-		const message: HandoffMessage<SystemChatDispatchPayload> = {
+		const message: HandoffMessage<AgentChatDispatchPayload> = {
 			id: runId,
 			type: AGENT_CHAT_DISPATCH_MESSAGE_TYPE,
 			version: 1,
@@ -88,9 +88,9 @@ export class XpertEnqueueTriggerDispatchHandler implements ICommandHandler<Xpert
 					from,
 					...(params.isDraft ? { isDraft: true } : {}),
 					...(params.executionId ? { execution: { id: params.executionId } } : {})
-				} as SystemChatDispatchPayload['options'],
+				} as AgentChatDispatchPayload['options'],
 				callback: {
-					messageType: SYSTEM_CHAT_CALLBACK_NOOP_MESSAGE_TYPE
+					messageType: AGENT_CHAT_CALLBACK_NOOP_MESSAGE_TYPE
 				}
 			},
 			headers: {

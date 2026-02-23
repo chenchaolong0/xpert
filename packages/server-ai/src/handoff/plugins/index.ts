@@ -1,13 +1,13 @@
 import { AgentChatHandoffProcessor } from './agent-chat/agent-chat.processor'
 import {
-	SystemChatDispatchHandoffProcessor,
-} from './system-chat/system-chat.processor'
+	AgentChatDispatchHandoffProcessor,
+} from './agent-chat/agent-chat-dispatch.processor'
 import {
-	SystemChatCallbackNoopHandoffProcessor
-} from './system-chat/system-chat-callback-noop.processor'
+	AgentChatCallbackNoopHandoffProcessor
+} from './agent-chat/agent-chat-callback-noop.processor'
 
 export const Processors = [
 	AgentChatHandoffProcessor,
-	SystemChatDispatchHandoffProcessor,
-	SystemChatCallbackNoopHandoffProcessor,
+	AgentChatDispatchHandoffProcessor,
+	AgentChatCallbackNoopHandoffProcessor,
 ]

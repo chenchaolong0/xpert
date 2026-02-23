@@ -65,7 +65,7 @@ typePolicies:
     idempotency:
       keyFrom: businessKey
       windowMs: 86400000
-  system.chat_dispatch.v1:
+  agent.chat_dispatch.v1:
     queue: realtime
     lane: high
     timeoutMs: 120000
