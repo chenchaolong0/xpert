@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, Delete, Get, Inject, Logger, Post, UseGuards } from '@nestjs/common'
 import { LazyModuleLoader, ModuleRef } from '@nestjs/core'
 import { ApiTags } from '@nestjs/swagger'
-import { GLOBAL_ORGANIZATION_SCOPE, RequestContext, STRATEGY_META_KEY, StrategyBus } from '@xpert-ai/plugin-sdk'
+import { getErrorMessage, GLOBAL_ORGANIZATION_SCOPE, RequestContext, STRATEGY_META_KEY, StrategyBus } from '@xpert-ai/plugin-sdk'
 import { buildConfig } from './config'
 import { getOrganizationPluginPath, getOrganizationPluginRoot } from './organization-plugin.store'
 import { PluginInstanceService } from './plugin-instance.service'
@@ -108,9 +108,16 @@ export class PluginController {
 
 			return { success: true, name: pluginName, packageName, organizationId }
 		} catch (error) {
+			let errorMessage = getErrorMessage(error)
 			this.logger.error(`Failed to install plugin ${body.pluginName}`, error)
-			await this.pluginInstanceService.removePlugins(organizationId, [packageName])
-			throw new BadRequestException(`Failed to install plugin ${body.pluginName}: ${error.message}`)
+
+			try {
+				await this.pluginInstanceService.removePlugins(organizationId, [packageName])
+			} catch (cleanupError) {
+				errorMessage += `;\n\nadditionally failed to clean up plugin after installation failure: ${getErrorMessage(cleanupError)}`
+				this.logger.error(`Failed to clean up plugin ${body.pluginName} after installation failure`, cleanupError)
+			}
+			throw new BadRequestException(`Failed to install plugin ${body.pluginName}: ${errorMessage}`)
 		}
 	}
 
