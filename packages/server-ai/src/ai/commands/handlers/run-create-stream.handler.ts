@@ -1,12 +1,14 @@
 import { STATE_VARIABLE_HUMAN, TChatRequest, XpertAgentExecutionStatusEnum } from '@metad/contracts'
+import { Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import { isNil, omitBy } from 'lodash'
-import { map } from 'rxjs/operators'
+import { finalize, map, tap } from 'rxjs/operators'
 import z from 'zod'
 import { ChatConversationUpsertCommand, GetChatConversationQuery } from '../../../chat-conversation'
 import { FindXpertQuery, XpertChatCommand } from '../../../xpert'
 import { XpertAgentExecutionUpsertCommand } from '../../../xpert-agent-execution'
 import { RunCreateStreamCommand } from '../run-create-stream.command'
+import { RedisSseStreamService } from '../../stream/redis-sse.service'
 
 const chatRequestSchema = z
 	.object({
@@ -14,7 +16,7 @@ const chatRequestSchema = z
 			z.string().min(1),
 			z
 				.object({
-					input: z.string().min(1)
+					input: z.string().min(1).optional()
 				})
 				.passthrough()
 		]),
@@ -28,11 +30,22 @@ const chatRequestSchema = z
 		checkpointId: z.string().optional()
 	})
 	.passthrough()
+	.refine(
+		(data) => {
+			// Check if at least one of the three fields is present
+			return data.input != null || data.command != null || data.state != null
+		},
+		{
+			message: "At least one of 'input', 'command', or 'state' must be provided.",
+			path: ['state'] // Pointing the error to 'input' as a representative path
+		}
+	)
 
 export function validateRunCreateInput(input: unknown): TChatRequest {
 	const parsed = chatRequestSchema.parse(typeof input === 'string' ? { input } : input)
 	const normalizedInput = typeof parsed.input === 'string' ? { input: parsed.input } : parsed.input
-	const rawState = parsed.state && typeof parsed.state === 'object' && !Array.isArray(parsed.state) ? parsed.state : undefined
+	const rawState =
+		parsed.state && typeof parsed.state === 'object' && !Array.isArray(parsed.state) ? parsed.state : undefined
 
 	return {
 		...parsed,
@@ -41,16 +54,19 @@ export function validateRunCreateInput(input: unknown): TChatRequest {
 			? {
 					...rawState,
 					[STATE_VARIABLE_HUMAN]: rawState[STATE_VARIABLE_HUMAN] ?? normalizedInput
-			  }
+				}
 			: { [STATE_VARIABLE_HUMAN]: normalizedInput }
 	}
 }
 
 @CommandHandler(RunCreateStreamCommand)
 export class RunCreateStreamHandler implements ICommandHandler<RunCreateStreamCommand> {
+	readonly #logger = new Logger(RunCreateStreamHandler.name)
+
 	constructor(
 		private readonly commandBus: CommandBus,
-		private readonly queryBus: QueryBus
+		private readonly queryBus: QueryBus,
+		private readonly redisSseStreamService: RedisSseStreamService
 	) {}
 
 	public async execute(command: RunCreateStreamCommand) {
@@ -92,7 +108,8 @@ export class RunCreateStreamHandler implements ICommandHandler<RunCreateStreamCo
 				{
 					xpertId: xpert.id,
 					from: 'api',
-					execution
+					execution,
+					sandboxEnvironmentId: (chatRequest as any).sandboxEnvironmentId
 				}
 			)
 		)
@@ -111,6 +128,16 @@ export class RunCreateStreamHandler implements ICommandHandler<RunCreateStreamCo
 					}
 
 					return message
+				}),
+				tap((message) => {
+					this.redisSseStreamService.appendEvent(threadId, execution.id, message.data).catch((error) => {
+						this.#logger.warn(`Failed to persist SSE event: ${error}`)
+					})
+				}),
+				finalize(() => {
+					this.redisSseStreamService.appendCompleteEvent(threadId, execution.id).catch((error) => {
+						this.#logger.warn(`Failed to persist SSE complete event: ${error}`)
+					})
 				})
 			)
 		}

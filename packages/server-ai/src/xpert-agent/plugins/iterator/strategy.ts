@@ -9,6 +9,7 @@ import {
 	IWorkflowNode,
 	IXpertAgentExecution,
 	TAgentRunnableConfigurable,
+	TWorkflowNodeMeta,
 	TWorkflowVarGroup,
 	TXpertGraph,
 	TXpertParameter,
@@ -66,7 +67,7 @@ export class WorkflowIteratorNodeStrategy implements IWorkflowNodeStrategy {
 	@Inject(QueryBus)
 	private readonly queryBus: QueryBus
 
-	readonly meta = {
+	readonly meta: TWorkflowNodeMeta = {
 		name: WorkflowNodeTypeEnum.ITERATOR,
 		label: {
 			en_US: 'Iterator',
@@ -90,6 +91,7 @@ export class WorkflowIteratorNodeStrategy implements IWorkflowNodeStrategy {
 		const { xpertId, graph, node, isDraft, environment } = payload
 
 		const entity = node.entity as IWFNIterator
+		const iteratorChannel = channelName(node.key)
 
 		const subgraphNodes = graph.nodes.filter(
 			(n) => n.parentId === node.key && (n.type === 'agent' || n.type === 'workflow')
@@ -125,23 +127,24 @@ export class WorkflowIteratorNodeStrategy implements IWorkflowNodeStrategy {
 				let subgraph = null
 				const abortController = new AbortController()
 				const compiled = await this.commandBus.execute(
-					new XpertWorkflowSubgraphCommand(
-						{ id: xpertId },
-						graph,
-						subgraphGraph,
-						{
-							isDraft,
-							rootController: abortController,
-							signal: abortController.signal,
-							disableCheckpointer: true, // The loop node cannot record the execution log correctly, so the Checkpointer is temporarily disabled.
-							environment,
-							execution,
-							subscriber
-						} as any
-					)
+					new XpertWorkflowSubgraphCommand({ id: xpertId }, graph, subgraphGraph, {
+						isDraft,
+						rootController: abortController,
+						signal: abortController.signal,
+						disableCheckpointer: true, // The loop node cannot record the execution log correctly, so the Checkpointer is temporarily disabled.
+						environment,
+						execution,
+						subscriber,
+						variables: [
+							{
+								name: iteratorChannel,
+								type: XpertParameterTypeEnum.OBJECT
+							}
+						]
+					} as any)
 				)
 				subgraph = compiled.graph
-				
+
 				const parameterValue = get(state, inputVariable)
 
 				const parallel = entity.parallel
@@ -152,7 +155,7 @@ export class WorkflowIteratorNodeStrategy implements IWorkflowNodeStrategy {
 					// 	? { [IteratorIndexParameterName]: index, [IteratorItemParameterName]: item }
 					// 	: { ...(item ?? {}), [IteratorIndexParameterName]: index, [IteratorItemParameterName]: item }
 					const inputs = {
-						[channelName(node.key)]: {
+						[iteratorChannel]: {
 							$index: index,
 							$item: item
 						}
@@ -372,10 +375,7 @@ export class WorkflowIteratorNodeStrategy implements IWorkflowNodeStrategy {
 	}
 }
 
-function resolveItemSchema(
-	inputVariable: string,
-	variables?: TWorkflowVarGroup[]
-): Partial<TXpertParameter> {
+function resolveItemSchema(inputVariable: string, variables?: TWorkflowVarGroup[]): Partial<TXpertParameter> {
 	if (!inputVariable || !variables?.length) {
 		return { type: XpertParameterTypeEnum.STRING }
 	}

@@ -177,6 +177,8 @@ export function collectProvidersWithMetadata<TMeta = any>(
 export interface XpertPluginModuleOptions extends OrganizationPluginStoreOptions {
 	/** The organization scope for plugin discovery/loading. Defaults to 'global'. */
 	organizationId?: string;
+	/** Nest module context for resolving dependencies during registration. */
+	module?: ModuleRef;
 	/** Override the plugin workspace root for the organization. Defaults to data/plugins/<orgId> when organizationId is set. */
 	baseDir?: string;
 	/** Explicit list of plugin package names (takes precedence) */
@@ -219,36 +221,40 @@ export async function registerPluginsAsync(opts: XpertPluginModuleOptions = {}) 
 	const modules: DynamicModule[] = [];
 
 	for (const {name} of pluginNames) {
-		const pluginBaseDir = opts.organizationId
-			? getOrganizationPluginPath(organizationId, name, opts)
-			: baseDirRoot;
-		// 2) Load each plugin and build its configuration.
-		const plugin = await loadPlugin(name, { basedir: pluginBaseDir });
-		const cfgRaw = opts.configs?.[plugin.meta.name] ?? {};
-		const cfg = buildConfig(plugin.meta.name, cfgRaw, plugin.config);
+		try {
+			const pluginBaseDir = opts.organizationId
+				? getOrganizationPluginPath(organizationId, name, opts)
+				: baseDirRoot;
+			// 2) Load each plugin and build its configuration.
+			const plugin = await loadPlugin(name, { basedir: pluginBaseDir });
+			const cfgRaw = opts.configs?.[plugin.meta.name] ?? {};
+			const cfg = buildConfig(plugin.meta.name, cfgRaw, plugin.config);
 
-		// 3) Create a plugin context and register the plugin module.
-		// Construct a temporary ctx as a placeholder; the actual app instance will be completed after the app goes online
-		const ctx = createPluginContext<any>({} as any, plugin.meta.name, cfg);
-		const mod = plugin.register(ctx);
+			// 3) Create a plugin context and register the plugin module.
+			// Construct a temporary ctx as a placeholder; the actual app instance will be completed after the app goes online
+			const ctx = createPluginContext<any>(opts.module, plugin.meta.name, cfg, plugin.permissions ?? []);
+			const mod = plugin.register(ctx);
 
-		// 4) Tag the module and its providers with organization and plugin metadata.
-		tagModuleWithOrganization(mod, organizationId, normalizePluginName(name));
-		modules.push(mod);
-		const existing = loaded.findIndex(
-			(item) => item.organizationId === organizationId && item.name === plugin.meta.name,
-		);
-		if (existing >= 0) {
-			loaded.splice(existing, 1);
+			// 4) Tag the module and its providers with organization and plugin metadata.
+			tagModuleWithOrganization(mod, organizationId, normalizePluginName(name));
+			modules.push(mod);
+			const existing = loaded.findIndex(
+				(item) => item.organizationId === organizationId && item.name === plugin.meta.name,
+			);
+			if (existing >= 0) {
+				loaded.splice(existing, 1);
+			}
+			loaded.push({
+				organizationId,
+				name: plugin.meta.name,
+				packageName: name,
+				instance: plugin,
+				ctx,
+				baseDir: pluginBaseDir,
+			});
+		} catch (error) {
+			Logger.error(`Failed to load/register plugin ${name} for organization ${organizationId}: ${error.message}`);
 		}
-		loaded.push({
-			organizationId,
-			name: plugin.meta.name,
-			packageName: name,
-			instance: plugin,
-			ctx,
-			baseDir: pluginBaseDir,
-		});
 	}
 
 	return {

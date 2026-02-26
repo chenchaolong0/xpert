@@ -33,6 +33,11 @@ export enum XpertTypeEnum {
   Knowledge = 'knowledge',
 }
 
+export type TXpertSandboxFeature = {
+  enabled: boolean
+  provider?: string
+}
+
 export type TXpertFeatures = {
   opener: {
     enabled: boolean
@@ -67,6 +72,11 @@ export type TXpertFeatures = {
     enabled: boolean
     scoreThreshold?: number
   }
+
+  /**
+   * Sandbox feature
+   */
+  sandbox?: TXpertSandboxFeature
 }
 
 export type TXpert = {
@@ -314,6 +324,7 @@ export type TXpertAgentConfig = {
      * Custom description for the tool
      */
     description?: string
+    parameters?: Record<string, any>
   }>
 }
 
@@ -553,6 +564,10 @@ export type TChatOptions = {
    * Specify environment with variables to run
    */
   environment?: IEnvironment
+  /**
+   * PRO: Specify a sandbox environment container to run in
+   */
+  sandboxEnvironmentId?: string
   /**
    * Specify additional tools
    */

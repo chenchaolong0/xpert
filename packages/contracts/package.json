@@ -1,6 +1,6 @@
 {
   "name": "@metad/contracts",
-  "version": "3.7.5",
+  "version": "3.8.0",
   "license": "AGPL-3.0",
   "repository": {
     "type": "git",
@@ -16,6 +16,6 @@
   "main": "./index.cjs.js",
   "dependencies": {
     "@a2ui/lit": "^0.8.1",
-    "@xpert-ai/chatkit-types": "^0.0.8"
+    "@xpert-ai/chatkit-types": "^0.0.12"
   }
 }

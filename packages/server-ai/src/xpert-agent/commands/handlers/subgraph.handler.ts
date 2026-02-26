@@ -20,7 +20,7 @@ import { getErrorMessage } from '@metad/server-common'
 import { RequestContext } from '@metad/server-core'
 import { Inject, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
-import { AfterModelHandler, AgentBuiltInState, AgentMiddleware, AgentMiddlewareRegistry, BeforeModelHandler, ModelRequest, WrapModelCallHandler, WrapToolCallHook } from '@xpert-ai/plugin-sdk'
+import { AfterModelHandler, AgentBuiltInState, AgentMiddleware, AgentMiddlewareRegistry, BeforeModelHandler, IAgentMiddlewareContext, ModelRequest, WrapModelCallHandler, WrapToolCallHook } from '@xpert-ai/plugin-sdk'
 import { get, isNil, omitBy, uniq } from 'lodash'
 import { I18nService } from 'nestjs-i18n'
 import { Subscriber } from 'rxjs'
@@ -66,7 +66,13 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 
 		// Signal controller in this subgraph
 		const abortController = new AbortController()
-		signal?.addEventListener('abort', () => abortController.abort())
+		// Create a named handler so we can remove it later
+		const abortHandler = () => abortController.abort()
+		signal?.addEventListener('abort', abortHandler)
+		// Clean up the listener when this subgraph's controller is aborted
+		abortController.signal.addEventListener('abort', () => {
+			signal?.removeEventListener('abort', abortHandler)
+		}, { once: true })
 
 		const {agent, graph: xpertGraph, next: agentNext, fail: agentFail} = await this.queryBus.execute<GetXpertWorkflowQuery, TXpertWorkflowQueryOutput>(
 			new GetXpertWorkflowQuery(xpert.id, agentKeyOrName, command.options?.isDraft)
@@ -104,7 +110,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 			chatModel = await this.queryBus.execute<GetXpertChatModelQuery, BaseChatModel>(
 				new GetXpertChatModelQuery(agent.team, agent, {
 					abortController: rootController,
-					usageCallback: assignExecutionUsage(execution)
+					usageCallback: assignExecutionUsage(execution),
+					threadId: thread_id
 				})
 			)
 
@@ -155,7 +162,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 			const items = await toolset.initTools()
 			const _variables = await toolset.getVariables()
 			toolsetVarirables.push(...(_variables ?? []))
-			stateVariables.push(...toolsetVarirables)
+			stateVariables.push(...(_variables ?? []))
 			// Filter available tools by agent
 			const availableTools = agent.options?.availableTools?.[toolset.getName()] ?? []
 			items.filter((tool) => availableTools.length ? availableTools.includes(tool.name) : true)
@@ -530,6 +537,10 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 		}
 
 		// Agent middlewares
+		const toolMap = tools.reduce<IAgentMiddlewareContext['tools']>((map, item) => {
+				map.set(item.tool.name, item.tool)
+				return map
+			}, new Map())
 		const agentMiddlewares: AgentMiddleware[] = await getAgentMiddlewares(graph, agent, this.agentMiddlewareRegistry, {
 			tenantId: xpert.tenantId,
 			userId: RequestContext.currentUserId(),
@@ -538,19 +549,27 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 			conversationId: options.conversationId,
 			xpertId: xpert.id,
 			agentKey,
+			tools: toolMap
 		})
 		// Middleware tools
 		const middlewareTools: TGraphTool[] = agentMiddlewares
 			.filter((middleware) => middleware?.tools?.length)
 			.flatMap((middleware) =>
-				middleware.tools.map((tool) => ({
-					toolset: {
-						provider: middleware.name,
-						title: tool.name,
-					},
-					caller: agent.key,
-					tool
-				}))
+				middleware.tools.map((tool) => {
+					if (team.agentConfig?.tools?.[tool.name]?.description) {
+						tool.description = team.agentConfig.tools[tool.name].description
+					}
+					toolMap.set(tool.name, tool)
+					return {
+						toolset: {
+							provider: middleware.name,
+							title: tool.name,
+						},
+						caller: agent.key,
+						tool,
+						variables: team.agentConfig?.tools?.[tool.name]?.memories || team.agentConfig?.toolsMemory?.[tool.name]
+					}
+				})
 			)
 		if (middlewareTools.length) {
 			tools.push(...middlewareTools)
@@ -696,7 +715,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 			const { memories } = state
 			const summary = getChannelState(state, agentChannel)?.summary
 			const parameters = stateToParameters(state, environment)
-			let systemTemplate = `Current time: ${new Date().toISOString()}\nYour ID is '${agent.key}'. Your name is '${agent.name || xpert.name}'.\n${parseXmlString(agent.prompt) ?? ''}`
+			let systemTemplate = `Current date: ${state.sys.date}\nYour ID is '${agent.key}'. Your name is '${agent.name || xpert.name}'.\n${parseXmlString(agent.prompt) ?? ''}`
 			if (memories?.length) {
 				systemTemplate += `\n\n<memories>\n${formatMemories(memories)}\n</memories>`
 			}
@@ -767,7 +786,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 					new GetXpertChatModelQuery(agent.team, null, {
 						copilotModel: agent.options.fallback.copilotModel,
 						abortController: rootController,
-						usageCallback: assignExecutionUsage(execution)
+						usageCallback: assignExecutionUsage(execution),
+						threadId: thread_id
 					})
 				)
 				const {structuredChatModel: fallbackChatModel} = withStructured(_fallbackChatModel, agent, withTools)
@@ -882,6 +902,13 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 		const agentDecisionNode = afterModelExecutionOrder[afterModelExecutionOrder.length - 1]?.key ?? agentKey
 		const afterAgentEntryNode = afterAgentExecutionOrder[0]?.key
 		const agentFinalExitNode = afterAgentExecutionOrder[afterAgentExecutionOrder.length - 1]?.key ?? agentDecisionNode
+		// Only trigger start nodes need special routing into the agent start chain.
+		const triggerStartNodeKeys = new Set(
+			(isStart ? startNodes : []).filter((key) => {
+				const node = graph.nodes.find((_) => _.key === key)
+				return node?.type === 'workflow' && node.entity.type === WorkflowNodeTypeEnum.TRIGGER
+			})
+		)
 
 		const subgraphBuilder = new StateGraph<any, any, any, string>(SubgraphStateAnnotation)
 
@@ -1027,7 +1054,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 					xpert: team,
 					rootController: rootController,
 					rootExecutionId: command.options.rootExecutionId,
-					channel: agentChannel
+					channel: agentChannel,
+					threadId: thread_id,
 				})
 			)
 			subgraphBuilder.addNode(GRAPH_NODE_TITLE_CONVERSATION, titleAgent)
@@ -1088,7 +1116,14 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
 									  )
 			Object.entries(edges).forEach(([name, value]) => {
 				const ends: string[] = Array.isArray(value) ? value : [value]
-				ends.forEach((end) => subgraphBuilder.addEdge(name, end))
+				ends.forEach((end) => {
+					// Ensure trigger-first entry runs beforeAgent hooks by entering from agentStartNode.
+					if (triggerStartNodeKeys.has(name) && end === agentKey) {
+						subgraphBuilder.addEdge(name, agentStartNode)
+						return
+					}
+					subgraphBuilder.addEdge(name, end)
+				})
 			})
 			Object.keys(conditionalEdges).forEach((name) => subgraphBuilder.addConditionalEdges(name, conditionalEdges[name][0] as any, conditionalEdges[name][1]))
 		}

@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, Delete, Get, Inject, Logger, Post, UseGuards } from '@nestjs/common'
-import { LazyModuleLoader } from '@nestjs/core'
+import { LazyModuleLoader, ModuleRef } from '@nestjs/core'
 import { ApiTags } from '@nestjs/swagger'
-import { GLOBAL_ORGANIZATION_SCOPE, RequestContext, STRATEGY_META_KEY, StrategyBus } from '@xpert-ai/plugin-sdk'
+import { getErrorMessage, GLOBAL_ORGANIZATION_SCOPE, RequestContext, STRATEGY_META_KEY, StrategyBus } from '@xpert-ai/plugin-sdk'
 import { buildConfig } from './config'
 import { getOrganizationPluginPath, getOrganizationPluginRoot } from './organization-plugin.store'
 import { PluginInstanceService } from './plugin-instance.service'
@@ -20,7 +20,8 @@ export class PluginController {
 		private readonly loadedPlugins: Array<LoadedPluginRecord>,
 		private readonly pluginInstanceService: PluginInstanceService,
 		private readonly strategyBus: StrategyBus,
-		private readonly lazyLoader: LazyModuleLoader
+		private readonly lazyLoader: LazyModuleLoader,
+		private readonly moduleRef: ModuleRef,
 	) {}
 
 	@Get()
@@ -58,6 +59,7 @@ export class PluginController {
 			const organizationBaseDir = getOrganizationPluginRoot(organizationId)
 			// 1) Install and register into current module context (mirrors registerPluginsAsync logic)
 			const { modules } = await registerPluginsAsync({
+				module: this.moduleRef,
 				organizationId,
 				plugins: [{name: packageNameWithVersion, source: body.source}],
 				configs: { [packageName]: body.config },
@@ -106,9 +108,16 @@ export class PluginController {
 
 			return { success: true, name: pluginName, packageName, organizationId }
 		} catch (error) {
+			let errorMessage = getErrorMessage(error)
 			this.logger.error(`Failed to install plugin ${body.pluginName}`, error)
-			await this.pluginInstanceService.removePlugins(organizationId, [packageName])
-			throw new BadRequestException(`Failed to install plugin ${body.pluginName}: ${error.message}`)
+
+			try {
+				await this.pluginInstanceService.removePlugins(organizationId, [packageName])
+			} catch (cleanupError) {
+				errorMessage += `;\n\nadditionally failed to clean up plugin after installation failure: ${getErrorMessage(cleanupError)}`
+				this.logger.error(`Failed to clean up plugin ${body.pluginName} after installation failure`, cleanupError)
+			}
+			throw new BadRequestException(`Failed to install plugin ${body.pluginName}: ${errorMessage}`)
 		}
 	}
 
