@@ -37,7 +37,9 @@ import {
   XpertParameterTypeEnum,
   TSelectOption,
   TXpertTeamNode,
-  CopilotServerService
+  WorkflowNodeTypeEnum,
+  CopilotServerService,
+  ModelFeature
 } from 'apps/cloud/src/app/@core'
 import { AppService } from 'apps/cloud/src/app/app.service'
 import { XpertStudioApiService } from '../../domain'
@@ -122,6 +124,20 @@ export class XpertStudioPanelAgentComponent {
   readonly key = input<string>()
   readonly nodes = computed(() => this.apiService.viewModel()?.nodes)
   readonly node = computed(() => this.nodes()?.find((_) => _.key === this.key()))
+  readonly iteratorInputs = computed(
+    () => {
+      const parentId = this.node()?.parentId
+      if (!parentId) {
+        return undefined
+      }
+      const parent = this.nodes()?.find((node) => node.key === parentId)
+      if (parent?.type === 'workflow' && parent.entity?.type === WorkflowNodeTypeEnum.ITERATOR) {
+        return [parent.key]
+      }
+      return undefined
+    },
+    { equal: isEqual }
+  )
   readonly xpertAgent = computed(() => this.node()?.entity as IXpertAgent)
   readonly promptInputElement = viewChild('editablePrompt', { read: ElementRef<HTMLDivElement> })
 
@@ -210,6 +226,7 @@ export class XpertStudioPanelAgentComponent {
       this.attachment.update((state) => ({...(state ?? {}), variable}))
     }
   })
+  readonly attachmentCanEnable = computed(() => this.selectedAiModel()?.features?.includes(ModelFeature.VISION))
   readonly draft = this.apiService.viewModel
   readonly toolsets = computed(() => {
     const draft = this.draft()
@@ -313,6 +330,7 @@ export class XpertStudioPanelAgentComponent {
     agentKey: this.key(),
     environmentId: this.apiService.environmentId(),
     connections: this.connections(),
+    inputs: this.iteratorInputs(),
   }))
 
   readonly #variables = myRxResource({
@@ -321,6 +339,7 @@ export class XpertStudioPanelAgentComponent {
       agentKey: this.key(),
       environmentId: this.apiService.environmentId(),
       connections: this.connections(),
+      inputs: this.iteratorInputs(),
     } as TXpertVariablesOptions),
       loader: ({ request }) => {
         return request ? this.xpertAPI.getNodeVariables(request) : of(null)
@@ -397,6 +416,15 @@ export class XpertStudioPanelAgentComponent {
         if (this.xpertAgent()) {
           this.prompt.set(this.xpertAgent().prompt)
           this.copilotModel.set(this.xpertAgent().copilotModel)
+        }
+      },
+      { allowSignalWrites: true }
+    )
+
+    effect(
+      () => {
+        if (this.selectedAiModel() && !this.attachmentCanEnable()) {
+          this.attachmentEnabled.set(false)
         }
       },
       { allowSignalWrites: true }
