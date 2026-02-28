@@ -38,8 +38,7 @@ import {
   TSelectOption,
   TXpertTeamNode,
   WorkflowNodeTypeEnum,
-  CopilotServerService,
-  ModelFeature
+  CopilotServerService
 } from 'apps/cloud/src/app/@core'
 import { AppService } from 'apps/cloud/src/app/app.service'
 import { XpertStudioApiService } from '../../domain'
@@ -226,7 +225,6 @@ export class XpertStudioPanelAgentComponent {
       this.attachment.update((state) => ({...(state ?? {}), variable}))
     }
   })
-  readonly attachmentCanEnable = computed(() => this.selectedAiModel()?.features?.includes(ModelFeature.VISION))
   readonly draft = this.apiService.viewModel
   readonly toolsets = computed(() => {
     const draft = this.draft()
