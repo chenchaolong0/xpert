@@ -131,7 +131,7 @@ export class XpertStudioPanelAgentComponent {
         return undefined
       }
       const parent = this.nodes()?.find((node) => node.key === parentId)
-      if (parent?.type === 'workflow' && parent.entity?.type === WorkflowNodeTypeEnum.ITERATOR) {
+      if (parent?.type === 'workflow') {
         return [parent.key]
       }
       return undefined
@@ -421,14 +421,6 @@ export class XpertStudioPanelAgentComponent {
       { allowSignalWrites: true }
     )
 
-    effect(
-      () => {
-        if (this.selectedAiModel() && !this.attachmentCanEnable()) {
-          this.attachmentEnabled.set(false)
-        }
-      },
-      { allowSignalWrites: true }
-    )
 
   }
 
