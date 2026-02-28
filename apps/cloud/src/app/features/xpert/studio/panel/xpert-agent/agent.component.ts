@@ -123,7 +123,7 @@ export class XpertStudioPanelAgentComponent {
   readonly key = input<string>()
   readonly nodes = computed(() => this.apiService.viewModel()?.nodes)
   readonly node = computed(() => this.nodes()?.find((_) => _.key === this.key()))
-  readonly iteratorInputs = computed(
+  readonly parentInputs = computed(
     () => {
       const parentId = this.node()?.parentId
       if (!parentId) {
