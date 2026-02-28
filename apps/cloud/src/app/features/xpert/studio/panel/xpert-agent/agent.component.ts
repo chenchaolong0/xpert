@@ -328,7 +328,7 @@ export class XpertStudioPanelAgentComponent {
     agentKey: this.key(),
     environmentId: this.apiService.environmentId(),
     connections: this.connections(),
-    inputs: this.iteratorInputs(),
+    inputs: this.parentInputs(),
   }))
 
   readonly #variables = myRxResource({
@@ -337,7 +337,7 @@ export class XpertStudioPanelAgentComponent {
       agentKey: this.key(),
       environmentId: this.apiService.environmentId(),
       connections: this.connections(),
-      inputs: this.iteratorInputs(),
+      inputs: this.parentInputs(),
     } as TXpertVariablesOptions),
       loader: ({ request }) => {
         return request ? this.xpertAPI.getNodeVariables(request) : of(null)
