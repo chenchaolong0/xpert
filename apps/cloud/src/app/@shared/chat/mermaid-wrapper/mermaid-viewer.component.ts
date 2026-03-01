@@ -5,7 +5,6 @@ import { TranslateModule } from '@ngx-translate/core'
 import mermaid from 'mermaid'
 import { CopyComponent } from '../../common'
 
-let mermaidInitialized = false
 let idCounter = 0
 
 @Component({
@@ -33,10 +32,8 @@ export class MermaidViewerComponent implements AfterViewInit {
   constructor(private el: ElementRef) {}
 
   async ngAfterViewInit() {
-    if (!mermaidInitialized) {
-      mermaid.initialize({ startOnLoad: false, theme: 'default' })
-      mermaidInitialized = true
-    }
+    const isDark = document.documentElement.classList.contains('dark')
+    mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default' })
 
     const container = this.el.nativeElement.querySelector('.mermaid-container')
     if (this.code && container) {
