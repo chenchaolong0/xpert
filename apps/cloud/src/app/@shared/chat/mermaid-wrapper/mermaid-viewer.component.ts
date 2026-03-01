@@ -43,13 +43,14 @@ export class MermaidViewerComponent implements AfterViewInit, OnDestroy {
     if (!this.code || !container) return
 
     // Use cached SVG if available to avoid repeated rendering during streaming
-    const cached = svgCache.get(this.code)
+    const isDark = document.documentElement.classList.contains('dark')
+    const cacheKey = `${isDark ? 'dark' : 'light'}:${this.code}`
+    const cached = svgCache.get(cacheKey)
     if (cached) {
       container.innerHTML = cached
       return
     }
 
-    const isDark = document.documentElement.classList.contains('dark')
     mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default' })
 
     // Validate syntax before rendering to avoid errors from incomplete code during streaming
@@ -65,7 +66,10 @@ export class MermaidViewerComponent implements AfterViewInit, OnDestroy {
     try {
       const id = `mermaid-graph-${idCounter++}`
       const { svg } = await mermaid.render(id, this.code)
-      svgCache.set(this.code, svg)
+      svgCache.set(cacheKey, svg)
+      if (svgCache.size > 100) {
+        svgCache.delete(svgCache.keys().next().value)
+      }
       if (!this.destroyed) {
         container.innerHTML = svg
       }
