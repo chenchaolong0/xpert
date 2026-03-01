@@ -1,11 +1,12 @@
 import { CommonModule } from '@angular/common'
-import { AfterViewInit, Component, ElementRef, Input } from '@angular/core'
+import { AfterViewInit, Component, ElementRef, Input, OnDestroy } from '@angular/core'
 import { MatTooltipModule } from '@angular/material/tooltip'
 import { TranslateModule } from '@ngx-translate/core'
 import mermaid from 'mermaid'
 import { CopyComponent } from '../../common'
 
 let idCounter = 0
+const svgCache = new Map<string, string>()
 
 @Component({
   standalone: true,
@@ -26,23 +27,50 @@ let idCounter = 0
     <div class="mermaid-container overflow-auto"></div>
   </div>`
 })
-export class MermaidViewerComponent implements AfterViewInit {
+export class MermaidViewerComponent implements AfterViewInit, OnDestroy {
   @Input() code!: string
+
+  private destroyed = false
 
   constructor(private el: ElementRef) {}
 
+  ngOnDestroy() {
+    this.destroyed = true
+  }
+
   async ngAfterViewInit() {
+    const container = this.el.nativeElement.querySelector('.mermaid-container')
+    if (!this.code || !container) return
+
+    // Use cached SVG if available to avoid repeated rendering during streaming
+    const cached = svgCache.get(this.code)
+    if (cached) {
+      container.innerHTML = cached
+      return
+    }
+
     const isDark = document.documentElement.classList.contains('dark')
     mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default' })
 
-    const container = this.el.nativeElement.querySelector('.mermaid-container')
-    if (this.code && container) {
-      try {
-        const id = `mermaid-graph-${idCounter++}`
-        const { svg } = await mermaid.render(id, this.code)
+    // Validate syntax before rendering to avoid errors from incomplete code during streaming
+    try {
+      await mermaid.parse(this.code)
+    } catch {
+      container.textContent = this.code
+      return
+    }
+
+    if (this.destroyed) return
+
+    try {
+      const id = `mermaid-graph-${idCounter++}`
+      const { svg } = await mermaid.render(id, this.code)
+      svgCache.set(this.code, svg)
+      if (!this.destroyed) {
         container.innerHTML = svg
-      } catch (err) {
-        console.error('Invalid mermaid syntax', err)
+      }
+    } catch (err) {
+      if (!this.destroyed) {
         container.textContent = this.code
       }
     }
