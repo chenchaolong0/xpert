@@ -13,6 +13,14 @@
       >
         <i class="ri-route-line"></i> &nbsp; SSE
       </li>
+      <li #option4="cdkOption" class="p-2 flex-1 flex justify-center items-center h-8 rounded-xl text-sm shrink-0 font-medium "
+        [class.selected]="option4.isSelected()"
+        [cdkOption]="eMCPServerType.HTTP"
+        [cdkOptionDisabled]="!!toolsetId()"
+        [attr.disabled]="!!toolsetId()"
+      >
+        <i class="ri-global-line"></i> &nbsp; HTTP
+      </li>
       <li #option2="cdkOption" class="p-2 flex-1 flex justify-center items-center h-8 rounded-xl text-sm shrink-0 font-medium "
         [class.selected]="option2.isSelected()"
         [cdkOption]="eMCPServerType.STDIO"
@@ -60,7 +68,7 @@
     </div>
   </div>
 
-  @if (types()[0] === eMCPServerType.SSE) {
+  @if (types()[0] === eMCPServerType.SSE || types()[0] === eMCPServerType.HTTP) {
     <div class="">
       <div class="text-semibold mb-1 flex h-6 items-center gap-1 text-text-secondary">
         <div class="truncate">{{'PAC.MCP.Url' | translate: {Default: 'Url'} }}</div>
@@ -312,7 +320,7 @@
       cdkListbox
       [(ngModel)]="views"
     >
-      @if (types()[0] !== eMCPServerType.SSE) {
+      @if (types()[0] !== eMCPServerType.SSE && types()[0] !== eMCPServerType.HTTP) {
         <button #view1="cdkOption" type="button" class="view-option p-2 inline-flex items-center gap-x-2 border-b-2 border-transparent text-sm whitespace-nowrap text-gray-500 hover:text-blue-600 focus:outline-hidden focus:text-blue-600 disabled:opacity-50 disabled:pointer-events-none active" id="tabs-with-icons-item-1" aria-selected="true" data-hs-tab="#tabs-with-icons-1" aria-controls="tabs-with-icons-1" role="tab"
           [cdkOption]="'script'"
           [class.active]="view1.isSelected()"
