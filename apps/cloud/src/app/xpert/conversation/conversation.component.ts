@@ -134,17 +134,13 @@ export class ChatConversationComponent {
   }
 
   onRetry() {
-    // Find the latest AI message with an executionId as the retry target
-    const latestAiMsg = [...this.messages()]
-      .reverse()
-      .find((m) => ['ai', 'assistant'].includes(m.role) && !!m.executionId)
-
-    if (!latestAiMsg?.id) {
-      return
-    }
-
-    // Keep behavior consistent with message-level retry
-    this.chatService.retryMessageById(latestAiMsg.id)
+    this.chatService.updateConversation({
+      status: 'busy',
+      error: null
+    })
+    this.chatService.chat({
+      retry: true
+    })
   }
 
   onSelectSuggestionQuestion(question: string) {

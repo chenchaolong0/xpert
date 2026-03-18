@@ -22,7 +22,7 @@ import {
 } from '@metad/contracts'
 import { getErrorMessage } from '@metad/server-common'
 import { RequestContext } from '@metad/server-core'
-import { BadRequestException, Logger, NotFoundException } from '@nestjs/common'
+import { Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import { catchError, concat, EMPTY, Observable, of, switchMap, tap } from 'rxjs'
 import { uniq } from 'lodash'
@@ -93,9 +93,8 @@ export class XpertChatHandler implements ICommandHandler<XpertChatCommand> {
         let aiMessage: CopilotChatMessage
         let executionId: string
         let checkpointId: string = null
-        // Retry takes priority over confirm/command to avoid being hijacked
-        if (!retry && (confirm || command)) {
-            // Continue thread when confirm or reject operation
+        // Continue thread when confirm or reject operation
+        if (confirm || command) {
             conversation = await this.queryBus.execute(
                 new GetChatConversationQuery({ id: conversationId }, ['messages'])
             )
@@ -108,7 +107,7 @@ export class XpertChatHandler implements ICommandHandler<XpertChatCommand> {
                 await this.commandBus.execute(new CancelSummaryJobCommand(conversation.id))
             }
         } else {
-            // New message or retry in conversation
+            // New message in conversation
             if (conversationId) {
                 conversation = await this.commandBus.execute(
                     new ChatConversationUpsertCommand(
@@ -165,88 +164,19 @@ export class XpertChatHandler implements ICommandHandler<XpertChatCommand> {
 
             let userMessage: IChatMessage = null
             if (retry) {
-                // Validate retry prerequisites
-                if (!conversationId || !c.options.messageId) {
-                    throw new BadRequestException('Retry requires both conversationId and messageId')
-                }
                 const retryMessage = conversation.messages.find((_) => _.id === c.options.messageId)
-                if (!retryMessage) {
-                    throw new NotFoundException(`Retry target message not found: ${c.options.messageId}`)
-                }
-                if (!['ai', 'assistant'].includes(retryMessage.role)) {
-                    throw new BadRequestException('Only AI/assistant messages can be retried')
-                }
-                if (!retryMessage.parentId) {
-                    throw new BadRequestException('Retry target message has no parent')
-                }
-
-                userMessage = conversation.messages.find((_) => _.id === retryMessage.parentId)
-                if (!userMessage) {
-                    throw new NotFoundException(`Parent user message not found for retry target: ${retryMessage.id}`)
-                }
-                if (!['human', 'user'].includes(userMessage.role)) {
-                    throw new BadRequestException('Retry target parent must be a user message')
-                }
-
-                // Always rebuild retry input from the parent user message.
-                // This re-generates the selected assistant answer deterministically.
-                const retryInputText = appendMessagePlainText('', userMessage.content)
-                input = {
-                    ...(input ?? {}),
-                    input: retryInputText,
-                    ...(userMessage.attachments?.length
-                        ? {
-                              files: userMessage.attachments as unknown as Partial<IStorageFile>[]
-                          }
-                        : {})
-                }
-                state = {
-                    ...(state ?? {}),
-                    [STATE_VARIABLE_HUMAN]: input
-                }
-
-                // Prefer checkpoint from the message BEFORE this user turn.
-                // That avoids replaying the selected answer and prevents duplicate human/ai pairs.
-                const previousAssistantMessage = userMessage.parentId
-                    ? conversation.messages.find((_) => _.id === userMessage.parentId)
-                    : null
-                if (previousAssistantMessage?.executionId) {
-                    const previousExecution = await this.queryBus.execute(
-                        new XpertAgentExecutionOneQuery(previousAssistantMessage.executionId)
-                    )
-                    if (previousExecution?.checkpointId) {
-                        checkpointId = previousExecution.checkpointId
-                    }
-                }
-
-                // Fallback:
-                // - for first-turn retry (no previous assistant), rewind to the oldest ancestor checkpoint
-                //   to ensure no old assistant answer is replayed;
-                // - otherwise use immediate parent checkpoint of retry execution.
-                if (!checkpointId && retryMessage.executionId) {
-                    const retryExecution = await this.queryBus.execute(
-                        new XpertAgentExecutionOneQuery(retryMessage.executionId)
-                    )
-                    if (retryExecution?.checkpointId) {
-                        const checkpoint = await this.checkpointService.findOne({
-                            where: {
-                                thread_id: conversation.threadId,
-                                checkpoint_ns: retryExecution.checkpointNs ?? '',
-                                checkpoint_id: retryExecution.checkpointId
-                            }
-                        })
-                        const fallbackCheckpointId = checkpoint?.parent_id ?? retryExecution.checkpointId
-                        if (!previousAssistantMessage?.executionId) {
-                            checkpointId = await this.resolveOldestCheckpoint(
-                                conversation.threadId,
-                                retryExecution.checkpointNs ?? '',
-                                fallbackCheckpointId
-                            )
-                        } else {
-                            checkpointId = fallbackCheckpointId
+                const execution = await this.queryBus.execute(new XpertAgentExecutionOneQuery(retryMessage.executionId))
+                if (execution?.checkpointId) {
+                    const checkpoint = await this.checkpointService.findOne({
+                        where: {
+                            thread_id: conversation.threadId,
+                            checkpoint_ns: execution.checkpointNs ?? '',
+                            checkpoint_id: execution.checkpointId
                         }
-                    }
+                    })
+                    checkpointId = checkpoint?.parent_id ?? execution.checkpointId
                 }
+                userMessage = conversation.messages.find((_) => _.id === retryMessage.parentId)
             } else {
                 const _humanMessage: Partial<IChatMessage> = {
                     parent: conversation.messages[conversation.messages.length - 1],
@@ -431,13 +361,6 @@ export class XpertChatHandler implements ICommandHandler<XpertChatCommand> {
                                     aiMessage.status = status
                                     aiMessage.error = error
                                 }
-                                // Keep message snapshot consistent with final execution output.
-                                // This is part of the normal protocol contract (not a fallback path).
-                                const hasMessageText =
-                                    typeof aiMessage.content === 'string' ? aiMessage.content.trim().length > 0 : false
-                                if (!hasMessageText && result) {
-                                    aiMessage.content = result
-                                }
                                 await this.commandBus.execute(new ChatMessageUpsertCommand(aiMessage))
 
                                 subscriber.next({
@@ -581,41 +504,6 @@ export class XpertChatHandler implements ICommandHandler<XpertChatCommand> {
                 //
             }
         })
-    }
-
-    /**
-     * Walk to the oldest ancestor checkpoint in the same namespace.
-     * Used for first-turn retry to avoid replaying already-generated assistant messages.
-     */
-    private async resolveOldestCheckpoint(
-        threadId: string,
-        checkpointNs: string,
-        startCheckpointId: string
-    ): Promise<string> {
-        let checkpointId = startCheckpointId
-        const visited = new Set<string>()
-
-        for (let i = 0; i < 30 && checkpointId; i++) {
-            if (visited.has(checkpointId)) {
-                break
-            }
-            visited.add(checkpointId)
-
-            const checkpoint = await this.checkpointService.findOne({
-                where: {
-                    thread_id: threadId,
-                    checkpoint_ns: checkpointNs ?? '',
-                    checkpoint_id: checkpointId
-                }
-            })
-            const parentId = checkpoint?.parent_id
-            if (!parentId || parentId === checkpointId) {
-                break
-            }
-            checkpointId = parentId
-        }
-
-        return checkpointId
     }
 }
 

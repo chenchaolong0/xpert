@@ -206,16 +206,9 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                 graphInput = new Command(pick(options.command, 'resume', 'update'))
             }
         } else if (state[STATE_VARIABLE_HUMAN]) {
-            // Distinguish two modes clearly:
-            // 1) checkpoint + new human input (retry regenerate) -> should inject input
-            // 2) command.resume (continue pending task) -> should NOT inject input
-            const isResumeCommand = !!options.command?.resume
             // English note: Validate human-provided parameter values before building graph input.
             // This prevents oversized strings (max length) from silently passing into runtime.
-            // Skip validation only for resume command mode.
-            if (!isResumeCommand) {
-                validateXpertParameterValues(agent?.parameters, state[STATE_VARIABLE_HUMAN] as any)
-            }
+            validateXpertParameterValues(agent?.parameters, state[STATE_VARIABLE_HUMAN] as any)
 
             const volumeClient = new VolumeClient({ tenantId, catalog: 'users', userId, projectId: options.projectId })
             // const agentChannel = channelName(agent.key)
@@ -234,26 +227,13 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
             // 			agent.options?.vision
             // 		)
             // 	: null
-            // In resume command mode, do NOT spread runtime state payload because checkpoint
-            // already contains the graph state. In retry-regenerate mode (checkpoint + input),
-            // we must inject human/input to produce a new assistant answer.
-            const baseState = (() => {
-                if (!isResumeCommand) {
-                    return state ?? {}
-                }
-                // Use plain object deletion to avoid generic type inference issues from omit().
-                const nextState = { ...(state ?? {}) } as Record<string, unknown>
-                delete nextState[STATE_VARIABLE_HUMAN]
-                delete nextState.input
-                return nextState
-            })()
             graphInput = {
-                ...baseState,
-                ...(!isResumeCommand ? omit(state[STATE_VARIABLE_HUMAN], 'input', 'files') : {}),
+                ...(state ?? {}),
+                ...omit(state[STATE_VARIABLE_HUMAN], 'input', 'files'),
                 /**
                  * @deprecated use `human.input` instead
                  */
-                ...(!isResumeCommand ? { input: state[STATE_VARIABLE_HUMAN].input } : {}),
+                input: state[STATE_VARIABLE_HUMAN].input,
                 // // Ensure graph has the real human message for execution logs and prompt input
                 // // Skip injecting when resuming from checkpoint to avoid duplicates
                 // ...(shouldInjectHumanMessage
@@ -277,13 +257,9 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                     [STATE_SYS_WORKSPACE_PATH]: workspacePath,
                     [STATE_SYS_WORKSPACE_URL]: workspaceUrl
                 },
-                ...(!isResumeCommand
-                    ? {
-                          [STATE_VARIABLE_HUMAN]: {
-                              ...state[STATE_VARIABLE_HUMAN]
-                          }
-                      }
-                    : {}),
+                [STATE_VARIABLE_HUMAN]: {
+                    ...state[STATE_VARIABLE_HUMAN]
+                },
                 memories
             }
         }
