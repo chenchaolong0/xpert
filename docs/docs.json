@@ -1,0 +1,129 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Xpert",
+  "colors": {
+    "primary": "#16A34A",
+    "light": "#07C983",
+    "dark": "#15803D"
+  },
+  "favicon": "/images/logo.svg",
+  "logo": {
+    "light": "/images/logo.svg",
+    "dark": "/images/logo.svg"
+  },
+  "navigation": {
+    "languages": [
+      {
+        "language": "en",
+        "default": true,
+        "tabs": [
+          {
+            "tab": "Guides",
+            "groups": [
+              {
+                "group": "Start Here",
+                "pages": ["en/index"]
+              },
+              {
+                "group": "Guides",
+                "pages": [
+                  "en/guides/plugin",
+                  "en/guides/file-upload-architecture",
+                  "en/guides/minio-file-storage",
+                  "en/guides/rustfs-file-storage",
+                  "en/guides/agent-middleware",
+                  "en/guides/handoff",
+                  "en/guides/icon-schema",
+                  "en/guides/release",
+                  "en/guides/message-assembly-v2"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "OpenAPI",
+            "groups": [
+              {
+                "group": "AI",
+                "openapi": {
+                  "source": "api/openapi.ai.json",
+                  "directory": "en/api-reference"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "language": "zh-Hans",
+        "tabs": [
+          {
+            "tab": "指南",
+            "groups": [
+              {
+                "group": "开始",
+                "pages": ["zh-hans/index"]
+              },
+              {
+                "group": "指南",
+                "pages": [
+                  "zh-hans/guides/plugin",
+                  "zh-hans/guides/file-upload-architecture",
+                  "zh-hans/guides/minio-file-storage",
+                  "zh-hans/guides/rustfs-file-storage",
+                  "zh-hans/guides/agent-middleware",
+                  "zh-hans/guides/handoff",
+                  "zh-hans/guides/icon-schema",
+                  "zh-hans/guides/release",
+                  "zh-hans/guides/message-assembly-v2",
+                  "zh-hans/guides/permission",
+                  "zh-hans/guides/newroles",
+                  "zh-hans/guides/features-current",
+                  "zh-hans/guides/permissions-current"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "OpenAPI",
+            "groups": [
+              {
+                "group": "AI",
+                "openapi": {
+                  "source": "api/openapi.ai.json",
+                  "directory": "zh-hans/api-reference"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "GitHub",
+          "href": "https://github.com/xpert-ai/xpert",
+          "icon": "github"
+        }
+      ]
+    }
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/xpert-ai/xpert"
+      }
+    ]
+  },
+  "contextual": {
+    "options": ["copy", "view", "chatgpt", "claude", "perplexity", "mcp", "cursor", "vscode"]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/xpert-ai/xpert"
+    }
+  }
+}

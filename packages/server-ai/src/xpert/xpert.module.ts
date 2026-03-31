@@ -16,9 +16,9 @@ import { CopilotStoreModule } from '../copilot-store/copilot-store.module'
 import { AnonymousStrategy } from './auth/anonymous.strategy'
 import { EnvironmentModule } from '../environment'
 import { WorkflowTriggerRegistry } from '@xpert-ai/plugin-sdk'
-import { BullModule } from '@nestjs/bull'
-import { QUEUE_XPERT_TRIGGER } from './types'
-import { XpertTriggerConsumer } from './jobs/trigger.job'
+import { SandboxModule } from '../sandbox/sandbox.module'
+import { HandoffQueueModule } from '../handoff/message-queue.module'
+import { XpertTriggerBootstrapRecoveryService } from './jobs/trigger-bootstrap-recovery.service'
 
 @Module({
     imports: [
@@ -33,14 +33,20 @@ import { XpertTriggerConsumer } from './jobs/trigger.job'
         forwardRef(() => UserModule),
         forwardRef(() => XpertWorkspaceModule),
         forwardRef(() => EnvironmentModule),
+        SandboxModule,
         CopilotCheckpointModule,
         CopilotStoreModule,
-        BullModule.registerQueue({
-                    name: QUEUE_XPERT_TRIGGER,
-                  })
+        HandoffQueueModule
     ],
     controllers: [XpertController],
-    providers: [XpertService, AnonymousStrategy, WorkflowTriggerRegistry, XpertTriggerConsumer, ...CommandHandlers, ...QueryHandlers],
+    providers: [
+        XpertService,
+        XpertTriggerBootstrapRecoveryService,
+        AnonymousStrategy,
+        WorkflowTriggerRegistry,
+        ...CommandHandlers,
+        ...QueryHandlers
+    ],
     exports: [XpertService]
 })
 export class XpertModule { }

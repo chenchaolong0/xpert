@@ -10,9 +10,9 @@ English | [中文](./README_zh.md)
 </p>
 
 <p align="center">
-  <a href="https://app.mtda.cloud/">XpertAI Cloud</a> ·
-  <a href="https://xpertai.cn/en/docs/getting-started/community/">Self-hosting</a> ·
-  <a href="https://xpertai.cn/en/docs/">Documentation</a> ·
+  <a href="https://app.xpertai.cn/">XpertAI Cloud</a> ·
+  <a href="https://docs.xpertai.cn/en/ai/getting-started/community">Self-hosting</a> ·
+  <a href="https://docs.xpertai.cn/en/">Documentation</a> ·
   <a href="https://xpertai.cn/en/#connect">Enterprise inquiry</a>
 </p>
 
@@ -38,9 +38,13 @@ English | [中文](./README_zh.md)
 
 ## 💡 What's New
 
-**🚀 3.7 Agent Middleware Released!**
+**🚀 3.8 Sandbox Environment!**
 
-XpertAI 3.7 officially launches the Agent Middleware feature, providing developers with fine-grained control and visual orchestration capabilities over agent execution flows through a modular plugin architecture. This feature is compatible with the LangChain ecosystem, supports flexible composition of middleware nodes such as logging, security, and transformation, empowering enterprises to rapidly build observable and extensible agent workflows.
+XpertAI 3.8 releases the Agent Sandbox feature, providing an isolated execution and file operation environment for agents. One of the core capabilities of the sandbox plugin is the provider plugin mechanism. Through custom providers, you can integrate different runtime infrastructures, such as:
+
+- Docker/Podman container systems
+- [Runloop](https://runloop.ai/), [Modal](https://modal.com/), [Daytona](https://daytona.io/)
+- Remote virtual machines or secure sandbox services
 
 ## Agent-Workflow Hybrid Architecture
 
@@ -49,13 +53,13 @@ In today’s rapidly evolving AI landscape, enterprises face a key challenge: **
 
 [Blog - Agent-Workflow Hybrid Architecture](https://xpertai.cn/en/blog/agent-workflow-hybrid-architecture)
 
-### [Agent Orchestration Platform](https://xpertai.cn/en/docs/ai/)
+### [Agent Orchestration Platform](https://docs.xpertai.cn/en/ai/)
 
 By coordinating the collaboration of multiple intelligent agents, Xpert can handle complex tasks. Xpert integrates different types of AI agents through efficient management mechanisms, leveraging their capabilities to address multidimensional problems.
 
 [Xpert Agent](https://github.com/user-attachments/assets/e21f8b35-2f72-4b81-a245-f36759df7c27)
 
-### [Data Analysis Platform](https://xpertai.cn/en/docs/models/)
+### [Data Analysis Platform](https://docs.xpertai.cn/en/bi/)
 
 A cloud-based agile data analysis platform supporting multidimensional modeling, metrics management, and BI visualization. The platform connects to various data sources, enabling efficient and flexible data analysis and visualization, and offers multiple intelligent analysis tools to help enterprises quickly and accurately uncover business value and make operational decisions.
 
@@ -86,7 +90,7 @@ Please check our [Wiki - Development](https://github.com/xpert-ai/xpert/wiki/Dev
 
 ### Demo
 
-Xpert AI Platform Demo at <https://app.mtda.cloud>.
+Xpert AI Platform Demo at <https://app.xpertai.cn>.
 
 Notes:
 
@@ -94,7 +98,7 @@ Notes:
 
 ### Production (SaaS)
 
-Xpert AI Platform SaaS is available at <https://app.mtda.cloud>.
+Xpert AI Platform SaaS is available at <https://app.xpertai.cn>.
 
 Note: it's currently in Alpha version / in testing mode, please use it with caution!
 
@@ -139,7 +143,7 @@ For Production, we recommend:
   - [ ] Audit logs
   - [ ] Role-based access control
   - [ ] Data encryption
-- [ ] **Sandbox** – Secure testing environment, isolating experiments from production.
+- [x] **Sandbox** – Secure testing environment, isolating experiments from production.
 - [ ] **Trace**, **Evaluation** – Observability and evaluation tools for agents and workflows.
   - [ ] Trace system
   - [ ] Evaluation framework

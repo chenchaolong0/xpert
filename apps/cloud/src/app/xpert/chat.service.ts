@@ -1,14 +1,15 @@
 import { HttpErrorResponse } from '@angular/common/http'
 import { computed, DestroyRef, effect, inject, Injectable, signal } from '@angular/core'
-import { appendMessageContent } from '@metad/copilot'
 import { linkedModel } from '@metad/core'
 import { omit, uniq } from 'lodash-es'
 import { NGXLogger } from 'ngx-logger'
 import { derivedAsync } from 'ngxtension/derived-async'
 import { catchError, combineLatest, map, of, startWith, Subscription } from 'rxjs'
 import {
+  appendMessageContent,
   ChatMessageEventTypeEnum,
   ChatMessageTypeEnum,
+  createMessageAppendContextTracker,
   getErrorMessage,
   IChatConversation,
   IChatMessageFeedback,
@@ -21,7 +22,10 @@ import {
   TChatMessageStep,
   TChatOptions,
   TChatRequest,
+  TXpertChatResumeDecision,
+  TThreadContextUsageEvent,
   TInterruptCommand,
+  TMessageAppendContext,
   TMessageContent,
   uuid,
   XpertAgentExecutionStatusEnum
@@ -35,93 +39,23 @@ import {
   XpertAPIService
 } from '../@core/services'
 import { AppService } from '../app.service'
+import { filterLatestMessages } from '../@shared/chat/filter-latest-messages'
+import { buildResumeDecision, extractInterruptPatch } from '../@shared/chat/interrupt-request'
 import { XpertHomeService } from './home.service'
+import { isThreadContextUsageEvent, upsertThreadContextUsage } from '../@shared/chat/context/thread-context-usage'
 import { TCopilotChatMessage } from './types'
 
-function getCreatedAtMs(value: unknown): number {
-  if (!value) {
-    return 0
-  }
-  const date = value instanceof Date ? value : new Date(value as string)
-  const time = date.getTime()
-  return Number.isFinite(time) ? time : 0
+function findLastAiMessageId(messages: Array<{ id?: string; role?: string }> | null | undefined): string | null {
+  return [...(messages ?? [])].reverse().find((message) => message?.role === 'ai')?.id ?? null
 }
 
-/**
- * Keep only the newest child per parentId chain, while preserving the original list order.
- */
-function filterLatestMessages<T extends { id?: string; parentId?: string | null; createdAt?: Date }>(
-  messages?: T[] | null
-): T[] | null | undefined {
-  if (!messages?.length) {
-    return messages ?? null
+function createRetryPlaceholderMessage(): TCopilotChatMessage {
+  return {
+    id: uuid(),
+    role: 'ai',
+    content: '',
+    status: 'thinking'
   }
-
-  const byId = new Map<string, T>()
-  const indexById = new Map<string, number>()
-  const childrenByParent = new Map<string | null, T[]>()
-
-  messages.forEach((message, index) => {
-    if (!message?.id) {
-      return
-    }
-    byId.set(message.id, message)
-    indexById.set(message.id, index)
-    const parentId = message.parentId ?? null
-    const siblings = childrenByParent.get(parentId)
-    if (siblings) {
-      siblings.push(message)
-    } else {
-      childrenByParent.set(parentId, [message])
-    }
-  })
-
-  const roots = messages.filter((message) => {
-    if (!message?.id) {
-      return false
-    }
-    const parentId = message.parentId
-    return !parentId || !byId.has(parentId)
-  })
-
-  const keep = new Set<string>()
-
-  const pickLatest = (children: T[]) => {
-    return children.reduce<T | null>((latest, child) => {
-      if (!latest) {
-        return child
-      }
-      const childTime = getCreatedAtMs(child.createdAt)
-      const latestTime = getCreatedAtMs(latest.createdAt)
-      if (childTime > latestTime) {
-        return child
-      }
-      if (childTime < latestTime) {
-        return latest
-      }
-      const childIndex = indexById.get(child.id) ?? -1
-      const latestIndex = indexById.get(latest.id) ?? -1
-      return childIndex > latestIndex ? child : latest
-    }, null)
-  }
-
-  roots.forEach((root) => {
-    let current: T | null = root
-    while (current && !keep.has(current.id)) {
-      keep.add(current.id)
-      const children = childrenByParent.get(current.id)
-      if (!children?.length) {
-        break
-      }
-      current = pickLatest(children)
-    }
-  })
-
-  if (!keep.size) {
-    return messages
-  }
-
-  return messages.filter((message) => !message?.id || keep.has(message.id))
 }
 
 /**
@@ -158,7 +92,9 @@ export abstract class ChatService {
   readonly toolsets = signal<IXpertToolset[]>([])
 
   readonly answering = signal<boolean>(false)
+  readonly contextUsageByAgentKey = signal<Record<string, TThreadContextUsageEvent>>({})
   protected chatSubscription: Subscription = null
+  private readonly messageAppendContextTracker = createMessageAppendContextTracker()
 
   readonly lang = this.appService.lang
 
@@ -192,17 +128,21 @@ export abstract class ChatService {
             )
           )
         ]).pipe(
-          map<[IChatConversation, Record<string, IChatMessageFeedback>], {loading: boolean}>(([conversation, feedbacks]) => {
-            return {
-              conversation: conversation ? {
-                ...conversation,
-                messages: filterLatestMessages(conversation.messages),
-                title: conversation.title || shortTitle(conversation.options?.parameters?.input)
-              } : null,
-              feedbacks,
-              loading: false
+          map<[IChatConversation, Record<string, IChatMessageFeedback>], { loading: boolean }>(
+            ([conversation, feedbacks]) => {
+              return {
+                conversation: conversation
+                  ? {
+                      ...conversation,
+                      messages: filterLatestMessages(conversation.messages),
+                      title: conversation.title || shortTitle(conversation.options?.parameters?.input)
+                    }
+                  : null,
+                feedbacks,
+                loading: false
+              }
             }
-          }),
+          ),
           catchError((error) => {
             this.#toastr.error(getErrorMessage(error))
             return of({ loading: false })
@@ -260,7 +200,7 @@ export abstract class ChatService {
   readonly suggestion_enabled = computed(() => this.xpert()?.features?.suggestion?.enabled)
 
   // Attachments
-  readonly attachments = signal<{file?: File; url?: string; storageFile?: IStorageFile}[]>([])
+  readonly attachments = signal<{ file?: File; url?: string; storageFile?: IStorageFile }[]>([])
   readonly recentAttachments = signal<IStorageFile[]>(null)
 
   constructor() {
@@ -284,7 +224,7 @@ export abstract class ChatService {
         // Update local data when remote conversation loaded
         const conversation = this.#conversation()?.conversation
         if (conversation) {
-          if (!this.conversation() || this.conversation()?.id && this.conversation().id !== conversation.id) {
+          if (!this.conversation() || (this.conversation()?.id && this.conversation().id !== conversation.id)) {
             this.conversation.set(conversation)
           }
         }
@@ -303,11 +243,15 @@ export abstract class ChatService {
       { allowSignalWrites: true }
     )
 
-    effect(() => {
-      if (!this.conversationId()) {
-        this.suggestionQuestions.set([])
-      }
-    }, { allowSignalWrites: true })
+    effect(
+      () => {
+        if (!this.conversationId()) {
+          this.suggestionQuestions.set([])
+          this.contextUsageByAgentKey.set({})
+        }
+      },
+      { allowSignalWrites: true }
+    )
 
     // effect(() => {
     //   console.log('ChatService: conversation changed', this.conversation(), this.#messages())
@@ -316,7 +260,18 @@ export abstract class ChatService {
 
   fetchConversation(id: string) {
     return this.conversationService.getById(id, {
-      relations: ['xpert', 'xpert.agent', 'xpert.agents', 'xpert.knowledgebases', 'xpert.toolsets', 'messages', 'messages.attachments', 'task']
+      relations: [
+        'xpert',
+        'xpert.copilotModel',
+        'xpert.agent',
+        'xpert.agents',
+        'xpert.knowledgebases',
+        'xpert.toolsets',
+        'messages',
+        'messages.execution',
+        'messages.attachments',
+        'task'
+      ]
     })
   }
 
@@ -324,7 +279,7 @@ export abstract class ChatService {
     return this.feedbackService.getMyAll({ where: { conversationId: id } })
   }
 
-  ask(content: string, params: {files: {id: string}[]}) {
+  ask(content: string, params: { files: { id: string }[] }) {
     const id = uuid()
     const humanMessage: TCopilotChatMessage = {
       id,
@@ -335,15 +290,90 @@ export abstract class ChatService {
       humanMessage.attachments = params.files as IStorageFile[]
     }
     this.appendMessage(humanMessage)
-    // Send message
-    this.chat({ id, content, files: params.files })
+    this.sendMessage({ id, content, files: params.files })
   }
 
   chatRequest(name: string, request: TChatRequest, options: TChatOptions) {
-    if (this.project()) {
+    if (this.project() && (!('action' in request) || request.action === 'send')) {
       request.projectId = this.project().id
     }
     return this.chatService.chat(request, options)
+  }
+
+  sendMessage(options: { id?: string; content: string; files?: Partial<IStorageFile>[] }) {
+    const request: TChatRequest = {
+      action: 'send',
+      conversationId: this.conversation()?.id,
+      projectId: this.project()?.id,
+      message: {
+        clientMessageId: options.id,
+        input: {
+          ...(this.parametersValue() ?? {}),
+          input: options.content,
+          files: options.files
+        }
+      }
+    }
+
+    this.executeChatRequest(request, {
+      mode: 'send',
+      content: options.content
+    })
+  }
+
+  resumeOperation(options?: { decision?: TXpertChatResumeDecision['type']; command?: TInterruptCommand }) {
+    const conversationId = this.conversation()?.id
+    const aiMessageId = findLastAiMessageId(this.messages())
+    if (!conversationId || !aiMessageId) {
+      this.#toastr.error('Conversation not found')
+      return
+    }
+
+    const patch = extractInterruptPatch(options?.command)
+    const request: TChatRequest = {
+      action: 'resume',
+      conversationId,
+      target: {
+        aiMessageId
+      },
+      decision: buildResumeDecision(options?.decision ?? 'confirm', options?.command),
+      ...(patch ? { patch } : {})
+    }
+
+    this.executeChatRequest(request, {
+      mode: 'resume'
+    })
+  }
+
+  retryMessage(messageId?: string) {
+    const conversationId = this.conversation()?.id
+    const messages = this.messages()
+    const aiMessageId = messageId ?? findLastAiMessageId(messages)
+    if (!conversationId || !aiMessageId) {
+      this.#toastr.error('Conversation not found')
+      return
+    }
+
+    const targetIndex = messages.findIndex((message) => message?.id === aiMessageId)
+    if (targetIndex < 0) {
+      this.#toastr.error('Message not found')
+      return
+    }
+
+    this.#messages.set(messages.slice(0, targetIndex))
+
+    const request: TChatRequest = {
+      action: 'retry',
+      conversationId,
+      source: {
+        aiMessageId
+      }
+    }
+
+    this.executeChatRequest(request, {
+      mode: 'retry',
+      messageId: aiMessageId
+    })
   }
 
   chat(
@@ -367,6 +397,36 @@ export abstract class ChatService {
       messageId?: string
     }>
   ) {
+    if (options.retry) {
+      this.retryMessage(options.messageId)
+      return
+    }
+
+    if (options.confirm || options.reject || options.command) {
+      this.resumeOperation({
+        decision: options.reject ? 'reject' : 'confirm',
+        command: options.command
+      })
+      return
+    }
+
+    if (options.content) {
+      this.sendMessage({
+        id: options.id,
+        content: options.content,
+        files: options.files
+      })
+    }
+  }
+
+  private executeChatRequest(
+    request: TChatRequest,
+    options: {
+      mode: 'send' | 'resume' | 'retry'
+      content?: string
+      messageId?: string
+    }
+  ) {
     // Clear previous suggestion questions when starting a new round of chat.
     // Purpose: avoid showing stale suggestions until the current round generates new ones.
     if (this.suggestion_enabled()) {
@@ -375,16 +435,19 @@ export abstract class ChatService {
     }
 
     this.answering.set(true)
+    this.messageAppendContextTracker.reset()
     this.conversation.update((state) => ({ ...(state ?? {}), status: 'busy', error: null }) as IChatConversation)
 
-    if (options.confirm) {
+    if (options.mode === 'resume') {
       this.updateLatestMessage((message) => {
         return {
           ...message,
           status: 'thinking'
         }
       })
-    } else if (options.content) {
+    } else if (options.mode === 'retry') {
+      this.appendMessage(createRetryPlaceholderMessage())
+    } else if (options.mode === 'send' && options.content) {
       // Add ai message placeholder
       // this.appendMessage({
       //   id: uuid(),
@@ -394,27 +457,10 @@ export abstract class ChatService {
       // })
     }
 
-    const request = {
-      input: options.retry ? null : {
-        ...(this.parametersValue() ?? {}),
-        input: options.content,
-        files: options.files
-      },
-      conversationId: this.conversation()?.id,
-      id: options.id,
-      command: options.command,
-      confirm: options.confirm,
-      retry: options.retry,
-    } as TChatRequest
-
-    this.chatSubscription = this.chatRequest(
-      this.xpert()?.slug,
-      request,
-      {
-        xpertId: this.xpert()?.id,
-        messageId: options.messageId,
-      }
-    ).subscribe({
+    this.chatSubscription = this.chatRequest(this.xpert()?.slug, request, {
+      xpertId: this.xpert()?.id,
+      messageId: options.messageId
+    }).subscribe({
       next: (msg) => {
         if (msg.event === 'error') {
           this.#toastr.error(msg.data)
@@ -426,10 +472,17 @@ export abstract class ChatService {
             }
             const event = JSON.parse(msg.data)
             if (event.type === ChatMessageTypeEnum.MESSAGE) {
+              const latestMessageId = this.messages()[this.messages().length - 1]?.id
+              const { messageContext } = this.messageAppendContextTracker.resolve({
+                incoming: event.data,
+                fallbackSource: typeof event.data === 'string' ? 'chat_stream' : undefined,
+                fallbackStreamId: String(latestMessageId ?? this.conversation()?.id ?? 'chat_stream')
+              })
+
               if (typeof event.data === 'string') {
-                this.appendStreamMessage(event.data)
+                this.appendStreamMessage(event.data, messageContext)
               } else {
-                this.appendMessageComponent(event.data)
+                this.appendMessageComponent(event.data, messageContext)
               }
             } else if (event.type === ChatMessageTypeEnum.EVENT) {
               switch (event.event) {
@@ -446,7 +499,7 @@ export abstract class ChatService {
                   }
                   break
                 case ChatMessageEventTypeEnum.ON_MESSAGE_START:
-                  if (options.content) {
+                  if (options.mode === 'send' && options.content) {
                     this.appendMessage({
                       id: uuid(),
                       role: 'ai',
@@ -483,6 +536,11 @@ export abstract class ChatService {
                   break
                 }
                 case ChatMessageEventTypeEnum.ON_CHAT_EVENT: {
+                  if (isThreadContextUsageEvent(event.data)) {
+                    this.setContextUsage(event.data)
+                    break
+                  }
+
                   if (event.data?.type === 'sandbox') {
                     this.conversation.update((conversation) => {
                       return {
@@ -510,7 +568,7 @@ export abstract class ChatService {
                         }
                       }
                     }
-                    
+
                     return {
                       ...message,
                       events: [...(message.events ?? []), event.data]
@@ -527,6 +585,7 @@ export abstract class ChatService {
       },
       error: (error) => {
         this.answering.set(false)
+        this.messageAppendContextTracker.reset()
         this.#toastr.error(getErrorMessage(error))
         this.updateLatestMessage((message) => {
           return {
@@ -538,6 +597,7 @@ export abstract class ChatService {
       },
       complete: () => {
         this.answering.set(false)
+        this.messageAppendContextTracker.reset()
         this.updateLatestMessage((message) => {
           return {
             ...message,
@@ -559,10 +619,13 @@ export abstract class ChatService {
 
     // Update conversation status to indicate it's no longer busy
     // This will stop the relativeTimes pipe from updating (condition: conversationStatus === 'busy')
-    this.conversation.update((state) => ({
-      ...(state ?? {}),
-      status: 'idle'
-    }) as IChatConversation)
+    this.conversation.update(
+      (state) =>
+        ({
+          ...(state ?? {}),
+          status: 'idle'
+        }) as IChatConversation
+    )
 
     // Update status of ai message
     this.updateLatestMessage((lastM) => {
@@ -595,8 +658,13 @@ export abstract class ChatService {
       if (this.answering() && this.conversation()?.id) {
         this.cancelMessage()
       }
+      this.contextUsageByAgentKey.set({})
       this.conversationId.set(id)
     }
+  }
+
+  setContextUsage(event: TThreadContextUsageEvent) {
+    this.contextUsageByAgentKey.update((state) => upsertThreadContextUsage(state, event))
   }
 
   updateConversation(data: Partial<IChatConversation>) {
@@ -609,42 +677,18 @@ export abstract class ChatService {
     )
   }
 
-  appendMessageComponent(content: TMessageContent) {
+  appendMessageComponent(content: TMessageContent, context?: TMessageAppendContext) {
     this.updateLatestMessage((lastM) => {
-      appendMessageContent(lastM as any, content)
+      appendMessageContent(lastM, content, context)
       return {
         ...lastM
       }
     })
   }
 
-  appendStreamMessage(text: string) {
+  appendStreamMessage(text: string, context?: TMessageAppendContext) {
     this.updateLatestMessage((lastM) => {
-      const content = lastM.content
-      lastM.status = 'answering'
-      if (typeof content === 'string') {
-        lastM.content = content + text
-      } else if (Array.isArray(content)) {
-        const lastContent = content[content.length - 1]
-        if (lastContent.type === 'text') {
-          content[content.length - 1] = {
-            ...lastContent,
-            text: lastContent.text + text
-          }
-          lastM.content = [...content]
-        } else {
-          lastM.content = [
-            ...content,
-            {
-              type: 'text',
-              text
-            }
-          ]
-        }
-      } else {
-        lastM.content = text
-      }
-
+      appendMessageContent(lastM, text, context)
       return {
         ...lastM
       }
@@ -694,8 +738,12 @@ export abstract class ChatService {
   abstract isPublic(): boolean
 
   // Attachments
-  onAttachCreated(file: IStorageFile): void {}
-  onAttachDeleted(fileId: string): void {}
+  onAttachCreated(file: IStorageFile): void {
+    //
+  }
+  onAttachDeleted(fileId: string): void {
+    //
+  }
   getRecentAttachmentsSignal() {
     return this.recentAttachments
   }

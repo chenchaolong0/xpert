@@ -1,0 +1,438 @@
+import type { SandboxExecutionOptions } from './execution'
+
+/**
+ * Protocol definition for pluggable memory backends.
+ *
+ * This module defines the BackendProtocol that all backend implementations
+ * must follow. Backends can store files in different locations (state, filesystem,
+ * database, etc.) and provide a uniform interface for file operations.
+ */
+
+export type MaybePromise<T> = T | Promise<T>
+
+/**
+ * Structured file listing info.
+ *
+ * Minimal contract used across backends. Only "path" is required.
+ * Other fields are best-effort and may be absent depending on backend.
+ */
+export interface FileInfo {
+  /** File path */
+  path: string
+  /** Whether this is a directory */
+  is_dir?: boolean
+  /** File size in bytes (approximate) */
+  size?: number
+  /** ISO 8601 timestamp of last modification */
+  modified_at?: string
+}
+
+/**
+ * Structured grep match entry.
+ */
+export interface GrepMatch {
+  /** File path where match was found */
+  path: string
+  /** Line number (1-indexed) */
+  line: number
+  /** The matching line text */
+  text: string
+}
+
+/**
+ * Read mode for file reading operations.
+ */
+export type ReadMode = 'slice' | 'indentation'
+
+/**
+ * Configuration for indentation-aware file reading.
+ */
+export interface IndentationOptions {
+  /** Anchor line number (1-indexed), defaults to offset */
+  anchor_line?: number
+  /** Maximum indentation depth to collect; 0 means unlimited */
+  max_levels?: number
+  /** Whether to include sibling blocks at the same indentation level */
+  include_siblings?: boolean
+  /** Whether to include header lines (comments) above the anchor block */
+  include_header?: boolean
+  /** Hard cap on returned lines */
+  max_lines?: number
+}
+
+/**
+ * File data structure used by backends.
+ *
+ * All file data is represented as objects with this structure:
+ */
+export interface FileData {
+  /** Lines of text content */
+  content: string[]
+  /** ISO format timestamp of creation */
+  created_at: string
+  /** ISO format timestamp of last modification */
+  modified_at: string
+}
+
+/**
+ * Result from backend write operations.
+ *
+ * Checkpoint backends populate filesUpdate with {file_path: file_data} for LangGraph state.
+ * External backends set filesUpdate to null (already persisted to disk/S3/database/etc).
+ */
+export interface WriteResult {
+  /** Error message on failure, undefined on success */
+  error?: string
+  /** File path of written file, undefined on failure */
+  path?: string
+  /**
+   * State update dict for checkpoint backends, null for external storage.
+   * Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
+   * External backends set null (already persisted to disk/S3/database/etc).
+   */
+  filesUpdate?: Record<string, FileData> | null
+  /** Metadata for the write operation, attached to the ToolMessage */
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Result from backend edit operations.
+ *
+ * Checkpoint backends populate filesUpdate with {file_path: file_data} for LangGraph state.
+ * External backends set filesUpdate to null (already persisted to disk/S3/database/etc).
+ */
+export interface EditResult {
+  /** Error message on failure, undefined on success */
+  error?: string
+  /** File path of edited file, undefined on failure */
+  path?: string
+  /**
+   * State update dict for checkpoint backends, null for external storage.
+   * Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
+   * External backends set null (already persisted to disk/S3/database/etc).
+   */
+  filesUpdate?: Record<string, FileData> | null
+  /** Number of replacements made, undefined on failure */
+  occurrences?: number
+  /** Metadata for the edit operation, attached to the ToolMessage */
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Single edit operation for multi-edit.
+ */
+export interface EditOperation {
+  /** String to find and replace */
+  oldString: string
+  /** Replacement string */
+  newString: string
+  /** If true, replace all occurrences (default: false) */
+  replaceAll?: boolean
+}
+
+/**
+ * Result from backend multi-edit operations.
+ *
+ * Checkpoint backends populate filesUpdate with {file_path: file_data} for LangGraph state.
+ * External backends set filesUpdate to null (already persisted to disk/S3/database/etc).
+ */
+export interface MultiEditResult {
+  /** Error message on failure, undefined on success */
+  error?: string
+  /** File path of edited file, undefined on failure */
+  path?: string
+  /**
+   * State update dict for checkpoint backends, null for external storage.
+   * Checkpoint backends populate this with {file_path: file_data} for LangGraph state.
+   * External backends set null (already persisted to disk/S3/database/etc).
+   */
+  filesUpdate?: Record<string, FileData> | null
+  /** Results from each individual edit operation */
+  results?: EditResult[]
+  /** Metadata for the multi-edit operation, attached to the ToolMessage */
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Result of code execution.
+ * Simplified schema optimized for LLM consumption.
+ */
+export interface ExecuteResponse {
+  /** Combined stdout and stderr output of the executed command */
+  output: string
+  /** The process exit code. 0 indicates success, non-zero indicates failure */
+  exitCode: number | null
+  /** Whether the output was truncated due to backend limitations */
+  truncated: boolean
+  /** Whether the command exceeded its timeout and was terminated */
+  timedOut?: boolean
+}
+
+/**
+ * Standardized error codes for file upload/download operations.
+ */
+export type FileOperationError = 'file_not_found' | 'permission_denied' | 'is_directory' | 'invalid_path'
+
+/**
+ * Result of a single file download operation.
+ */
+export interface FileDownloadResponse {
+  /** The file path that was requested */
+  path: string
+  /** File contents as Uint8Array on success, null on failure */
+  content: Uint8Array | null
+  /** Standardized error code on failure, null on success */
+  error: FileOperationError | null
+}
+
+/**
+ * Result of a single file upload operation.
+ */
+export interface FileUploadResponse {
+  /** The file path that was requested */
+  path: string
+  /** Standardized error code on failure, null on success */
+  error: FileOperationError | null
+}
+
+/**
+ * Protocol for pluggable memory backends (single, unified).
+ *
+ * Backends can store files in different locations (state, filesystem, database, etc.)
+ * and provide a uniform interface for file operations.
+ *
+ * All file data is represented as objects with the FileData structure.
+ *
+ * Methods can return either direct values or Promises, allowing both
+ * synchronous and asynchronous implementations.
+ */
+export interface BackendProtocol {
+  /**
+   * Structured listing with file metadata.
+   *
+   * Lists files and directories in the specified directory (non-recursive).
+   * Directories have a trailing / in their path and is_dir=true.
+   *
+   * @param path - Absolute path to directory
+   * @returns List of FileInfo objects for files and directories directly in the directory
+   */
+  lsInfo(path: string): MaybePromise<FileInfo[]>
+
+  /**
+   * List directory contents recursively with depth control and pagination.
+   *
+   * @param dirPath - Absolute path to directory
+   * @param offset - 1-indexed entry number to start from (default: 1)
+   * @param limit - Maximum number of entries to return (default: 25)
+   * @param depth - Maximum depth to traverse (default: 2)
+   * @returns Human-readable directory tree with indentation
+   */
+  listDir(dirPath: string, offset?: number, limit?: number, depth?: number): MaybePromise<string>
+
+  /**
+   * Read file content with line numbers or an error string.
+   *
+   * @param filePath - Absolute file path
+   * @param offset - Line offset to start reading from (1-indexed), default 1
+   * @param limit - Maximum number of lines to read, default 2000
+   * @param mode - Read mode: 'slice' (default) or 'indentation'
+   * @param indentation - Configuration for indentation mode
+   * @returns Formatted file content with line numbers, or error message
+   */
+  read(
+    filePath: string,
+    offset?: number,
+    limit?: number,
+    mode?: ReadMode,
+    indentation?: IndentationOptions
+  ): MaybePromise<string>
+
+  /**
+   * Structured search results or error string for invalid input.
+   *
+   * Searches file contents for a regex pattern.
+   *
+   * @param pattern - Regex pattern to search for
+   * @param path - Base path to search from (default: null)
+   * @param include - Optional glob pattern to filter files (e.g., "*.py")
+   * @returns List of GrepMatch objects or error string for invalid regex
+   */
+  grepRaw(pattern: string, path?: string | null, include?: string | null): MaybePromise<GrepMatch[] | string>
+
+  /**
+   * Search file contents for a regex pattern, returning human-readable output.
+   *
+   * @param pattern - Regex pattern to search for
+   * @param path - Base path to search from (default: workspace root)
+   * @param include - Optional glob pattern to filter files (e.g., "*.js", "*.{ts,tsx}")
+   * @returns Human-readable output with matches grouped by file
+   */
+  grep(pattern: string, path?: string | null, include?: string | null): MaybePromise<string>
+
+  /**
+   * Structured glob matching returning FileInfo objects.
+   *
+   * @param pattern - Glob pattern (e.g., `*.py`, `**\/*.ts`)
+   * @param path - Base path to search from (default: "/")
+   * @returns List of FileInfo objects matching the pattern
+   */
+  globInfo(pattern: string, path?: string): MaybePromise<FileInfo[]>
+
+  /**
+   * Find files matching a glob pattern, returning human-readable output.
+   *
+   * @param pattern - Glob pattern (e.g., `*.py`, `**\/*.ts`)
+   * @param path - Base path to search from (default: workspace root)
+   * @returns Human-readable output with matching file paths
+   */
+  glob(pattern: string, path?: string): MaybePromise<string>
+
+  /**
+   * Create a new file.
+   *
+   * @param filePath - Absolute file path
+   * @param content - File content as string
+   * @returns WriteResult with error populated on failure
+   */
+  write(filePath: string, content: string): MaybePromise<WriteResult>
+
+  /**
+   * Append content to a file. Creates the file if it doesn't exist.
+   *
+   * @param filePath - Absolute file path
+   * @param content - Content to append
+   * @returns WriteResult with error populated on failure
+   */
+  append(filePath: string, content: string): MaybePromise<WriteResult>
+
+  /**
+   * Edit a file by replacing string occurrences.
+   *
+   * @param filePath - Absolute file path
+   * @param oldString - String to find and replace
+   * @param newString - Replacement string
+   * @param replaceAll - If true, replace all occurrences (default: false)
+   * @returns EditResult with error, path, filesUpdate, and occurrences
+   */
+  edit(filePath: string, oldString: string, newString: string, replaceAll?: boolean): MaybePromise<EditResult>
+
+  /**
+   * Perform multiple sequential edits on a single file.
+   * All edits are applied sequentially, with each edit operating on the result of the previous edit.
+   * All edits must succeed for the operation to succeed (atomic).
+   *
+   * @param filePath - Absolute file path
+   * @param edits - Array of edit operations to perform sequentially
+   * @returns MultiEditResult with error, path, filesUpdate, and individual results
+   */
+  multiEdit(filePath: string, edits: EditOperation[]): MaybePromise<MultiEditResult>
+
+  /**
+   * Upload multiple files.
+   *
+   * @param files - List of [path, content] tuples to upload
+   * @returns List of FileUploadResponse objects, one per input file
+   */
+  uploadFiles(files: Array<[string, Uint8Array]>): MaybePromise<FileUploadResponse[]>
+
+  /**
+   * Download multiple files.
+   *
+   * @param paths - List of file paths to download
+   * @returns List of FileDownloadResponse objects, one per input path
+   */
+  downloadFiles(paths: string[]): MaybePromise<FileDownloadResponse[]>
+}
+
+/**
+ * Protocol for sandboxed backends with isolated runtime.
+ * Sandboxed backends run in isolated environments (e.g., containers)
+ * and communicate via defined interfaces.
+ */
+export interface SandboxBackendProtocol extends BackendProtocol {
+  /**
+   * Execute a command in the sandbox.
+   *
+   * @param command - Full shell command string to execute
+   * @returns ExecuteResponse with combined output, exit code, and truncation flag
+   */
+  execute(command: string, options?: SandboxExecutionOptions): MaybePromise<ExecuteResponse>
+
+  /**
+   * Execute a command with line-by-line streaming output.
+   *
+   * When implemented, the middleware layer can push incremental output
+   * to the frontend as each line arrives, rather than waiting for the
+   * command to finish.  Implementations MUST buffer partial lines and
+   * only invoke `onLine` with complete lines (LF-terminated).
+   *
+   * The returned `ExecuteResponse.output` contains the full collected
+   * output, identical to what `execute()` would return.
+   *
+   * Falls back to `execute()` + single `onLine` call in `BaseSandbox`
+   * when a concrete backend does not override this method.
+   *
+   * @param command - Full shell command string to execute
+   * @param onLine  - Callback invoked once per complete output line
+   * @returns ExecuteResponse with combined output, exit code, and truncation flag
+   */
+  streamExecute?(
+    command: string,
+    onLine: (line: string) => void,
+    options?: SandboxExecutionOptions
+  ): MaybePromise<ExecuteResponse>
+
+  /** Unique identifier for the sandbox backend instance */
+  readonly id: string
+  /** Canonical sandbox environment identifier bound to this backend */
+  readonly environmentId?: string | null
+}
+
+/**
+ * Type guard to check if a backend supports execution.
+ *
+ * @param backend - Backend instance to check
+ * @returns True if the backend implements SandboxBackendProtocol
+ */
+export function isSandboxBackend(backend: BackendProtocol): backend is SandboxBackendProtocol {
+  return (
+    typeof (backend as SandboxBackendProtocol).execute === 'function' &&
+    typeof (backend as SandboxBackendProtocol).id === 'string'
+  )
+}
+
+/**
+ * State and store container for backend initialization.
+ *
+ * This provides a clean interface for what backends need to access:
+ * - state: Current agent state (with files, messages, etc.)
+ * - store: Optional persistent store for cross-conversation data
+ *
+ * Different contexts build this differently:
+ * - Tools: Extract state via getCurrentTaskInput(config)
+ * - Middleware: Use request.state directly
+ */
+export interface StateAndStore {
+  /** Current agent state with files, messages, etc. */
+  state: unknown
+  /** Optional BaseStore for persistent cross-conversation storage */
+  // store?: BaseStore;
+  /** Optional assistant ID for per-assistant isolation in store */
+  assistantId?: string
+}
+
+/**
+ * Factory function type for creating backend instances.
+ *
+ * Backends receive StateAndStore which contains the current state
+ * and optional store, extracted from the execution context.
+ *
+ * @example
+ * ```typescript
+ * // Using in middleware
+ * const middleware = createFilesystemMiddleware({
+ *   backend: (stateAndStore) => new StateBackend(stateAndStore)
+ * });
+ * ```
+ */
+export type BackendFactory = (stateAndStore: StateAndStore) => BackendProtocol

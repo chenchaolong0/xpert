@@ -1,4 +1,3 @@
-import { STATE_VARIABLE_HUMAN, TChatRequestHuman, TInterruptCommand } from '@xpert-ai/chatkit-types'
 import { IBasePerTenantAndOrganizationEntityModel } from '../base-entity.model'
 import { ICopilotModel, TCopilotModel } from './copilot-model.model'
 import { IKnowledgebase, TKBRecallParams } from './knowledgebase.model'
@@ -86,16 +85,14 @@ export type TXpertAgent = {
 /**
  * Expert agent, ai agent for the xperts.
  */
-export interface IXpertAgent extends IBasePerTenantAndOrganizationEntityModel, TXpertAgent {
-  
-}
+export interface IXpertAgent extends IBasePerTenantAndOrganizationEntityModel, TXpertAgent {}
 
 export type TXpertAgentOptions = {
   /**
    * Hide this agent node in the graph
    */
   hidden?: boolean
-  
+
   /**
    * Disable message history for agent conversation
    */
@@ -149,32 +146,29 @@ export type TXpertAgentOptions = {
   /**
    * Options for tools of agent
    */
-  tools?: Record<string, {
-    timeout?: number
-  }>
-  
+  tools?: Record<
+    string,
+    {
+      timeout?: number
+    }
+  >
+
   /**
    * How to achieve structured output (`StructuredOutputMethodOptions['method']`)
    * - *functionCalling*
    * - *jsonMode*
    * - *jsonSchema*
-   * 
+   *
    */
-  structuredOutputMethod?: "functionCalling" | "jsonMode" | "jsonSchema" | string
+  structuredOutputMethod?: 'functionCalling' | 'jsonMode' | 'jsonSchema' | string
   /**
-   * Vision config of agent
+   * @deprecated use attachment
    */
-  vision?: {
-    enabled?: boolean
-    /**
-     * Variable name that store the list of files to be understood
-     */
-    variable?: string
-    /**
-     * Image resolution for vision tasks
-     */
-    resolution?: 'high' | 'low'
-  }
+  vision?: TXpertAgentVision
+  /**
+   * Attachment config of agent
+   */
+  attachment?: TXpertAgentAttachment
   /**
    * Config of middlewares for agent
    */
@@ -183,16 +177,35 @@ export type TXpertAgentOptions = {
   }
 }
 
+export type TXpertAgentVision = {
+  enabled?: boolean
+  /**
+   * Variable name that store the list of files to be understood
+   */
+  variable?: string
+  /**
+   * Image resolution for vision tasks
+   */
+  resolution?: 'high' | 'low'
+}
+
+export type TXpertAgentAttachment = TXpertAgentVision & {
+  /**
+   * Max number of files to be processed
+   */
+  maxNum?: number
+}
+
 export type TAgentPromptTemplate = {
-  id: string;
-  role: 'ai' | 'human';
+  id: string
+  role: 'ai' | 'human'
   text: string
 }
 
 export type TAgentOutputVariable = TXpertParameter & {
   /**
-     * value write to state's variable
-     */
+   * value write to state's variable
+   */
   variableSelector: string
   /**
    * How to write value to variable
@@ -200,50 +213,23 @@ export type TAgentOutputVariable = TXpertParameter & {
   operation: 'append' | 'extends' | 'overwrite' | 'clear'
 }
 
-/**
- * @deprecated use TChatRequest
- */
-export type TChatAgentParams = {
-  /**
-   * @deprecated use state instead
-   */
-  input?: {
-    input?: string
-    [key: string]: unknown
-  }
-  state: {
-    [STATE_VARIABLE_HUMAN]: TChatRequestHuman
-    [key: string]: any
-  }
-  agentKey: string
-  xpertId: string
-  executionId?: string
-  environmentId?: string
-  /**
-   */
-  command?: TInterruptCommand
-  /**
-   * Reject the sensitive tool calls
-   */
-  reject?: boolean
-}
-
 export function agentLabel(agent: Partial<IXpertAgent>) {
   return agent.title || agent.name || agent.key
 }
 
 export function agentUniqueName(agent: IXpertAgent) {
-  return agent ? (convertToUrlPath(agent.name) || agent.key) : null
+  return agent ? convertToUrlPath(agent.name) || agent.key : null
 }
 
 export function convertToUrlPath(title: string) {
-  return title?.toLowerCase() // Convert to lowercase
+  return title
+    ?.toLowerCase() // Convert to lowercase
     .replace(/\s+/g, '-') // Replace spaces with -
-    .replace(/[^a-z0-9-]/g, ''); // Remove non-alphanumeric characters
+    .replace(/[^a-z0-9-]/g, '') // Remove non-alphanumeric characters
 }
 
 export const VariableOperations: {
-  value: TAgentOutputVariable['operation'];
+  value: TAgentOutputVariable['operation']
   label: I18nObject
 }[] = [
   {

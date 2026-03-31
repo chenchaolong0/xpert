@@ -13,13 +13,14 @@ import {
   model,
   output,
   signal,
-  viewChild,
+  viewChild
 } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { MatTooltipModule } from '@angular/material/tooltip'
-import { appendMessageContent, stringifyMessageContent } from '@metad/copilot'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
 import {
+  appendMessageContent,
+  appendMessagePlainText,
   Attachment_Type_Options,
   AudioRecorderService,
   ChatConversationService,
@@ -35,12 +36,15 @@ import {
   IChatMessageFeedback,
   IStorageFile,
   IXpert,
+  createMessageAppendContextTracker,
   SynthesizeService,
   TChatRequest,
+  TXpertChatResumeDecision,
   TInterruptCommand,
   ToastrService,
   TtsStreamPlayerService,
   TXpertParameter,
+  stringifyMessageContent,
   uuid,
   XpertAgentExecutionService,
   XpertAgentExecutionStatusEnum,
@@ -59,6 +63,13 @@ import { XpertPreviewAiMessageComponent } from './ai-message/message.component'
 import { ChatAttachmentsComponent } from '../attachments/attachments.component'
 import { ChatHumanMessageComponent } from './human-message/message.component'
 import { XpertAgentOperationComponent } from '../../agent'
+import { filterLatestMessages } from '../filter-latest-messages'
+import { buildResumeDecision, extractInterruptPatch } from '../interrupt-request'
+import { isThreadContextUsageEvent } from '../context/thread-context-usage'
+
+function findLastAiMessageId(messages: Array<{ id?: string; role?: string }> | null | undefined): string | null {
+  return [...(messages ?? [])].reverse().find((message) => message?.role === 'ai')?.id ?? null
+}
 
 @Component({
   standalone: true,
@@ -80,7 +91,7 @@ import { XpertAgentOperationComponent } from '../../agent'
   selector: 'xp-chat-conversation-preview',
   templateUrl: 'preview.component.html',
   styleUrls: ['preview.component.scss'],
-  providers: [TtsStreamPlayerService, AudioRecorderService, SynthesizeService],
+  providers: [TtsStreamPlayerService, AudioRecorderService, SynthesizeService]
 })
 export class ChatConversationPreviewComponent {
   eExecutionStatusEnum = XpertAgentExecutionStatusEnum
@@ -123,7 +134,7 @@ export class ChatConversationPreviewComponent {
   readonly chatStop = output<void>()
 
   // Children
-  readonly canvasRef = viewChild('waveCanvas', {read: ElementRef})
+  readonly canvasRef = viewChild('waveCanvas', { read: ElementRef })
 
   // States
   readonly conversation = signal<Partial<IChatConversation>>(null)
@@ -173,16 +184,20 @@ export class ChatConversationPreviewComponent {
     return null
   })
   readonly messages = computed(() => {
+    const baseMessages = this._messages() ?? []
     if (this.currentMessage()) {
-      const messages = this._messages()
+      const messages = baseMessages
       const lastMessage = messages[messages.length - 1]
       // Skip the last interrupted message when continuing the chat conversation
       if (lastMessage?.status === XpertAgentExecutionStatusEnum.INTERRUPTED) {
-        return [...messages.slice(0, messages.length - 1), this.currentMessage()] as IChatMessage[]
+        return filterLatestMessages([
+          ...messages.slice(0, messages.length - 1),
+          this.currentMessage()
+        ] as IChatMessage[]) as IChatMessage[]
       }
-      return [...this._messages(), this.currentMessage()] as IChatMessage[]
+      return filterLatestMessages([...messages, this.currentMessage()] as IChatMessage[]) as IChatMessage[]
     }
-    return this._messages() as IChatMessage[]
+    return (filterLatestMessages(baseMessages) ?? []) as IChatMessage[]
   })
 
   readonly copiedMessages = signal<Record<string, boolean>>({})
@@ -211,7 +226,7 @@ export class ChatConversationPreviewComponent {
     .subscribe((conv) => {
       this.conversation.set(conv)
       if (conv) {
-        this._messages.set(conv.messages)
+        this._messages.set(filterLatestMessages(conv.messages) as IChatMessage[])
         if (!this.xpert()) {
           this.xpert.set(conv.xpert)
         }
@@ -222,6 +237,7 @@ export class ChatConversationPreviewComponent {
     })
 
   private chatSubscription: Subscription
+  private readonly messageAppendContextTracker = createMessageAppendContextTracker()
 
   // Attachments
   readonly attachment = computed(() => this.xpert()?.features?.attachment)
@@ -230,12 +246,19 @@ export class ChatConversationPreviewComponent {
   readonly attachment_accept = computed(() => {
     const fileTypes = this.attachment()?.fileTypes
     if (fileTypes) {
-      return fileTypes.map((type) => Attachment_Type_Options.find((_) => _.key === type)?.value?.split(',').map((t) => `.${t.trim()}`)).flat().join(',')
+      return fileTypes
+        .map((type) =>
+          Attachment_Type_Options.find((_) => _.key === type)
+            ?.value?.split(',')
+            .map((t) => `.${t.trim()}`)
+        )
+        .flat()
+        .join(',')
     }
     return '*/*'
   })
-  readonly attachments = signal<{file?: File; url?: string; storageFile?: IStorageFile}[]>([])
-  readonly files = computed(() => this.attachments()?.map(({storageFile}) => storageFile))
+  readonly attachments = signal<{ file?: File; url?: string; storageFile?: IStorageFile }[]>([])
+  readonly files = computed(() => this.attachments()?.map(({ storageFile }) => storageFile))
 
   constructor() {
     effect(
@@ -261,22 +284,42 @@ export class ChatConversationPreviewComponent {
     })
   }
 
+  sendMessage(input: string) {
+    this.chat({ input })
+  }
+
+  resumeOperation(decision: TXpertChatResumeDecision['type'], command?: TInterruptCommand) {
+    this.chat({
+      confirm: decision === 'confirm',
+      reject: decision === 'reject',
+      command
+    })
+  }
+
+  retryMessage(messageId?: string) {
+    this.chat({
+      retry: true,
+      messageId
+    })
+  }
+
   chat(options?: {
-    input?: string;
-    confirm?: boolean;
-    files?: IStorageFile[];
-    messageId?: string;
-    command?: TInterruptCommand;
+    input?: string
+    confirm?: boolean
+    files?: IStorageFile[]
+    messageId?: string
+    command?: TInterruptCommand
     /**
      * @deprecated use confirm with command resume instead
      */
-    reject?: boolean;
+    reject?: boolean
     retry?: boolean
   }) {
     if (this.loading()) return
 
     this.suggestionQuestions.set([]) // Clear suggestions after selection
     this.loading.set(true)
+    this.messageAppendContextTracker.reset()
 
     const requestFiles = options?.files ?? this.files()
     const shouldClearAttachments = !options?.files
@@ -297,8 +340,7 @@ export class ChatConversationPreviewComponent {
         content: '',
         status: 'thinking'
       })
-    } else if (options?.input) {
-      // Reuse existing human message for retry without duplication
+    } else if (options?.retry) {
       this.currentMessage.set({
         id: uuid(),
         role: 'ai',
@@ -321,31 +363,59 @@ export class ChatConversationPreviewComponent {
     if (this.chatSubscription && !this.chatSubscription?.closed) {
       this.chatSubscription.unsubscribe()
     }
-    // Include checkpointId to resume thread state when retrying
-    const request = {
-      input: options.retry ? undefined : {
-        ...(this.parameterValue() ?? {}),
-        input: options?.input,
-        files: requestFiles?.map((file) => ({id: file.id, originalName: file.originalName, name: file.originalName, filePath: file.file, fileUrl: file.url, mimeType: file.mimetype, size: file.size, extension: file.originalName.split('.').pop()}))
-      },
-      conversationId: this.conversation()?.id,
-      // Reuse the original human message id to avoid duplicate replies
-      id: options?.messageId,
-      environmentId: this.environmentId(),
-      command: options?.confirm ? this.command() : options.command,
-      confirm: options?.confirm,
-      retry: options?.retry,
-    } as TChatRequest
+    const currentCommand = options?.confirm ? this.command() : options?.command
+    const lastAiMessageId = options?.messageId ?? findLastAiMessageId(this.messages())
+    let request: TChatRequest
+    if (options?.retry) {
+      request = {
+        action: 'retry',
+        conversationId: this.conversation()?.id,
+        environmentId: this.environmentId(),
+        source: {
+          aiMessageId: lastAiMessageId
+        }
+      } as TChatRequest
+    } else if (options?.confirm || options?.reject || currentCommand) {
+      const patch = extractInterruptPatch(currentCommand)
+      request = {
+        action: 'resume',
+        conversationId: this.conversation()?.id,
+        target: {
+          aiMessageId: lastAiMessageId
+        },
+        decision: buildResumeDecision(options?.reject ? 'reject' : 'confirm', currentCommand),
+        ...(patch ? { patch } : {})
+      } as TChatRequest
+    } else {
+      request = {
+        action: 'send',
+        conversationId: this.conversation()?.id,
+        environmentId: this.environmentId(),
+        message: {
+          clientMessageId: options?.messageId,
+          input: {
+            ...(this.parameterValue() ?? {}),
+            input: options?.input,
+            files: requestFiles?.map((file) => ({
+              id: file.id,
+              originalName: file.originalName,
+              name: file.originalName,
+              filePath: file.file,
+              fileUrl: file.url,
+              mimeType: file.mimetype,
+              size: file.size,
+              extension: file.originalName.split('.').pop()
+            }))
+          }
+        }
+      } as TChatRequest
+    }
 
     this.chatSubscription = this.xpertService
-      .chat(
-        this.xpert().id,
-        request,
-        {
-          isDraft: true,
-          messageId: options?.messageId
-        }
-      )
+      .chat(this.xpert().id, request, {
+        isDraft: true,
+        messageId: options?.messageId
+      })
       .pipe(takeUntilDestroyed(this.#destroyRef))
       .subscribe({
         next: (msg) => {
@@ -359,13 +429,20 @@ export class ChatConversationPreviewComponent {
               }
               const event = JSON.parse(msg.data)
               if (event.type === ChatMessageTypeEnum.MESSAGE) {
+                const fallbackStreamId = this.currentMessage()?.id ?? this.conversation()?.id ?? 'chat_stream'
+                const { messageContext } = this.messageAppendContextTracker.resolve({
+                  incoming: event.data,
+                  fallbackSource: typeof event.data === 'string' ? 'chat_stream' : undefined,
+                  fallbackStreamId: String(fallbackStreamId)
+                })
+
                 this.currentMessage.update((message) => {
-                  appendMessageContent(message as any, event.data)
+                  appendMessageContent(message as any, event.data, messageContext)
                   return { ...message }
                 })
                 if (typeof event.data === 'string') {
                   // Update last AI message
-                  this.output.update((state) => state + event.data)
+                  this.output.update((state) => appendMessagePlainText(state, event.data, messageContext))
                 }
               } else if (event.type === ChatMessageTypeEnum.EVENT) {
                 this.chatEvent.emit(event)
@@ -394,6 +471,9 @@ export class ChatConversationPreviewComponent {
                     break
                   }
                   case ChatMessageEventTypeEnum.ON_CHAT_EVENT: {
+                    if (isThreadContextUsageEvent(event.data)) {
+                      break
+                    }
                     this.currentMessage.update((state) => ({
                       ...state,
                       events: [...(state.events ?? []), event.data]
@@ -406,9 +486,11 @@ export class ChatConversationPreviewComponent {
           }
         },
         error: (err) => {
+          this.messageAppendContextTracker.reset()
           this.onChatError(getErrorMessage(err))
         },
         complete: () => {
+          this.messageAppendContextTracker.reset()
           if (this.#destroyed) {
             return
           }
@@ -470,7 +552,7 @@ export class ChatConversationPreviewComponent {
   }
 
   onSelectSuggestionQuestion(question: string) {
-    this.chat({ input: question })
+    this.sendMessage(question)
   }
 
   appendMessage(message: Partial<IChatMessage>) {
@@ -485,11 +567,11 @@ export class ChatConversationPreviewComponent {
       tap((message) => {
         this.#clipboard.copy(stringifyMessageContent(message.content))
         this.#toastr.info({ code: 'PAC.Xpert.Copied', default: 'Copied' })
-        this.copiedMessages.update((state) => ({...state, [message.id]: true}))
+        this.copiedMessages.update((state) => ({ ...state, [message.id]: true }))
       }),
-      switchMap((message) => timer(3000).pipe(
-        tap(() => this.copiedMessages.update((state) => ({...state, [message.id]: false})))
-      )),
+      switchMap((message) =>
+        timer(3000).pipe(tap(() => this.copiedMessages.update((state) => ({ ...state, [message.id]: false }))))
+      )
     )
   )
 
@@ -500,7 +582,7 @@ export class ChatConversationPreviewComponent {
       }
       if (this.loading()) return
 
-      this.chat({ input: this.input() })
+      this.sendMessage(this.input())
       event.preventDefault()
     }
   }
@@ -556,8 +638,10 @@ export class ChatConversationPreviewComponent {
   onRestart() {
     if (this.loading()) {
       this.confirmDel({
-        title: this.#translate.instant('PAC.Chat.StopGenerate', {Default: 'Stop generate'}),
-        information: this.#translate.instant('PAC.Chat.StopGenerateOnRestart', {Default: 'Restarting the conversation will stop current generating content'}),
+        title: this.#translate.instant('PAC.Chat.StopGenerate', { Default: 'Stop generate' }),
+        information: this.#translate.instant('PAC.Chat.StopGenerateOnRestart', {
+          Default: 'Restarting the conversation will stop current generating content'
+        })
       }).subscribe((confirm) => {
         if (confirm) {
           this.onStop()
@@ -580,29 +664,24 @@ export class ChatConversationPreviewComponent {
 
   onRetry() {
     this.conversation.update((state) => {
-      return{
+      return {
         ...state,
         status: 'busy',
         error: null
       }
     })
-
-    this.chat({
-      retry: true
-    })
+    this.retryMessage()
   }
 
   onConfirm() {
     this.conversation.update((state) => {
-      return{
+      return {
         ...state,
         status: 'busy',
         error: null
       }
     })
-    this.chat({
-      confirm: true
-    })
+    this.resumeOperation('confirm', this.command())
   }
 
   /**
@@ -610,22 +689,22 @@ export class ChatConversationPreviewComponent {
    */
   onReject() {
     this.conversation.update((state) => {
-      return{
+      return {
         ...state,
         status: 'busy',
         error: null
       }
     })
-    this.chat({
-      reject: true
-    })
+    this.resumeOperation('reject', this.command())
   }
 
   onClose() {
     if (this.loading()) {
       this.confirmDel({
-        title: this.#translate.instant('PAC.Chat.StopGenerate', {Default: 'Stop generate'}),
-        information: this.#translate.instant('PAC.Chat.PreviewStopGenerate', {Default: 'Closing the panel will stop generating content'}),
+        title: this.#translate.instant('PAC.Chat.StopGenerate', { Default: 'Stop generate' }),
+        information: this.#translate.instant('PAC.Chat.PreviewStopGenerate', {
+          Default: 'Closing the panel will stop generating content'
+        })
       }).subscribe((confirm) => {
         if (confirm) {
           this.onStop()
@@ -658,14 +737,7 @@ export class ChatConversationPreviewComponent {
 
     this._messages.set(messages.slice(0, targetIndex))
 
-    this.chat({
-      retry: true,
-      command: {
-        resume: {
-        }
-      },
-      messageId: message.id
-    })
+    this.retryMessage(message.id)
   }
 
   readonly synthesizeLoading = this.#synthesizeService.synthesizeLoading
@@ -694,12 +766,14 @@ export class ChatConversationPreviewComponent {
     this.attachments.update((state) => {
       while (state.length <= this.attachment_maxNum() && filesArray.length > 0) {
         if (state.length >= this.attachment_maxNum()) {
-          this.#toastr.error('PAC.Chat.AttachmentsMaxNumExceeded', '', {Default: 'Attachments exceed the maximum number allowed.'})
+          this.#toastr.error('PAC.Chat.AttachmentsMaxNumExceeded', '', {
+            Default: 'Attachments exceed the maximum number allowed.'
+          })
           return [...state]
         }
         const file = filesArray.shift()
         if (state.some((_) => _.file.name === file.name)) {
-          this.#toastr.error('PAC.Chat.AttachmentsAlreadyExists', '', {Default: 'Attachment already exists.'})
+          this.#toastr.error('PAC.Chat.AttachmentsAlreadyExists', '', { Default: 'Attachment already exists.' })
           continue
         }
         state.push({ file })

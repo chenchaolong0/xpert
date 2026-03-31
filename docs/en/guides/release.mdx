@@ -1,0 +1,19 @@
+# Release npm Packages
+
+## Bump package version
+
+```bash
+npx nx release patch
+```
+
+## Build package
+
+```bash
+npx nx build plugin-sdk
+```
+
+## Publish package
+
+```bash
+npx nx run plugin-sdk:nx-release-publish --access public --otp=<one-time-password-if-needed>
+```

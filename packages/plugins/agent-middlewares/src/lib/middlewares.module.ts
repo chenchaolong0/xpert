@@ -7,6 +7,9 @@ import { HumanInTheLoopMiddleware } from './hitl';
 import { ClientToolMiddleware } from './clientTool';
 import { ClientEffectMiddleware } from './clientEffect';
 import { LLMToolSelectorNameMiddleware } from './llmToolSelector';
+import { LocalShellSandboxProvider } from './localShellSandbox.provider';
+import { StructuredOutputMiddleware } from './structuredOutput';
+import { SandboxShellMiddleware } from './sandboxShell';
 
 @XpertServerPlugin({
 	/**
@@ -21,6 +24,9 @@ import { LLMToolSelectorNameMiddleware } from './llmToolSelector';
 		LLMToolSelectorNameMiddleware,
 		ClientToolMiddleware,
 		ClientEffectMiddleware,
+		SandboxShellMiddleware,
+		LocalShellSandboxProvider,
+		StructuredOutputMiddleware,
     ],
 })
 export class AgentMiddlewaresModule implements IOnPluginBootstrap, IOnPluginDestroy {

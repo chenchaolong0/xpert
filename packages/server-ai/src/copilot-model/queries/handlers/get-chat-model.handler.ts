@@ -11,6 +11,7 @@ import { CopilotCheckLimitCommand, CopilotTokenRecordCommand } from '../../../co
 import { CopilotModelNotFoundException, ExceedingLimitException } from '../../../core/errors'
 import { CopilotModelGetChatModelQuery } from '../get-chat-model.query'
 import { CopilotGetOneQuery } from '../../../copilot/queries'
+import { ensureCopilotModelContextSize } from '../../utils/context-size'
 
 
 @QueryHandler(CopilotModelGetChatModelQuery)
@@ -24,7 +25,7 @@ export class CopilotModelGetChatModelHandler implements IQueryHandler<CopilotMod
 	) {}
 
 	public async execute(command: CopilotModelGetChatModelQuery) {
-		const { abortController, usageCallback } = command.options ?? {}
+		const { abortController, usageCallback, xpertId, threadId } = command.options ?? {}
 		let copilot = command.copilot
 		const tenantId = RequestContext.currentTenantId()
 		const organizationId = RequestContext.getOrganizationId()
@@ -70,6 +71,8 @@ export class CopilotModelGetChatModelHandler implements IQueryHandler<CopilotMod
 			)
 		}
 
+		ensureCopilotModelContextSize(copilotModel, modelProvider, modelName, customModels)
+
 		return modelProvider.getModelInstance(
 			copilotModel.modelType,
 			{
@@ -98,6 +101,8 @@ export class CopilotModelGetChatModelHandler implements IQueryHandler<CopilotMod
 								tenantId,
 								organizationId,
 								userId,
+								xpertId,
+								threadId,
 								copilot,
 								model: input.model,
 								tokenUsed: input.usage?.totalTokens,

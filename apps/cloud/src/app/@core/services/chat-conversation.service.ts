@@ -46,15 +46,8 @@ export class ChatConversationService extends OrganizationBaseCrudService<IChatCo
     return this.httpClient.get<IStorageFile[]>(this.apiBaseUrl + `/${id}/attachments`)
   }
 
-  rollback(id: string, messageId: string) {
-    // Rollback conversation to the target message for retry
-    return this.selectOrganizationId().pipe(
-      switchMap(() =>
-        this.httpClient.post<{ checkpointId?: string; humanMessageId?: string }>(this.apiBaseUrl + `/${id}/rollback`, {
-          messageId
-        })
-      )
-    )
+  cancelConversation(id: string) {
+    return this.httpClient.post<{ canceledExecutionIds: string[] }>(this.apiBaseUrl + `/${id}/cancel`, {})
   }
 
   // Files
