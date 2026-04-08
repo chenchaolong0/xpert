@@ -4,6 +4,7 @@ import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop'
 import { FormBuilder, FormControl, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms'
 import { ActivatedRoute, Router } from '@angular/router'
 import { IOrganizationCreateInput, OrganizationDemoNetworkEnum } from '@metad/contracts'
+import { UsersService } from '@metad/cloud/state'
 import { injectConfirmDelete, NgmTableComponent } from '@metad/ocap-angular/common'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
 import { firstValueFrom } from 'rxjs'
@@ -26,8 +27,9 @@ import { OrgAvatarComponent, OrgAvatarEditorComponent } from '@cloud/app/@shared
 import { TagMaintainComponent } from '@cloud/app/@shared/tag'
 import { CommonModule } from '@angular/common'
 import { OrganizationMembersComponent } from './organization-members/organization-members.component'
+import { OrganizationUserGroupsComponent } from './organization-user-groups/organization-user-groups.component'
 
-type OrganizationDetailsTab = 'general' | 'members' | 'controls' | 'tags' | 'demo'
+type OrganizationDetailsTab = 'general' | 'members' | 'user-groups' | 'controls' | 'tags' | 'demo'
 
 @Component({
   imports: [
@@ -49,7 +51,8 @@ type OrganizationDetailsTab = 'general' | 'members' | 'controls' | 'tags' | 'dem
     OrgAvatarComponent,
     NgmTableComponent,
     TagMaintainComponent,
-    OrganizationMembersComponent
+    OrganizationMembersComponent,
+    OrganizationUserGroupsComponent
   ],
   selector: 'pac-organizations',
   templateUrl: './organizations.component.html',
@@ -63,6 +66,7 @@ export class OrganizationsComponent {
   readonly #router = inject(Router)
   readonly #store = inject(Store)
   readonly #fb = inject(FormBuilder)
+  readonly #usersService = inject(UsersService)
   readonly #organizationsService = inject(OrganizationsService)
   readonly #dialog = inject(Dialog)
   readonly #toastrService = inject(ToastrService)
@@ -302,6 +306,7 @@ export class OrganizationsComponent {
       this.#organizationsService.delete(organization.id)
     ).subscribe({
       next: async () => {
+        await this.refreshCurrentUserContext()
         this.#toastrService.success('PAC.NOTES.ORGANIZATIONS.DELETE_ORGANIZATION', {
           Default: `Organization '{{ name }}' was removed`,
           name: organization.name
@@ -342,6 +347,7 @@ export class OrganizationsComponent {
           timeZone
         })
       )
+      await this.refreshCurrentUserContext()
 
       this.#toastrService.success('PAC.MESSAGE.MAIN_ORGANIZATION_UPDATED', {
         Default: 'Main Org Updated'
@@ -367,6 +373,7 @@ export class OrganizationsComponent {
       formData.append('file', file)
       const screenshot = await firstValueFrom(this.#screenshotService.create(formData))
       await firstValueFrom(this.#organizationsService.update(organization.id, { imageUrl: screenshot.url }))
+      await this.refreshCurrentUserContext()
       this.refresh()
     } catch (error) {
       this.#toastrService.error(getErrorMessage(error))
@@ -630,5 +637,20 @@ export class OrganizationsComponent {
 
   private async navigateToOrganization(organizationId: string) {
     await this.#router.navigate(['/settings/organizations', organizationId])
+  }
+
+  private async refreshCurrentUserContext() {
+    this.#store.user = await this.#usersService.getMe([
+      'employee',
+      'organizations',
+      'organizations.organization',
+      'organizations.organization.featureOrganizations',
+      'organizations.organization.featureOrganizations.feature',
+      'role',
+      'role.rolePermissions',
+      'tenant',
+      'tenant.featureOrganizations',
+      'tenant.featureOrganizations.feature'
+    ])
   }
 }
