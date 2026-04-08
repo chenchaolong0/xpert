@@ -11,12 +11,21 @@ jest.mock('../xpert-workspace', () => ({
 		}
 
 		async findOne() {
-			return null
+			return this.repository.findOne ? this.repository.findOne() : null
+		}
+
+		async findOneOrFailByOptions() {
+			return this.repository.findOneOrFailByOptions ? this.repository.findOneOrFailByOptions() : { success: false }
+		}
+
+		async create(entity: unknown) {
+			return entity
 		}
 	}
 }))
 
-import { AiModelTypeEnum } from '@metad/contracts'
+import { AiModelTypeEnum, LanguagesEnum } from '@metad/contracts'
+import { RequestContext } from '@metad/server-core'
 import { BadRequestException } from '@nestjs/common'
 import { CopilotModelGetChatModelQuery } from '../copilot-model/queries'
 import { KnowledgebaseService } from './knowledgebase.service'
@@ -98,5 +107,84 @@ describe('KnowledgebaseService.getVisionModel', () => {
 				model: null
 			} as any)
 		).rejects.toBeInstanceOf(BadRequestException)
+	})
+})
+
+describe('KnowledgebaseService model validation', () => {
+	beforeEach(() => {
+		jest.spyOn(RequestContext, 'currentTenantId').mockReturnValue('tenant-1')
+		jest.spyOn(RequestContext, 'getOrganizationId').mockReturnValue('org-1')
+		jest.spyOn(RequestContext, 'getLanguageCode').mockReturnValue(LanguagesEnum.English)
+	})
+
+	afterEach(() => {
+		jest.restoreAllMocks()
+	})
+
+	function createValidationService() {
+		const repository = {
+			findOne: jest.fn().mockResolvedValue({ id: 'kb-1', name: 'KB 1' }),
+			findOneOrFailByOptions: jest.fn().mockResolvedValue({ success: false }),
+			save: jest.fn().mockImplementation(async (value: unknown) => value)
+		}
+		const service = new KnowledgebaseService(repository as never, {} as never, {} as never)
+		const queryBus = {
+			execute: jest.fn()
+		}
+		const providersService = {
+			getProvider: jest.fn()
+		}
+
+		Reflect.set(service, 'queryBus', queryBus)
+		Reflect.set(service, 'providersService', providersService)
+		Reflect.set(service, 'i18nService', {
+			t: jest.fn().mockResolvedValue('translated')
+		})
+
+		return {
+			service,
+			queryBus,
+			providersService,
+			repository
+		}
+	}
+
+	it('rejects create when copilotModel is missing copilotId', async () => {
+		const { service, queryBus } = createValidationService()
+
+		await expect(
+			service.create({
+				name: 'KB Create',
+				copilotModel: {
+					model: 'text-embedding-v4',
+					modelType: AiModelTypeEnum.TEXT_EMBEDDING
+				}
+			})
+		).rejects.toThrow("Knowledgebase copilotModel requires a copilotId for model 'text-embedding-v4'.")
+
+		expect(queryBus.execute).not.toHaveBeenCalled()
+	})
+
+	it('rejects update when the copilot provider is unavailable', async () => {
+		const { service, queryBus, providersService, repository } = createValidationService()
+		queryBus.execute.mockResolvedValue({
+			id: 'copilot-1',
+			modelProvider: {
+				providerName: 'tongyi'
+			}
+		})
+		providersService.getProvider.mockReturnValue(undefined)
+
+		await expect(
+			service.update('kb-1', {
+				copilotModel: {
+					copilotId: 'copilot-1',
+					model: 'text-embedding-v4',
+					modelType: AiModelTypeEnum.TEXT_EMBEDDING
+				}
+			})
+		).rejects.toThrow("AI model provider 'tongyi' not found.")
+
+		expect(repository.save).not.toHaveBeenCalled()
 	})
 })
