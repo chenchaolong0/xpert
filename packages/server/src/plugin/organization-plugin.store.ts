@@ -1,4 +1,4 @@
-import { getConfig } from '@metad/server-config'
+import { getConfig } from '@xpert-ai/server-config'
 import { execSync } from 'child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -26,12 +26,137 @@ export interface StageWorkspacePluginOptions extends OrganizationPluginStoreOpti
 	workspacePath: string
 }
 
+export interface StagePackageDirectoryPluginOptions extends OrganizationPluginStoreOptions {
+	organizationId: string
+	pluginName: string
+	expectedPackageName: string
+	packageDir: string
+}
+
+type WorkspacePluginPackageJson = {
+	name?: string
+	version?: string
+	type?: string
+	main?: string
+	module?: string
+	exports?: unknown
+	bin?: unknown
+	dependencies?: Record<string, string>
+	optionalDependencies?: Record<string, string>
+	overrides?: unknown
+	engines?: unknown
+	os?: string[]
+	cpu?: string[]
+}
+
+type WorkspacePluginProjectJson = {
+	targets?: Record<string, { options?: { outputPath?: string } }>
+}
+
 export const DEFAULT_ORG_PLUGIN_ROOT = path.join(getConfig().assetOptions.serverRoot, 'plugins')
 export const DEFAULT_ORG_MANIFEST = 'plugins.json'
+const COMPILED_PLUGIN_ENTRY_FILES = ['index.js', 'index.cjs.js', 'index.esm.js'] as const
 
 function ensureDir(dir: string) {
 	if (!fs.existsSync(dir)) {
 		fs.mkdirSync(dir, { recursive: true })
+	}
+}
+
+function hasRuntimeDependencies(packageJson: WorkspacePluginPackageJson) {
+	return (
+		Object.keys(packageJson.dependencies ?? {}).length > 0 ||
+		Object.keys(packageJson.optionalDependencies ?? {}).length > 0
+	)
+}
+
+function createRuntimeInstallPackageJson(packageJson: WorkspacePluginPackageJson): WorkspacePluginPackageJson {
+	const runtimePackageJson: WorkspacePluginPackageJson = {}
+
+	if (packageJson.name) {
+		runtimePackageJson.name = packageJson.name
+	}
+	if (packageJson.version) {
+		runtimePackageJson.version = packageJson.version
+	}
+	if (packageJson.type) {
+		runtimePackageJson.type = packageJson.type
+	}
+	if (packageJson.main) {
+		runtimePackageJson.main = packageJson.main
+	}
+	if (packageJson.module) {
+		runtimePackageJson.module = packageJson.module
+	}
+	if (packageJson.exports) {
+		runtimePackageJson.exports = packageJson.exports
+	}
+	if (packageJson.bin) {
+		runtimePackageJson.bin = packageJson.bin
+	}
+	if (packageJson.dependencies && Object.keys(packageJson.dependencies).length) {
+		runtimePackageJson.dependencies = packageJson.dependencies
+	}
+	if (packageJson.optionalDependencies && Object.keys(packageJson.optionalDependencies).length) {
+		runtimePackageJson.optionalDependencies = packageJson.optionalDependencies
+	}
+	if (packageJson.overrides) {
+		runtimePackageJson.overrides = packageJson.overrides
+	}
+	if (packageJson.engines) {
+		runtimePackageJson.engines = packageJson.engines
+	}
+	if (packageJson.os) {
+		runtimePackageJson.os = packageJson.os
+	}
+	if (packageJson.cpu) {
+		runtimePackageJson.cpu = packageJson.cpu
+	}
+
+	return runtimePackageJson
+}
+
+function readExecFailureOutput(value: unknown) {
+	if (typeof value === 'string') {
+		return value.trim()
+	}
+	if (Buffer.isBuffer(value)) {
+		return value.toString('utf8').trim()
+	}
+	return ''
+}
+
+function installStagedWorkspaceRuntimeDependencies(targetPackageDir: string, packageJson: WorkspacePluginPackageJson) {
+	if (!hasRuntimeDependencies(packageJson)) {
+		return
+	}
+
+	const packageJsonPath = path.join(targetPackageDir, 'package.json')
+	const originalPackageJson = fs.readFileSync(packageJsonPath, 'utf8')
+	const runtimePackageJson = createRuntimeInstallPackageJson(packageJson)
+
+	try {
+		fs.writeFileSync(packageJsonPath, JSON.stringify(runtimePackageJson, null, 2))
+		execSync('npm install --omit=dev --omit=peer --ignore-scripts --no-save --legacy-peer-deps', {
+			cwd: targetPackageDir,
+			stdio: 'pipe',
+			env: {
+				...process.env,
+				npm_config_package_lock: 'false',
+				npm_config_lockfile: 'false'
+			}
+		})
+	} catch (error) {
+		const details =
+			readExecFailureOutput((error as { stderr?: unknown })?.stderr) ||
+			readExecFailureOutput((error as { stdout?: unknown })?.stdout)
+		throw new Error(
+			details
+				? `Failed to install runtime dependencies for staged workspace plugin at ${targetPackageDir}: ${details}`
+				: `Failed to install runtime dependencies for staged workspace plugin at ${targetPackageDir}`
+		)
+	} finally {
+		fs.writeFileSync(packageJsonPath, originalPackageJson)
 	}
 }
 
@@ -45,12 +170,17 @@ function resolveAllowedWorkspaceRoots(): string[] {
 		.map((item) => item.trim())
 		.filter(Boolean)
 		.map((item) => path.resolve(item))
+		.filter((item) => fs.existsSync(item))
+		.map((item) => fs.realpathSync.native(item))
 
 	if (configuredRoots?.length) {
 		return configuredRoots
 	}
 
 	return [path.resolve(process.cwd()), path.resolve(process.cwd(), '..')]
+		.filter((item, index, items) => items.indexOf(item) === index)
+		.filter((item) => fs.existsSync(item))
+		.map((item) => fs.realpathSync.native(item))
 }
 
 function assertWorkspacePathAllowed(workspacePath: string) {
@@ -58,6 +188,80 @@ function assertWorkspacePathAllowed(workspacePath: string) {
 	if (!roots.some((root) => isWithinRoot(workspacePath, root))) {
 		throw new Error(`workspacePath '${workspacePath}' is outside allowed roots: ${roots.join(', ')}`)
 	}
+}
+
+function readJsonFile<T>(filePath: string): T | null {
+	if (!fs.existsSync(filePath)) {
+		return null
+	}
+
+	try {
+		return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T
+	} catch {
+		return null
+	}
+}
+
+function findNxWorkspaceRoot(startPath: string) {
+	let current = path.resolve(startPath)
+	while (true) {
+		if (fs.existsSync(path.join(current, 'nx.json')) && fs.existsSync(path.join(current, 'package.json'))) {
+			return current
+		}
+
+		const parent = path.dirname(current)
+		if (parent === current) {
+			return null
+		}
+		current = parent
+	}
+}
+
+function findWorkspaceBuildInfo(workspacePath: string) {
+	for (const allowedRoot of resolveAllowedWorkspaceRoots()) {
+		if (!isWithinRoot(workspacePath, allowedRoot)) {
+			continue
+		}
+
+		// PLUGIN_WORKSPACE_ROOTS is an allow-list for source paths, not a build root.
+		// It may point inside an Nx workspace, such as `packages/plugins`, while Nx
+		// outputPath remains relative to the workspace root. Resolve that root only
+		// for locating an already-built dist; staging never triggers a build.
+		const nxRoot = findNxWorkspaceRoot(workspacePath)
+		const root =
+			nxRoot && (isWithinRoot(allowedRoot, nxRoot) || isWithinRoot(nxRoot, allowedRoot)) ? nxRoot : allowedRoot
+		const relativeWorkspacePath = path.relative(root, workspacePath)
+		const projectJson = readJsonFile<WorkspacePluginProjectJson>(path.join(workspacePath, 'project.json'))
+		const outputPath = projectJson?.targets?.build?.options?.outputPath
+		const distPath = outputPath ? path.resolve(root, outputPath) : path.join(root, 'dist', relativeWorkspacePath)
+		if (!isWithinRoot(distPath, root)) {
+			throw new Error(`Plugin build outputPath '${outputPath}' resolves outside workspace root '${root}'`)
+		}
+
+		return {
+			root,
+			distPath,
+			relativeDistPath: path.relative(root, distPath)
+		}
+	}
+
+	return null
+}
+
+function resolveWorkspaceBuildOutput(workspacePath: string) {
+	const buildInfo = findWorkspaceBuildInfo(workspacePath)
+	if (!buildInfo) {
+		return null
+	}
+
+	if (fs.existsSync(buildInfo.distPath) && fs.statSync(buildInfo.distPath).isDirectory()) {
+		return {
+			distPath: buildInfo.distPath,
+			relativeDistPath: buildInfo.relativeDistPath
+		}
+	}
+
+	return null
 }
 
 function isPluginInstalled(pluginDir: string, pluginName: string) {
@@ -147,7 +351,7 @@ export function stageWorkspacePlugin(opts: StageWorkspacePluginOptions): string 
 		throw new Error(`package.json not found in workspacePath: ${workspacePath}`)
 	}
 
-	const packageJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as { name?: string }
+	const packageJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as WorkspacePluginPackageJson
 	if (!packageJson?.name) {
 		throw new Error(`Invalid package.json in workspacePath: missing 'name'`)
 	}
@@ -161,8 +365,16 @@ export function stageWorkspacePlugin(opts: StageWorkspacePluginOptions): string 
 
 	const hasDist = fs.existsSync(path.join(workspacePath, 'dist'))
 	const hasSrcEntry = fs.existsSync(path.join(workspacePath, 'src', 'index.ts'))
-	if (!hasDist && !hasSrcEntry) {
-		throw new Error(`workspacePath must contain either 'dist/' or 'src/index.ts' for plugin loading`)
+	const hasCompiledRootEntry = COMPILED_PLUGIN_ENTRY_FILES.some((fileName) =>
+		fs.existsSync(path.join(workspacePath, fileName))
+	)
+	if (!hasDist && !hasSrcEntry && !hasCompiledRootEntry) {
+		throw new Error(
+			`Plugin "${opts.pluginName}" (expected package "${normalizedPackageName}") has an invalid workspacePath "${workspacePath}": ` +
+				`workspacePath must contain 'dist/', 'src/index.ts', or a compiled root entry (${COMPILED_PLUGIN_ENTRY_FILES.join(
+					', '
+				)}) for plugin loading`
+		)
 	}
 
 	const pluginDir = getOrganizationPluginPath(opts.organizationId, opts.pluginName, opts)
@@ -180,6 +392,86 @@ export function stageWorkspacePlugin(opts: StageWorkspacePluginOptions): string 
 			return !['node_modules', '.git', '.DS_Store'].includes(base)
 		}
 	})
+
+	const workspaceDist = resolveWorkspaceBuildOutput(workspacePath)
+	if (workspaceDist) {
+		// Keep staged root-relative dist paths available for package-level `index.cjs` fallback files.
+		const targetDistPath = path.join(pluginDir, workspaceDist.relativeDistPath)
+		fs.rmSync(targetDistPath, { recursive: true, force: true })
+		ensureDir(path.dirname(targetDistPath))
+		fs.cpSync(workspaceDist.distPath, targetDistPath, {
+			recursive: true,
+			dereference: true
+		})
+	}
+
+	installStagedWorkspaceRuntimeDependencies(targetPackageDir, packageJson)
+
+	return pluginDir
+}
+
+export function stagePackageDirectoryPlugin(opts: StagePackageDirectoryPluginOptions): string {
+	if (!opts.packageDir) {
+		throw new Error('packageDir is required')
+	}
+
+	if (!path.isAbsolute(opts.packageDir)) {
+		throw new Error('packageDir must be an absolute path')
+	}
+
+	if (!fs.existsSync(opts.packageDir) || !fs.statSync(opts.packageDir).isDirectory()) {
+		throw new Error(`packageDir does not exist or is not a directory: ${opts.packageDir}`)
+	}
+
+	const packageDir = fs.realpathSync.native(opts.packageDir)
+	const pkgJsonPath = path.join(packageDir, 'package.json')
+	if (!fs.existsSync(pkgJsonPath)) {
+		throw new Error(`package.json not found in uploaded plugin package: ${packageDir}`)
+	}
+
+	const packageJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as WorkspacePluginPackageJson
+	if (!packageJson?.name) {
+		throw new Error(`Invalid package.json in uploaded plugin package: missing 'name'`)
+	}
+
+	const normalizedPackageName = normalizePluginName(opts.expectedPackageName)
+	if (packageJson.name !== normalizedPackageName) {
+		throw new Error(
+			`uploaded package name mismatch: expected '${normalizedPackageName}', got '${packageJson.name}'`
+		)
+	}
+
+	const hasDist = fs.existsSync(path.join(packageDir, 'dist'))
+	const hasSrcEntry = fs.existsSync(path.join(packageDir, 'src', 'index.ts'))
+	const hasCompiledRootEntry = COMPILED_PLUGIN_ENTRY_FILES.some((fileName) =>
+		fs.existsSync(path.join(packageDir, fileName))
+	)
+	if (!hasDist && !hasSrcEntry && !hasCompiledRootEntry) {
+		throw new Error(
+			`Uploaded plugin "${opts.pluginName}" (expected package "${normalizedPackageName}") has an invalid package directory "${packageDir}": ` +
+				`package must contain 'dist/', 'src/index.ts', or a compiled root entry (${COMPILED_PLUGIN_ENTRY_FILES.join(
+					', '
+				)}) for plugin loading`
+		)
+	}
+
+	const pluginDir = getOrganizationPluginPath(opts.organizationId, opts.pluginName, opts)
+	const targetPackageDir = path.join(pluginDir, 'node_modules', normalizedPackageName)
+	const targetBaseDir = path.dirname(targetPackageDir)
+
+	fs.rmSync(pluginDir, { recursive: true, force: true })
+	ensureDir(targetBaseDir)
+
+	fs.cpSync(packageDir, targetPackageDir, {
+		recursive: true,
+		dereference: true,
+		filter: (source) => {
+			const base = path.basename(source)
+			return !['node_modules', '.git', '.DS_Store'].includes(base)
+		}
+	})
+
+	installStagedWorkspaceRuntimeDependencies(targetPackageDir, packageJson)
 
 	return pluginDir
 }

@@ -9,7 +9,8 @@ import {
     isBaseMessageChunk,
     isToolMessage,
     RemoveMessage,
-    ToolMessage
+    ToolMessage,
+    type InvalidToolCall
 } from '@langchain/core/messages'
 import { HumanMessagePromptTemplate, SystemMessagePromptTemplate } from '@langchain/core/prompts'
 import { Runnable, RunnableConfig, RunnableLambda, RunnableLike } from '@langchain/core/runnables'
@@ -30,32 +31,33 @@ import {
     allChannels,
     channelName,
     ChatMessageEventTypeEnum,
+    figureOutXpert,
     findStartNodes,
-    getAgentMiddlewareNodes,
     getCurrentGraph,
     getWorkflowTriggers,
     GRAPH_NODE_SUMMARIZE_CONVERSATION,
-    GRAPH_NODE_TITLE_CONVERSATION,
     isAgentKey,
-    IWFNAgentTool,
+    isAgentWorkflowNode,
+    isAgentWorkflowNodeType,
     IXpert,
     IXpertAgent,
     IXpertAgentExecution,
     KnowledgebaseChannel,
     mapTranslationLanguage,
+    resolveRuntimeXpert,
     STATE_VARIABLE_HUMAN,
     TAgentRunnableConfigurable,
     TStateVariable,
     TSummarize,
+    TAgentExecutionMetadata,
     TXpertGraph,
     TXpertParameter,
     TXpertTeamNode,
     WorkflowNodeTypeEnum,
     XpertAgentExecutionStatusEnum
-} from '@metad/contracts'
-import { stringifyMessageContent } from '@metad/copilot'
-import { getErrorMessage } from '@metad/server-common'
-import { RequestContext } from '@metad/server-core'
+} from '@xpert-ai/contracts'
+import { stringifyMessageContent } from '@xpert-ai/copilot'
+import { getErrorMessage } from '@xpert-ai/server-common'
 import { Inject, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import {
@@ -65,7 +67,9 @@ import {
     AgentMiddlewareRegistry,
     BeforeModelHandler,
     IAgentMiddlewareContext,
+    JumpToTarget,
     ModelRequest,
+    RequestContext,
     WrapModelCallHandler,
     WrapToolCallHook
 } from '@xpert-ai/plugin-sdk'
@@ -74,10 +78,13 @@ import { I18nService } from 'nestjs-i18n'
 import { Subscriber } from 'rxjs'
 import { t } from 'i18next'
 import z from 'zod'
+import { randomUUID } from 'crypto'
 import { CopilotCheckpointSaver } from '../../../copilot-checkpoint'
 import { assignExecutionUsage, XpertAgentExecutionUpsertCommand } from '../../../xpert-agent-execution'
 import { ToolsetGetToolsCommand } from '../../../xpert-toolset'
 import { GetXpertWorkflowQuery, GetXpertChatModelQuery, TXpertWorkflowQueryOutput } from '../../../xpert/queries'
+import { CreateNodeConsumePendingSteerFollowUpsCommand } from '../create-node-consume-pending-steer-follow-ups.command'
+import { CreateNodeStagePendingSteerFollowUpsCommand } from '../create-node-stage-pending-steer-follow-ups.command'
 import { XpertAgentSubgraphCommand } from '../subgraph.command'
 import { ToolNode } from './tool_node'
 import { XpertAgentExecutionOneQuery } from '../../../xpert-agent-execution/queries'
@@ -103,20 +110,37 @@ import {
     translate,
     stateVariable,
     createParameters,
+    STATE_VARIABLE_PENDING_FOLLOW_UPS,
+    TPendingFollowUpStateItem,
     TGraphTool,
     TSubAgent,
     TWorkflowGraphNode,
     TStateChannel,
     hasMultipleInputs,
+    filterDisabledTools,
     getAgentMiddlewares,
-    orderNodesByKeyOrder,
-    createAgentChannel
+    getRuntimeEnabledMiddlewareNodes,
+    getRuntimeEnabledSubAgentConnections,
+    getSubAgentConnectionTargetKey,
+    createAgentChannel,
+    createPlanModeMiddlewareEntries
 } from '../../../shared'
-import { CreateSummarizeTitleAgentCommand } from '../summarize-title.command'
 import { XpertCollaborator } from '../../../shared/agent/xpert'
+import { AgentMiddlewareRuntimeService } from '../../../shared/agent/middleware-runtime.service'
 import { AgenticWorkflowTypes } from '../../types'
 import { createThreadContextUsageEventHook } from '../../hooks/context-usage.hook'
 import { parseXmlString } from './types'
+import { collectStartDrivenAgentEntrySources, rerouteAgentEntryTarget } from './subgraph-entry-routing'
+import { XpertTitleMiddlewareService } from '../../title/xpert-title.middleware'
+import { getPendingToolCallsAfterTrailingToolMessages } from './agent-navigation'
+import { FILE_UNDERSTANDING_MIDDLEWARE_NAME } from '../../../file-understanding/middlewares'
+import { createToolsetRuntimeCleanup } from './toolset-runtime-cleanup'
+
+const XPERT_TITLE_MIDDLEWARE_NODE_KEY = '__xpert_title_middleware__'
+const FILE_UNDERSTANDING_MIDDLEWARE_NODE_KEY = '__file_understanding_middleware__'
+const GRAPH_JUMP_TO_STATE_KEY = '__xpertJumpTo'
+const INVALID_TOOL_CALL_LOG_EVENT = 'xpert.invalid_tool_calls'
+const MAX_INVALID_TOOL_CALL_ARGS_LOG_CHARS = 20000
 
 @CommandHandler(XpertAgentSubgraphCommand)
 export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubgraphCommand> {
@@ -129,17 +153,19 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         private readonly copilotCheckpointSaver: CopilotCheckpointSaver,
         private readonly commandBus: CommandBus,
         private readonly queryBus: QueryBus,
-        private readonly i18nService: I18nService
+        private readonly i18nService: I18nService,
+        private readonly xpertTitleMiddlewareService: XpertTitleMiddlewareService,
+        private readonly agentMiddlewareRuntimeService: AgentMiddlewareRuntimeService
     ) {}
 
     public async execute(command: XpertAgentSubgraphCommand): Promise<TAgentSubgraphResult> {
         const { agentKeyOrName, xpert, options } = command
+        const promptWorkflowXpert = figureOutXpert(xpert as IXpert, options?.isDraft)
         const {
             isStart,
             execution,
             leaderKey,
             channel: agentChannel,
-            summarizeTitle,
             subscriber,
             rootController,
             signal,
@@ -198,6 +224,13 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         // The xpert (agent team)
         const team = agent.team
         const agentKey = agent.key
+        const agentTitle = agent.title?.trim() || agent.name?.trim()
+        const isRootExecution = Boolean(
+            execution.id && options.rootExecutionId && execution.id === options.rootExecutionId
+        )
+        if (!isRootExecution && !execution.title && agentTitle) {
+            execution.title = agentTitle
+        }
         // const agentChannel = channelName(agent.key)
         const thread_id = command.options.thread_id
 
@@ -232,19 +265,21 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         const toolsets = await this.commandBus.execute<ToolsetGetToolsCommand, _BaseToolset[]>(
             new ToolsetGetToolsCommand(agent.toolsetIds, {
                 projectId: options.projectId,
+                workspaceId: xpert.workspaceId,
                 conversationId: options.conversationId,
                 xpertId: xpert.id,
                 agentKey,
+                executionId: execution.id,
                 signal: abortController.signal,
                 env: toEnvState(environment),
                 store: options.store
             })
         )
-        // Clean all toolsets when aborted
-        abortController.signal.addEventListener('abort', () => {
-            for (const toolset of toolsets) {
-                toolset.close().catch((err) => this.#logger.debug(err))
-            }
+        const { closeToolsets, installGraphCloseHook } = createToolsetRuntimeCleanup({
+            toolsets,
+            abortSignal: abortController.signal,
+            rootController,
+            logger: this.#logger
         })
 
         const endNodes = team.agentConfig?.endNodes ?? []
@@ -255,21 +290,26 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         /**
          * Collect Agent Tools
          */
-        const workflowTools = []
+        const workflowTools: TGraphTool[] = []
         const interruptBefore: string[] = []
         const toolsetVarirables: TStateVariable[] = []
         const stateVariables: TStateVariable[] = Array.from(team.agentConfig?.stateVariables ?? [])
-        for await (const toolset of toolsets) {
-            // Initialize toolset and it's state
-            const items = await toolset.initTools()
-            const _variables = await toolset.getVariables()
-            toolsetVarirables.push(...(_variables ?? []))
-            stateVariables.push(...(_variables ?? []))
-            // Filter available tools by agent
-            const availableTools = agent.options?.availableTools?.[toolset.getName()] ?? []
-            items
-                .filter((tool) => (availableTools.length ? availableTools.includes(tool.name) : true))
-                .forEach((tool) => {
+        try {
+            for await (const toolset of toolsets) {
+                // Initialize toolset and it's state
+                const items = await toolset.initTools()
+                const _variables = await toolset.getVariables()
+                toolsetVarirables.push(...(_variables ?? []))
+                stateVariables.push(...(_variables ?? []))
+                // Filter available tools by agent
+                const availableTools = agent.options?.availableTools?.[toolset.getName()] ?? []
+                const filteredItems = filterDisabledTools(
+                    items.filter((tool) => (availableTools.length ? availableTools.includes(tool.name) : true)),
+                    'toolset',
+                    toolset.getId(),
+                    options.toolPreferences
+                )
+                filteredItems.forEach((tool) => {
                     const lc_name =
                         tool instanceof DynamicStructuredTool
                             ? tool.name
@@ -294,6 +334,10 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                         interruptBefore.push(tool.name)
                     }
                 })
+            }
+        } catch (error) {
+            await closeToolsets()
+            throw error
         }
 
         // Workflow Task tool
@@ -363,11 +407,36 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
          * Sub agents: include followers (agents in one xpert team) and collaborators (external xperts: primary agent is entry)
          */
         const subAgents: Record<string, TSubAgent> = {}
-        if (agent.followers?.length) {
-            this.#logger.debug(
-                `\nUse sub agents:\n${agent.followers.map((_, i) => `${i + 1}. ` + _.name + ': ' + _.description).join('\n')}`
+        let runtimeEnabledFollowers = agent.followers ?? []
+        let runtimeEnabledCollaborators = agent.collaborators ?? []
+
+        if (options.runtimeCapabilities?.mode === 'allowlist') {
+            const enabledSubAgentConnections = getRuntimeEnabledSubAgentConnections(graph, agent, {
+                runtimeCapabilities: options.runtimeCapabilities
+            })
+            const enabledFollowerKeys = new Set(
+                enabledSubAgentConnections
+                    .filter((connection) => connection.type === 'agent')
+                    .map((connection) => getSubAgentConnectionTargetKey(connection))
             )
-            for await (const follower of agent.followers) {
+            const enabledCollaboratorIds = new Set(
+                enabledSubAgentConnections
+                    .filter((connection) => connection.type === 'xpert')
+                    .map((connection) => getSubAgentConnectionTargetKey(connection))
+            )
+            runtimeEnabledFollowers = runtimeEnabledFollowers.filter((follower) =>
+                enabledFollowerKeys.has(follower.key)
+            )
+            runtimeEnabledCollaborators = runtimeEnabledCollaborators.filter(
+                (collaborator) => collaborator.id && enabledCollaboratorIds.has(collaborator.id)
+            )
+        }
+
+        if (runtimeEnabledFollowers.length) {
+            this.#logger.debug(
+                `\nUse sub agents:\n${runtimeEnabledFollowers.map((_, i) => `${i + 1}. ` + _.name + ': ' + _.description).join('\n')}`
+            )
+            for await (const follower of runtimeEnabledFollowers) {
                 if (partners?.includes(follower.key)) {
                     continue
                 }
@@ -398,11 +467,11 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         }
 
         // Collaborators (external xperts)
-        if (agent.collaborators?.length) {
+        if (runtimeEnabledCollaborators.length) {
             this.#logger.debug(
-                `\nUse xpert collaborators:\n${agent.collaborators.map((_, i) => `${i + 1}. ` + _.name + ': ' + _.description).join('\n')}`
+                `\nUse xpert collaborators:\n${runtimeEnabledCollaborators.map((_, i) => `${i + 1}. ` + _.name + ': ' + _.description).join('\n')}`
             )
-            for await (const collaborator of agent.collaborators) {
+            for await (const collaborator of runtimeEnabledCollaborators) {
                 const subAgent = await XpertCollaborator.build({
                     xpert: collaborator,
                     config: {
@@ -457,9 +526,6 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         // Channels of workflow
         const channels: TStateChannel[] = []
         const pathMap = []
-        if (summarizeTitle) {
-            pathMap.push(GRAPH_NODE_TITLE_CONVERSATION)
-        }
         if (summarize?.enabled) {
             pathMap.push(GRAPH_NODE_SUMMARIZE_CONVERSATION)
         }
@@ -564,19 +630,21 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 if (nodes[node.key]) {
                     return
                 }
-                const { workflowNode, navigator, nextNodes, channel, tool } = await this.commandBus.execute<
-                    CreateWorkflowNodeCommand,
-                    TWorkflowGraphNode
-                >(
-                    new CreateWorkflowNodeCommand(xpert.id, graph, node, parentKey, {
-                        mute: options.mute,
-                        store: options.store,
-                        isDraft: options.isDraft,
-                        subscriber,
-                        environment,
-                        xpert: team
-                    })
-                )
+                const { workflowNode, navigator, nextNodes, channel, tool, caller, toolset, variables } =
+                    await this.commandBus.execute<CreateWorkflowNodeCommand, TWorkflowGraphNode>(
+                        new CreateWorkflowNodeCommand(xpert.id, graph, node, parentKey, {
+                            mute: options.mute,
+                            store: options.store,
+                            isDraft: options.isDraft,
+                            subscriber,
+                            environment,
+                            conversationId: options.conversationId,
+                            xpert: {
+                                ...team,
+                                workspaceId: team.workspaceId ?? xpert.workspaceId
+                            }
+                        })
+                    )
                 if (channel) {
                     channels.push(channel)
                 }
@@ -597,7 +665,15 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 }
                 // Tool
                 if (tool) {
-                    workflowTools.push({ tool, parentKey })
+                    workflowTools.push({
+                        tool,
+                        caller: caller ?? parentKey ?? agentKey,
+                        toolset: toolset ?? {
+                            provider: 'workflow',
+                            title: workflowNode.name ?? node.key
+                        },
+                        variables
+                    })
                     finalReturn = graphNodeName
                     if (parentKey) {
                         workflowNodeEnds.push(parentKey)
@@ -614,7 +690,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 }
 
                 if (!nextNodes.length) {
-                    if ((<IWFNAgentTool>node.entity).isEnd) {
+                    if (isAgentWorkflowNode(node.entity) && node.entity.isEnd) {
                         edges[graphNodeName] = END
                     } else if (finalReturn) {
                         edges[graphNodeName] = finalReturn
@@ -659,7 +735,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         }
         // Agent tools in workflow
         for await (const nextNode of next.filter(
-            (_) => _.type === 'workflow' && _.entity.type === WorkflowNodeTypeEnum.AGENT_TOOL
+            (_) => _.type === 'workflow' && isAgentWorkflowNodeType(_.entity.type)
         )) {
             await createSubgraph(nextNode, agentKey)
         }
@@ -672,23 +748,107 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
             map.set(item.tool.name, item.tool)
             return map
         }, new Map())
-        const agentMiddlewares: AgentMiddleware[] = await getAgentMiddlewares(
+        const visibleMiddlewareNodes = getRuntimeEnabledMiddlewareNodes(graph, agent, {
+            runtimeCapabilities: options.runtimeCapabilities
+        })
+        const organizationId = RequestContext.getOrganizationId() ?? null
+        const middlewareContext: Omit<IAgentMiddlewareContext, 'node'> = {
+            tenantId: xpert.tenantId,
+            organizationId,
+            userId: RequestContext.currentUserId(),
+            workspaceId: xpert.workspaceId,
+            projectId: options.projectId,
+            conversationId: options.conversationId,
+            xpertId: xpert.id,
+            xpertFeatures: resolveRuntimeXpert(xpert as IXpert, Boolean(options?.isDraft)).features ?? null,
+            agentKey,
+            knowledgebaseIds: agent.knowledgebaseIds,
+            store: options.store,
+            tools: toolMap,
+            runtime: this.agentMiddlewareRuntimeService.api
+        }
+        const builtinMiddlewareEntries: Array<{ key: string; middleware: AgentMiddleware }> = []
+        if (isFileUnderstandingEnabled(agent)) {
+            const fileUnderstandingStrategy = this.agentMiddlewareRegistry.get(FILE_UNDERSTANDING_MIDDLEWARE_NAME)
+            // Platform middleware: it is hidden from the graph UI but is still
+            // created through the normal middleware path so its tools enter
+            // toolMap, tracing, and runtime filtering consistently.
+            const fileUnderstandingMiddleware = await fileUnderstandingStrategy.createMiddleware(
+                { conversationId: options.conversationId },
+                {
+                    ...middlewareContext,
+                    node: {
+                        id: FILE_UNDERSTANDING_MIDDLEWARE_NODE_KEY,
+                        key: FILE_UNDERSTANDING_MIDDLEWARE_NODE_KEY,
+                        type: WorkflowNodeTypeEnum.MIDDLEWARE,
+                        provider: FILE_UNDERSTANDING_MIDDLEWARE_NAME,
+                        required: true
+                    }
+                }
+            )
+            fileUnderstandingMiddleware.tools?.forEach((tool) => toolMap.set(tool.name, tool))
+            builtinMiddlewareEntries.push({
+                key: FILE_UNDERSTANDING_MIDDLEWARE_NODE_KEY,
+                middleware: fileUnderstandingMiddleware
+            })
+        }
+        const visibleAgentMiddlewares: AgentMiddleware[] = await getAgentMiddlewares(
             graph,
             agent,
             this.agentMiddlewareRegistry,
+            middlewareContext,
             {
-                tenantId: xpert.tenantId,
-                userId: RequestContext.currentUserId(),
-                workspaceId: xpert.workspaceId,
-                projectId: options.projectId,
-                conversationId: options.conversationId,
-                xpertId: xpert.id,
-                agentKey,
-                tools: toolMap
+                toolPreferences: options.toolPreferences,
+                runtimeCapabilities: options.runtimeCapabilities
             }
         )
+        const runtimeMiddlewareEntries = await createPlanModeMiddlewareEntries(
+            this.agentMiddlewareRegistry,
+            middlewareContext,
+            options.planMode
+        )
+        const runtimeAgentMiddlewares = runtimeMiddlewareEntries.map(({ middleware }) => middleware)
+        const shouldEnableTitleMiddleware = Boolean(
+            xpert.features?.title?.enabled &&
+            isStart &&
+            !hiddenAgent &&
+            !leaderKey &&
+            (!xpert.agent || xpert.agent.key === agent.key)
+        )
+        const titleMiddleware = shouldEnableTitleMiddleware
+            ? this.xpertTitleMiddlewareService.createMiddleware({
+                  agentChannel,
+                  xpert: team
+              })
+            : null
+        const middlewareEntries: Array<{ key: string; middleware: AgentMiddleware }> = [
+            ...(titleMiddleware
+                ? [
+                      {
+                          key: XPERT_TITLE_MIDDLEWARE_NODE_KEY,
+                          middleware: titleMiddleware
+                      }
+                  ]
+                : []),
+            ...builtinMiddlewareEntries,
+            ...visibleMiddlewareNodes.reduce<Array<{ key: string; middleware: AgentMiddleware }>>(
+                (acc, node, index) => {
+                    const middleware = visibleAgentMiddlewares[index]
+                    if (middleware) {
+                        acc.push({ key: node.key, middleware })
+                    }
+                    return acc
+                },
+                []
+            ),
+            ...runtimeMiddlewareEntries
+        ]
         // Middleware tools
-        const middlewareTools: TGraphTool[] = agentMiddlewares
+        const middlewareTools: TGraphTool[] = [
+            ...builtinMiddlewareEntries.map(({ middleware }) => middleware),
+            ...visibleAgentMiddlewares,
+            ...runtimeAgentMiddlewares
+        ]
             .filter((middleware) => middleware?.tools?.length)
             .flatMap((middleware) =>
                 middleware.tools.map((tool) => {
@@ -717,8 +877,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
             ...(variables ?? []).map((variable) => variable.name),
             ...stateVariables.map((variable) => variable.name)
         ])
-        const middlewareStateAnnotations = agentMiddlewares.reduce<Record<string, ReturnType<typeof Annotation>>>(
-            (acc, middleware) => {
+        const middlewareStateAnnotations = middlewareEntries.reduce<Record<string, ReturnType<typeof Annotation>>>(
+            (acc, { middleware }) => {
                 const shape = (middleware.stateSchema as any)?.shape
                 if (!shape) {
                     return acc
@@ -756,7 +916,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
             afterModelHooks: userAfterModelHooks,
             afterAgentExecutionOrder,
             wrapToolCall
-        } = getModelHooks(graph, agent, agentMiddlewares)
+        } = getModelHooks(middlewareEntries)
         const afterModelHooks = [
             ...userAfterModelHooks,
             ...(!hiddenAgent ? [createThreadContextUsageEventHook(agent, thread_id, execution)] : [])
@@ -803,6 +963,10 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         const workflowNodes = allChannels(graph, agent.key)
         // Collect channels used in the graph
         const SubgraphStateAnnotation = Annotation.Root({
+            [GRAPH_JUMP_TO_STATE_KEY]: Annotation<JumpToTarget | null>({
+                reducer: (a, b) => (b === undefined ? a : b),
+                default: () => null
+            }),
             // Temp parameters
             ...(variables?.reduce((state, schema) => {
                 state[schema.name] = Annotation(stateVariable(schema))
@@ -862,6 +1026,26 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         const historyVariable = agent.options?.historyVariable
         const errorHandling = agent.options?.errorHandling
         const hasAfterModelHooks = afterModelExecutionOrder.length > 0
+        const createScopedAbortSignal = () => {
+            const controller = new AbortController()
+            const abortHandler = () => controller.abort(abortController.signal.reason)
+
+            if (abortController.signal.aborted) {
+                controller.abort(abortController.signal.reason)
+            } else {
+                abortController.signal.addEventListener('abort', abortHandler, { once: true })
+            }
+
+            return {
+                signal: controller.signal,
+                cleanup: () => {
+                    abortController.signal.removeEventListener('abort', abortHandler)
+                    if (!controller.signal.aborted) {
+                        controller.abort()
+                    }
+                }
+            }
+        }
 
         const stateModifier = async (
             state: typeof AgentStateAnnotation.State,
@@ -920,7 +1104,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                             this.commandBus,
                             this.queryBus,
                             state,
-                            agent.options?.attachment ?? agent.options?.vision
+                            agent.options?.attachment ?? agent.options?.vision,
+                            { xpert: promptWorkflowXpert }
                         )
                     )
                 }
@@ -988,6 +1173,8 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 (<string>config.metadata.langgraph_triggers[0])?.startsWith(START),
                 jsonSchema
             )
+            const channelState = getChannelState(state, agentChannel)
+            const isInternalGoalVerification = readGoalPhaseFromChannelState(channelState) === 'verify'
             // Disable history and new human request then remove history
             const deleteMessages =
                 !enableMessageHistory && humanMessages.length
@@ -1012,22 +1199,46 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 const systemMsg = request.systemMessage ?? systemMessage
                 systemMessageContent = systemMsg.content
                 const finalMessages = systemMsg ? [systemMsg, ...reqMessages] : reqMessages
-                const response = await model.invoke(finalMessages, { ...config, signal: abortController.signal })
+                const scopedSignal = createScopedAbortSignal()
+                const invokeConfig = isInternalGoalVerification
+                    ? {
+                          ...config,
+                          metadata: {
+                              ...(config?.metadata ?? {}),
+                              internal: true
+                          }
+                      }
+                    : config
+                const response = await model
+                    .invoke(finalMessages, { ...invokeConfig, signal: scopedSignal.signal })
+                    .finally(() => {
+                        scopedSignal.cleanup()
+                    })
                 if (isBaseMessage(response) && isAIMessage(response)) {
                     const invalidToolCalls = response.invalid_tool_calls
                     if (invalidToolCalls?.length) {
-                        const detail = invalidToolCalls
-                            .map(
-                                (call) =>
-                                    `${call.name ?? call.id ?? 'tool'}: ${call.error ?? 'Invalid tool call'}\n${call.args}`
-                            )
-                            .join('; ')
-                        throw new InternalServerErrorException(t('server-ai:Error.InvalidToolCalls') + detail)
+                        const diagnosticId = randomUUID()
+                        this.#logger.error(
+                            createInvalidToolCallDiagnostics({
+                                diagnosticId,
+                                invalidToolCalls,
+                                threadId: thread_id,
+                                executionId: execution.id,
+                                xpertId: xpert.id,
+                                agentKey,
+                                agentChannel,
+                                model: execution.metadata,
+                                aiMessageId: response.id
+                            })
+                        )
+                        throw new InternalServerErrorException(
+                            createInvalidToolCallErrorMessage(invalidToolCalls, diagnosticId)
+                        )
                     }
                 }
                 return response
             }
-            const wrappedModelHandler = agentMiddlewares.reduceRight<WrapModelCallHandler>((next, middleware) => {
+            const wrappedModelHandler = middlewareEntries.reduceRight<WrapModelCallHandler>((next, { middleware }) => {
                 if (!middleware?.wrapModelCall) {
                     return next
                 }
@@ -1037,6 +1248,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 const message: AIMessage | object = await wrappedModelHandler(baseRequest)
 
                 const nState: Record<string, any> = {
+                    [GRAPH_JUMP_TO_STATE_KEY]: null,
                     messages: [...humanMessages],
                     [channelName(agentKey)]: {
                         system: systemMessageContent,
@@ -1086,19 +1298,30 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
             }
         }
 
-        const agentLoopEntryNode = beforeModelHooks[0]?.key ?? agentKey
+        const stagePendingFollowUpsNodeKey = `${agentKey}_stage_pending_follow_ups`
+        const consumePendingFollowUpsNodeKey = `${agentKey}_consume_pending_follow_ups`
+        const hasSteerPreTurnNodes = !hiddenAgent
+        const agentLoopEntryNode = hasSteerPreTurnNodes
+            ? stagePendingFollowUpsNodeKey
+            : (beforeModelHooks[0]?.key ?? agentKey)
+        const modelLoopEntryNode = beforeModelHooks[0]?.key ?? agentKey
         const agentStartNode = beforeAgentHooks[0]?.key ?? agentLoopEntryNode
         const agentDecisionNode = afterModelExecutionOrder[afterModelExecutionOrder.length - 1]?.key ?? agentKey
         const afterAgentEntryNode = afterAgentExecutionOrder[0]?.key
         const agentFinalExitNode =
             afterAgentExecutionOrder[afterAgentExecutionOrder.length - 1]?.key ?? agentDecisionNode
-        // Only trigger start nodes need special routing into the agent start chain.
-        const triggerStartNodeKeys = new Set(
-            (isStart ? startNodes : []).filter((key) => {
-                const node = graph.nodes.find((_) => _.key === key)
-                return node?.type === 'workflow' && node.entity.type === WorkflowNodeTypeEnum.TRIGGER
-            })
-        )
+        // A start agent can also be reached by ordinary workflow nodes, such as an iterating child agent
+        // with preprocessing steps in front of it. The first handoff from that start-driven workflow path
+        // must enter through `agentStartNode`; otherwise the injected pre-turn chain becomes unreachable.
+        const startDrivenAgentEntrySources = isStart
+            ? collectStartDrivenAgentEntrySources({
+                  startNodes,
+                  nodes,
+                  edges,
+                  conditionalEdges,
+                  agentKey
+              })
+            : new Set<string>()
 
         const subgraphBuilder = new StateGraph<any, any, any, string>(SubgraphStateAnnotation)
 
@@ -1112,6 +1335,37 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                     })
                 )
             )
+            subgraphBuilder
+                .addNode(
+                    stagePendingFollowUpsNodeKey,
+                    (
+                        await this.commandBus.execute(
+                            new CreateNodeStagePendingSteerFollowUpsCommand({
+                                conversationId: options.conversationId
+                            })
+                        )
+                    ).withConfig({
+                        runName: stagePendingFollowUpsNodeKey,
+                        tags: [thread_id, xpert.id, stagePendingFollowUpsNodeKey]
+                    })
+                )
+                .addNode(
+                    consumePendingFollowUpsNodeKey,
+                    (
+                        await this.commandBus.execute(
+                            new CreateNodeConsumePendingSteerFollowUpsCommand({
+                                agentKey,
+                                agentChannel,
+                                xpert: promptWorkflowXpert,
+                                subscriber,
+                                attachmentOptions: agent.options?.attachment ?? agent.options?.vision
+                            })
+                        )
+                    ).withConfig({
+                        runName: consumePendingFollowUpsNodeKey,
+                        tags: [thread_id, xpert.id, consumePendingFollowUpsNodeKey]
+                    })
+                )
             beforeModelHooks.forEach(({ key, hook }) =>
                 subgraphBuilder.addNode(
                     key,
@@ -1158,11 +1412,15 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                 }
                 subgraphBuilder.addEdge(beforeAgentHooks[beforeAgentHooks.length - 1].key, agentLoopEntryNode)
             }
+            subgraphBuilder.addEdge(stagePendingFollowUpsNodeKey, consumePendingFollowUpsNodeKey)
             if (beforeModelHooks.length) {
                 for (let i = 0; i < beforeModelHooks.length - 1; i++) {
                     subgraphBuilder.addEdge(beforeModelHooks[i].key, beforeModelHooks[i + 1].key)
                 }
+                subgraphBuilder.addEdge(consumePendingFollowUpsNodeKey, beforeModelHooks[0].key)
                 subgraphBuilder.addEdge(beforeModelHooks[beforeModelHooks.length - 1].key, agentKey)
+            } else {
+                subgraphBuilder.addEdge(consumePendingFollowUpsNodeKey, agentKey)
             }
             if (afterModelExecutionOrder.length) {
                 subgraphBuilder.addEdge(agentKey, afterModelExecutionOrder[0].key)
@@ -1196,50 +1454,46 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         }
 
         // Add nodes for tools
-        tools
-            ?.filter((_) => !_.graph)
-            .forEach(({ caller, tool, variables, toolset }) => {
-                const name = tool.name
-                const ends = []
-                if (endNodes?.includes(tool.name)) {
-                    // If it is end of the agent, connect the subsequent nodes of the agent
-                    if (nextNodeKey?.length) {
-                        ends.push(...nextNodeKey)
-                        subgraphBuilder.addConditionalEdges(name, (state, config) => {
-                            return nextNodeKey.filter((_) => !!_).map((n) => new Send(n, state))
-                        })
+        if (!hiddenAgent) {
+            tools
+                ?.filter((_) => !_.graph)
+                .forEach(({ caller, tool, variables, toolset }) => {
+                    const name = tool.name
+                    const ends = []
+                    if (endNodes?.includes(tool.name)) {
+                        // If it is end of the agent, connect the subsequent nodes of the agent
+                        if (nextNodeKey?.length) {
+                            ends.push(...nextNodeKey)
+                            subgraphBuilder.addConditionalEdges(name, (state, config) => {
+                                return nextNodeKey.filter((_) => !!_).map((n) => new Send(n, state))
+                            })
+                        } else {
+                            // No subsequent node, go to the end
+                            subgraphBuilder.addEdge(name, END)
+                            ends.push(END)
+                        }
                     } else {
-                        // No subsequent node, go to the end
-                        subgraphBuilder.addEdge(name, END)
-                        ends.push(END)
+                        // Not the end of the agent, return to the agent node
+                        subgraphBuilder.addEdge(name, agentLoopEntryNode)
+                        // ends.push(agentKey)
                     }
-                } else {
-                    // Not the end of the agent, return to the agent node
-                    subgraphBuilder.addEdge(name, agentLoopEntryNode)
-                    // ends.push(agentKey)
-                }
-                subgraphBuilder.addNode(
-                    name,
-                    new ToolNode([tool], { caller, variables, toolName: toolset.title, wrapToolCall }).withConfig({
-                        signal: abortController.signal
-                    }),
-                    {
-                        ends,
-                        metadata: omitBy({ toolset: toolset.provider, toolsetId: toolset.id }, isNil)
-                    }
-                )
-            })
+                    subgraphBuilder.addNode(
+                        name,
+                        new ToolNode([tool], { caller, variables, toolName: toolset.title, wrapToolCall }),
+                        {
+                            ends,
+                            metadata: omitBy({ toolset: toolset.provider, toolsetId: toolset.id }, isNil)
+                        }
+                    )
+                })
 
-        handoffTools?.forEach((tool) => {
-            const name = tool.name
-            subgraphBuilder.addNode(
-                name,
-                new ToolNode([tool], { caller: '', toolName: tool.description }).withConfig({
-                    signal: abortController.signal
-                }),
-                { metadata: { toolset: 'transfer_to' } }
-            )
-        })
+            handoffTools?.forEach((tool) => {
+                const name = tool.name
+                subgraphBuilder.addNode(name, new ToolNode([tool], { caller: '', toolName: tool.description }), {
+                    metadata: { toolset: 'transfer_to' }
+                })
+            })
+        }
 
         // Sub Agents
         if (subAgents) {
@@ -1263,20 +1517,6 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
             })
         }
 
-        if (summarizeTitle && !hiddenAgent) {
-            const titleAgent = await this.commandBus.execute(
-                new CreateSummarizeTitleAgentCommand({
-                    xpert: team,
-                    rootController: rootController,
-                    rootExecutionId: command.options.rootExecutionId,
-                    channel: agentChannel,
-                    threadId: thread_id
-                })
-            )
-            subgraphBuilder
-                .addNode(GRAPH_NODE_TITLE_CONVERSATION, titleAgent)
-                .addEdge(GRAPH_NODE_TITLE_CONVERSATION, END)
-        }
         if (summarize?.enabled) {
             subgraphBuilder
                 .addNode(GRAPH_NODE_SUMMARIZE_CONVERSATION, createSummarizeAgent(chatModel, summarize, agentKey))
@@ -1286,21 +1526,22 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         // Conditional navigator for entry Agent
         if (!hiddenAgent) {
             const toolNames = withTools.map((tool) => tool.name)
-            const decisionPathMap = afterAgentEntryNode
+            const baseDecisionPathMap = afterAgentEntryNode
                 ? [...pathMap, afterAgentEntryNode]
                 : nextNodeKey.length
                   ? pathMap
                   : [...pathMap, END]
+            const decisionPathMap = uniq([...baseDecisionPathMap, modelLoopEntryNode])
 
             subgraphBuilder.addConditionalEdges(
                 agentDecisionNode,
                 createAgentNavigator(
                     agentChannel,
                     summarize,
-                    summarizeTitle,
                     afterAgentEntryNode ? undefined : nextNodeKey,
                     isStart ? fail?.[0]?.key : undefined,
-                    afterAgentEntryNode
+                    afterAgentEntryNode,
+                    { model: modelLoopEntryNode }
                 ),
                 decisionPathMap
             )
@@ -1315,7 +1556,6 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                     createAfterAgentNavigator(
                         agentChannel,
                         summarize,
-                        summarizeTitle,
                         nextNodeKey,
                         isStart ? fail?.[0]?.key : undefined
                     ),
@@ -1327,29 +1567,41 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
         // Has other nodes
         if (Object.keys(nodes).length) {
             Object.keys(nodes).forEach((name) =>
-                subgraphBuilder.addNode(
-                    nodes[name].name || name,
-                    nodes[name].graph.withConfig({ signal: abortController.signal }),
-                    {
-                        ends: nodes[name].ends,
-                        defer: hasMultipleInputs(graph, name)
-                    }
-                )
+                subgraphBuilder.addNode(nodes[name].name || name, nodes[name].graph, {
+                    ends: nodes[name].ends,
+                    defer: hasMultipleInputs(graph, name)
+                })
             )
             Object.entries(edges).forEach(([name, value]) => {
                 const ends: string[] = Array.isArray(value) ? value : [value]
                 ends.forEach((end) => {
-                    // Ensure trigger-first entry runs beforeAgent hooks by entering from agentStartNode.
-                    if (triggerStartNodeKeys.has(name) && end === agentKey) {
+                    // Ensure workflow-driven start paths enter through the agent start chain so
+                    // injected pre-turn nodes remain reachable before the first agent turn.
+                    if (startDrivenAgentEntrySources.has(name) && end === agentKey) {
                         subgraphBuilder.addEdge(name, agentStartNode)
                         return
                     }
                     subgraphBuilder.addEdge(name, end)
                 })
             })
-            Object.keys(conditionalEdges).forEach((name) =>
-                subgraphBuilder.addConditionalEdges(name, conditionalEdges[name][0] as any, conditionalEdges[name][1])
-            )
+            Object.keys(conditionalEdges).forEach((name) => {
+                const [navigator, destinations] = conditionalEdges[name]
+                const shouldRerouteAgentEntry =
+                    startDrivenAgentEntrySources.has(name) && destinations?.includes(agentKey)
+
+                subgraphBuilder.addConditionalEdges(
+                    name,
+                    shouldRerouteAgentEntry
+                        ? async (state, config) =>
+                              rerouteAgentEntryTarget(await (navigator as any)(state, config), agentKey, agentStartNode)
+                        : (navigator as any),
+                    shouldRerouteAgentEntry
+                        ? destinations.map((destination) =>
+                              rerouteAgentEntryTarget(destination, agentKey, agentStartNode)
+                          )
+                        : destinations
+                )
+            })
         }
 
         // Verbose
@@ -1367,6 +1619,7 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
             name: agentKey,
             store: options.store
         })
+        installGraphCloseHook(compiledGraph)
 
         return {
             agent,
@@ -1543,10 +1796,14 @@ export class XpertAgentSubgraphHandler implements ICommandHandler<XpertAgentSubg
                         configurable: {
                             ...config.configurable,
                             agentKey: agent.key,
+                            xpertName: agentLabel(agent),
                             executionId: _execution.id
                         },
                         metadata: {
-                            agentKey: agent.key
+                            agentKey: agent.key,
+                            xpertName: agentLabel(agent),
+                            executionId: _execution.id,
+                            parentExecutionId: executionId
                         }
                     })
 
@@ -1637,7 +1894,6 @@ function ensureSummarize(summarize?: TSummarize) {
  *
  * @param agentChannel Channel name of agent
  * @param summarize Summarize config
- * @param summarizeTitle Is title summarize enabled
  * @param nextNodes Next nodes after agent
  * @param fail Failure node of agent
  * @returns conditionalEdgesFun
@@ -1645,16 +1901,33 @@ function ensureSummarize(summarize?: TSummarize) {
 function createAgentNavigator(
     agentChannel: string,
     summarize: TSummarize,
-    summarizeTitle: boolean,
     nextNodes?: string[] | ((state, config) => string),
     fail?: string,
-    exitNode?: string
+    exitNode?: string,
+    jumpTargets?: Partial<Record<JumpToTarget, string>>
 ) {
     return (state: typeof AgentStateAnnotation.State, config) => {
-        const { title } = state
+        const jumpTo = consumeJumpTo(state, config)
+        if (jumpTo === 'end') {
+            return END
+        }
+        if (jumpTo === 'model' && jumpTargets?.model) {
+            return jumpTargets.model
+        }
+
         const subState = getChannelState(state, agentChannel)
         const messages = subState?.messages ?? []
         const lastMessage = messages[messages.length - 1]
+        const pendingToolCalls = getPendingToolCallsAfterTrailingToolMessages(messages)
+        if (pendingToolCalls.length) {
+            return pendingToolCalls.map((toolCall) => {
+                if (!toolCall.name) {
+                    throw new InternalServerErrorException(`tool_call's name is empty in '${agentChannel}'.`)
+                }
+                return new Send(toolCall.name, { ...state, toolCall })
+            })
+        }
+
         if (isBaseMessage(lastMessage) && isAIMessage(lastMessage)) {
             if (!lastMessage.tool_calls || lastMessage.tool_calls.length === 0) {
                 if (exitNode) {
@@ -1664,8 +1937,6 @@ function createAgentNavigator(
                 // If there are more than six messages, then we summarize the conversation
                 if (summarize?.enabled && messages.length > summarize.maxMessages) {
                     nexts.push(new Send(GRAPH_NODE_SUMMARIZE_CONVERSATION, state))
-                } else if (!title && summarizeTitle) {
-                    nexts.push(new Send(GRAPH_NODE_TITLE_CONVERSATION, state))
                 }
 
                 if (nextNodes && !subState?.error) {
@@ -1691,13 +1962,6 @@ function createAgentNavigator(
 
                 return END
             }
-
-            return lastMessage.tool_calls.map((toolCall) => {
-                if (!toolCall.name) {
-                    throw new InternalServerErrorException(`tool_call's name is empty in '${agentChannel}'.`)
-                }
-                return new Send(toolCall.name, { ...state, toolCall })
-            })
         }
 
         if (exitNode) {
@@ -1718,15 +1982,41 @@ function createAgentNavigator(
     }
 }
 
+function consumeJumpTo(state: unknown, config?: RunnableConfig): JumpToTarget | undefined {
+    const stateJumpTo = readStateJumpTo(state)
+    if (stateJumpTo) {
+        return stateJumpTo
+    }
+    const jumpTo = (config as { jumpTo?: JumpToTarget } | undefined)?.jumpTo
+    if (jumpTo) {
+        delete (config as { jumpTo?: JumpToTarget }).jumpTo
+    }
+    return jumpTo
+}
+
+function readStateJumpTo(state: unknown): JumpToTarget | undefined {
+    if (!state || typeof state !== 'object') {
+        return undefined
+    }
+    const value = Reflect.get(state, GRAPH_JUMP_TO_STATE_KEY)
+    return value === 'model' || value === 'tools' || value === 'end' ? value : undefined
+}
+
+function readGoalPhaseFromChannelState(state: unknown): 'act' | 'verify' | undefined {
+    if (!state || typeof state !== 'object') {
+        return undefined
+    }
+    const value = Reflect.get(state, 'threadGoalPhase')
+    return value === 'act' || value === 'verify' ? value : undefined
+}
+
 function createAfterAgentNavigator(
     agentChannel: string,
     summarize: TSummarize,
-    summarizeTitle: boolean,
     nextNodes?: string[] | ((state, config) => string),
     fail?: string
 ) {
     return (state: typeof AgentStateAnnotation.State, config) => {
-        const { title } = state
         const subState = getChannelState(state, agentChannel)
         const messages = subState?.messages ?? []
         const lastMessage = messages[messages.length - 1]
@@ -1735,8 +2025,6 @@ function createAfterAgentNavigator(
             const nexts: Send[] = []
             if (summarize?.enabled && messages.length > summarize.maxMessages) {
                 nexts.push(new Send(GRAPH_NODE_SUMMARIZE_CONVERSATION, state))
-            } else if (!title && summarizeTitle) {
-                nexts.push(new Send(GRAPH_NODE_TITLE_CONVERSATION, state))
             }
 
             if (nextNodes && !subState?.error) {
@@ -1782,6 +2070,10 @@ function createAfterAgentNavigator(
 }
 
 // Fill tools or structured output into chatModel
+function isFileUnderstandingEnabled(agent: IXpertAgent) {
+    return !agent.options?.structuredOutputMethod && agent.options?.fileUnderstanding?.enabled !== false
+}
+
 function withStructured(chatModel: BaseChatModel, agent: IXpertAgent, withTools: TGraphTool['tool'][]) {
     let structuredChatModel = null
     let jsonSchema: string = null
@@ -1824,21 +2116,89 @@ function stringifyStructuredResponse(response: unknown) {
     }
 }
 
-function getModelHooks(graph: TXpertGraph, agent: IXpertAgent, agentMiddlewares: AgentMiddleware[]) {
-    const middlewareNodes = orderNodesByKeyOrder(
-        getAgentMiddlewareNodes(graph, agent.key),
-        agent.options?.middlewares?.order || []
-    )
-    const middlewareWithKeys = middlewareNodes.reduce<Array<{ key: string; middleware: AgentMiddleware }>>(
-        (acc, node, index) => {
-            const middleware = agentMiddlewares[index]
-            if (middleware) {
-                acc.push({ key: node.key, middleware })
+type InvalidToolCallDiagnosticsInput = {
+    diagnosticId: string
+    invalidToolCalls: InvalidToolCall[]
+    threadId?: string
+    executionId?: string
+    xpertId?: string
+    agentKey: string
+    agentChannel: string
+    model?: TAgentExecutionMetadata | null
+    aiMessageId?: string
+}
+
+type InvalidToolCallDiagnostics = {
+    event: typeof INVALID_TOOL_CALL_LOG_EVENT
+    diagnosticId: string
+    threadId?: string
+    executionId?: string
+    xpertId?: string
+    agentKey: string
+    agentChannel: string
+    model?: TAgentExecutionMetadata | null
+    aiMessageId?: string
+    invalidToolCalls: Array<{
+        id?: string
+        name?: string
+        error: string
+        argsPreview: string
+        rawArgsLength: number
+        truncated: boolean
+    }>
+}
+
+function createInvalidToolCallDiagnostics(input: InvalidToolCallDiagnosticsInput): InvalidToolCallDiagnostics {
+    return {
+        event: INVALID_TOOL_CALL_LOG_EVENT,
+        diagnosticId: input.diagnosticId,
+        threadId: input.threadId,
+        executionId: input.executionId,
+        xpertId: input.xpertId,
+        agentKey: input.agentKey,
+        agentChannel: input.agentChannel,
+        model: input.model,
+        aiMessageId: input.aiMessageId,
+        invalidToolCalls: input.invalidToolCalls.map((call) => {
+            const rawArgs = call.args ?? ''
+            const redactedArgs = redactInvalidToolCallArgs(rawArgs)
+            const truncated = redactedArgs.length > MAX_INVALID_TOOL_CALL_ARGS_LOG_CHARS
+
+            return {
+                id: call.id,
+                name: call.name,
+                error: call.error ?? 'Invalid tool call',
+                argsPreview: truncated ? redactedArgs.slice(0, MAX_INVALID_TOOL_CALL_ARGS_LOG_CHARS) : redactedArgs,
+                rawArgsLength: rawArgs.length,
+                truncated
             }
-            return acc
-        },
-        []
-    )
+        })
+    }
+}
+
+function createInvalidToolCallErrorMessage(invalidToolCalls: InvalidToolCall[], diagnosticId: string) {
+    const detail = invalidToolCalls
+        .map((call) => `${call.name ?? call.id ?? 'tool'}: ${call.error ?? 'Invalid tool call'}`)
+        .join('; ')
+    const prefix = t('server-ai:Error.InvalidToolCalls') || 'Model returned invalid tool calls:'
+
+    return `${prefix}${detail ? `${detail} ` : ''}(diagnosticId: ${diagnosticId})`
+}
+
+function redactInvalidToolCallArgs(args: string) {
+    return args
+        .replace(
+            /("(?:api[_-]?key|authorization|password|secret|token|access[_-]?token|refresh[_-]?token|client[_-]?secret)"\s*:\s*)"([^"\\]*(?:\\.[^"\\]*)*)"/gi,
+            '$1"[REDACTED]"'
+        )
+        .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]')
+        .replace(
+            /\b(api[_-]?key|authorization|password|secret|token|access[_-]?token|refresh[_-]?token|client[_-]?secret)(\s*[=:]\s*)([^\s,;}"']+)/gi,
+            '$1$2[REDACTED]'
+        )
+}
+
+function getModelHooks(middlewareWithKeys: Array<{ key: string; middleware: AgentMiddleware }>) {
     const beforeAgentHooks = middlewareWithKeys
         .map(({ key, middleware }) => {
             const hook =
@@ -1869,8 +2229,9 @@ function getModelHooks(graph: TXpertGraph, agent: IXpertAgent, agentMiddlewares:
         })
         .filter(Boolean)
     const afterAgentExecutionOrder = [...afterAgentHooks].reverse()
-    const wrapToolCall = agentMiddlewares.some((middleware) => middleware?.wrapToolCall)
-        ? agentMiddlewares.reduceRight<WrapToolCallHook>(
+    const middlewares = middlewareWithKeys.map(({ middleware }) => middleware)
+    const wrapToolCall = middlewares.some((middleware) => middleware?.wrapToolCall)
+        ? middlewares.reduceRight<WrapToolCallHook>(
               (next, middleware) => {
                   if (!middleware?.wrapToolCall) {
                       return next
@@ -1912,13 +2273,16 @@ function createBeforeModelNode(hook: BeforeModelHandler<typeof MessagesAnnotatio
                     ;(config as any).jumpTo = jumpTo
                 }
                 return {
+                    [GRAPH_JUMP_TO_STATE_KEY]: jumpTo ?? null,
                     [agentChannel]: {
                         ...middlewareState,
                         ...partial
                     }
                 }
             }
-            return null
+            return {
+                [GRAPH_JUMP_TO_STATE_KEY]: null
+            }
         }
     })
 }
@@ -1940,6 +2304,7 @@ function createAfterModelNode(
                 return state
             }
             let nextState: Record<string, any> = { ...channelState }
+            let nextJumpTo: JumpToTarget | undefined
             if (hook) {
                 const result = await hook(channelState, config)
                 if (result && typeof result === 'object') {
@@ -1951,13 +2316,19 @@ function createAfterModelNode(
                     if (jumpTo) {
                         ;(config as any) ??= {}
                         ;(config as any).jumpTo = jumpTo
+                        nextJumpTo = jumpTo
                     }
                 }
             }
-            if (isLast) {
-                return writeAgentMemories({ ...state, [agentChannel]: nextState }, memories)
+            const rootState = {
+                ...state,
+                ...(nextJumpTo ? { [GRAPH_JUMP_TO_STATE_KEY]: nextJumpTo } : {}),
+                [agentChannel]: nextState
             }
-            return { ...state, [agentChannel]: nextState }
+            if (isLast) {
+                return writeAgentMemories(rootState, memories)
+            }
+            return rootState
         }
     })
 }
@@ -1976,20 +2347,18 @@ function createAfterAgentNode(
             if (errorHandling?.type === 'failBranch' && channelState?.error) {
                 return state
             }
-            let nextState: Record<string, any> = { ...channelState }
             if (hook) {
                 const result = await hook(state as any, config as any)
                 if (result && typeof result === 'object') {
                     const { jumpTo, ...partial } = result as any
-                    nextState = {
-                        ...nextState,
-                        ...partial
-                    }
                     if (jumpTo) {
                         ;(config as any) ??= {}
                         ;(config as any).jumpTo = jumpTo
                     }
-                    return { [agentChannel]: nextState }
+                    return {
+                        ...partial,
+                        ...(jumpTo ? { [GRAPH_JUMP_TO_STATE_KEY]: jumpTo } : {})
+                    }
                 }
             }
             return null

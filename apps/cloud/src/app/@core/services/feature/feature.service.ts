@@ -1,7 +1,7 @@
 import { HttpClient } from '@angular/common/http'
-import { Injectable } from '@angular/core'
-import { API_PREFIX } from '@metad/cloud/state'
-import { toParams } from '@metad/core'
+import { Injectable, inject } from '@angular/core'
+import { API_PREFIX } from '@xpert-ai/cloud/state'
+import { toParams } from '@xpert-ai/core'
 import {
   IFeature,
   IFeatureOrganization,
@@ -9,14 +9,15 @@ import {
   IFeatureOrganizationUpdateInput,
   IPagination
 } from '../../types'
-import { map, Observable } from 'rxjs'
+import { map, Observable, Subject } from 'rxjs'
 
 @Injectable()
 export class FeatureService {
   API_URL = `${API_PREFIX}/feature/toggle`
   API_FEATURE = `${API_PREFIX}/feature`
-
-  constructor(private http: HttpClient) {}
+  private readonly featureDefinitionsRefreshed = new Subject<void>()
+  readonly featureDefinitionsRefreshed$ = this.featureDefinitionsRefreshed.asObservable()
+  private readonly http = inject(HttpClient)
 
   getFeatureToggleDefinition() {
     return this.http.get<IFeature[]>(`${this.API_URL}/definition`)
@@ -41,15 +42,19 @@ export class FeatureService {
 		});
 	}
 
-  featureToggle(payload: IFeatureOrganizationUpdateInput) {
+  featureToggle(payload: IFeatureOrganizationUpdateInput): Observable<boolean> {
     return this.http.post<boolean[]>(`${this.API_URL}`, [payload]).pipe(map((res: boolean[]) => res[0]))
   }
 
-  featuresToggle(payload: IFeatureOrganizationUpdateInput[]) {
+  featuresToggle(payload: IFeatureOrganizationUpdateInput[]): Observable<boolean[]> {
     return this.http.post<boolean[]>(`${this.API_URL}`, payload)
   }
 
   upgrade() {
 	  return this.http.post(`${this.API_FEATURE}/upgrade`, {})
+  }
+
+  notifyFeatureDefinitionsRefreshed() {
+    this.featureDefinitionsRefreshed.next()
   }
 }

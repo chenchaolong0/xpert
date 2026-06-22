@@ -31,7 +31,7 @@ import {
 	IOrganizationLanguage,
 	IFeatureOrganization,
 	LanguagesEnum
-} from '@metad/contracts';
+} from '@xpert-ai/contracts';
 import {
 	Employee,
 	FeatureOrganization,
@@ -323,7 +323,7 @@ export class Organization extends TenantBaseEntity implements IOrganization {
 
 	@ApiProperty({ enum: [12, 24] })
 	@IsBoolean()
-	@Column({ default: 12 })
+	@Column({ type: 'int', default: 12 })
 	timeFormat?: 12 | 24;
 
 	@ApiPropertyOptional({ type: () => Boolean })
@@ -383,7 +383,11 @@ export class Organization extends TenantBaseEntity implements IOrganization {
 
 	@ApiProperty({ type: () => String, enum: LanguagesEnum })
 	@IsEnum(LanguagesEnum)
-	@Column({ nullable: true })
+	@Column({
+		type: 'enum',
+		enum: LanguagesEnum,
+		nullable: true
+	})
 	preferredLanguage?: LanguagesEnum
 
 	/*

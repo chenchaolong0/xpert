@@ -1267,6 +1267,7 @@ connections:
     key: Agent_ZlZVUdeYOR/Agent_4wi8GpjLZv
     from: Agent_ZlZVUdeYOR
     to: Agent_4wi8GpjLZv
+    required: true
   - type: toolset
     key: Agent_4wi8GpjLZv/cdb69b17-b863-4325-8dd8-be3d407b9585
     from: Agent_4wi8GpjLZv

@@ -1,16 +1,20 @@
-import { CommonModule } from '@angular/common'
 import { Component, input } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { I18nObject, IconDefinition, injectHelpWebsite } from '@cloud/app/@core'
 import { IconComponent } from '@cloud/app/@shared/avatar'
-import { NgmI18nPipe } from '@metad/ocap-angular/core'
+import { PluginLevel } from '@xpert-ai/contracts'
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 
 export type TPlugin = {
   name: string
-  displayName: I18nObject
-  description: I18nObject
+  displayName: I18nObject | string
+  description: I18nObject | string
   version: string
+  level?: PluginLevel
+  deprecated?: boolean
+  deprecationMessage?: I18nObject | string
   category: string
   icon: IconDefinition
   author: {
@@ -19,31 +23,23 @@ export type TPlugin = {
   }
   source?: {
     url: string
-    type: 'marketplace' | 'github' | 'npm' | 'website' | 'other'
+    type: 'marketplace' | 'github' | 'git' | 'url' | 'npm' | 'website' | 'other'
   }
   keywords?: string[]
 }
 
 @Component({
   standalone: true,
-  imports: [
-    CommonModule,
-    TranslateModule,
-    FormsModule,
-    NgmI18nPipe,
-    IconComponent,
-  ],
+  imports: [TranslateModule, FormsModule, NgmI18nPipe, IconComponent, ...ZardTooltipImports],
   selector: 'xp-plugin',
   templateUrl: './plugin.component.html',
   styleUrls: ['./plugin.component.scss'],
   animations: []
 })
 export class PluginComponent {
-
   readonly installHelpUrl = injectHelpWebsite('/docs/plugin/install')
-  
+
   // Inputs
   readonly plugin = input<TPlugin>()
   readonly installed = input<boolean>(false)
-
 }

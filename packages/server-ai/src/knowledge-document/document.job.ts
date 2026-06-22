@@ -1,161 +1,247 @@
 import { Document } from '@langchain/core/documents'
-import { IKnowledgebase, IKnowledgeDocument, KBDocumentStatusEnum, KnowledgeDocumentMetadata } from '@metad/contracts'
-import { getErrorMessage } from '@metad/server-common'
-import { runWithRequestContext, UserService } from '@metad/server-core'
+import {
+    IKnowledgebase,
+    IKnowledgeDocument,
+    KBDocumentStatusEnum,
+    KnowledgeDocumentMetadata
+} from '@xpert-ai/contracts'
+import { getErrorMessage } from '@xpert-ai/server-common'
+import { runWithRequestContext, UserService } from '@xpert-ai/server-core'
 import { JOB_REF, Process, Processor } from '@nestjs/bull'
 import { Inject, Logger } from '@nestjs/common'
 import { CommandBus } from '@nestjs/cqrs'
 import { ChunkMetadata, countTokensSafe } from '@xpert-ai/plugin-sdk'
 import { Job } from 'bull'
 import { CopilotTokenRecordCommand } from '../copilot-user'
+import { KnowledgeGraphEnqueueCommand } from '../graphrag/commands'
 import { KnowledgebaseService, KnowledgeDocumentStore } from '../knowledgebase/index'
 import { KnowledgeDocLoadCommand } from './commands'
 import { KnowledgeDocumentService } from './document.service'
 import { JOB_EMBEDDING_DOCUMENT } from './types'
 
-
 @Processor({
-	name: JOB_EMBEDDING_DOCUMENT
-	// scope: Scope.REQUEST
+    name: JOB_EMBEDDING_DOCUMENT
+    // scope: Scope.REQUEST
 })
 export class KnowledgeDocumentConsumer {
-	private readonly logger = new Logger(KnowledgeDocumentConsumer.name)
+    private readonly logger = new Logger(KnowledgeDocumentConsumer.name)
 
-	constructor(
-		@Inject(JOB_REF) jobRef: Job,
-		private readonly knowledgebaseService: KnowledgebaseService,
-		private readonly documentService: KnowledgeDocumentService,
-		private readonly userService: UserService,
-		private readonly commandBus: CommandBus
-	) {}
+    constructor(
+        @Inject(JOB_REF) jobRef: Job,
+        private readonly knowledgebaseService: KnowledgebaseService,
+        private readonly documentService: KnowledgeDocumentService,
+        private readonly userService: UserService,
+        private readonly commandBus: CommandBus
+    ) {}
 
-	@Process({ concurrency: 5 })
-	async process(job: Job<{ userId: string; docs: IKnowledgeDocument[] }>) {
-		const user = await this.userService.findOne(job.data.userId, { relations: ['role'] })
-		const knowledgebaseId = job.data.docs[0]?.knowledgebaseId
-		const knowledgebase = await this.knowledgebaseService.findOne(knowledgebaseId, {
-			relations: ['copilotModel', 'copilotModel.copilot', 'copilotModel.copilot.modelProvider']
-		})
+    @Process({ concurrency: 5 })
+    async process(job: Job<{ userId: string; docs: IKnowledgeDocument[] }>) {
+        const user = await this.userService.findOne(job.data.userId, { relations: ['role'] })
+        const firstDoc = job.data.docs[0]
+        if (!firstDoc) {
+            return {}
+        }
 
-		runWithRequestContext({ user, headers: { ['organization-id']: knowledgebase.organizationId, language: user.preferredLanguage } }, () => {
-			this._processJob(knowledgebase, job.data.docs, job).catch((err) => {
-				this.logger.error(err)
-			})
-		})
-	}
+        return new Promise((resolve, reject) => {
+            runWithRequestContext(
+                {
+                    user,
+                    headers: {
+                        ['organization-id']: firstDoc.organizationId,
+                        language: user.preferredLanguage
+                    }
+                },
+                () => {
+                    this.processInRequestContext(job)
+                        .then(resolve)
+                        .catch(async (err) => {
+                            this.logger.error(err)
+                            await this.markQueuedDocsFailed(job, err)
+                            reject(err)
+                        })
+                }
+            )
+        })
+    }
 
-	async _processJob(knowledgebase: IKnowledgebase, docs: IKnowledgeDocument<KnowledgeDocumentMetadata>[], job: Job) {
-		const copilot = knowledgebase?.copilotModel?.copilot
-		let vectorStore: KnowledgeDocumentStore
-		try {
-			// const doc = job.data.docs[0]
-			vectorStore = await this.knowledgebaseService.getVectorStore(knowledgebase, true)
-		} catch (err) {
-			await Promise.all(
-				docs.map((doc) =>
-					this.documentService.update(doc.id, {
-						status: KBDocumentStatusEnum.ERROR,
-						processMsg: getErrorMessage(err)
-					})
-				)
-			)
-			await job.moveToFailed(err)
-			return
-		}
+    private async processInRequestContext(job: Job<{ userId: string; docs: IKnowledgeDocument[] }>) {
+        const knowledgebaseId = job.data.docs[0]?.knowledgebaseId
+        const knowledgebase = await this.knowledgebaseService.findOne(knowledgebaseId, {
+            relations: ['copilotModel', 'copilotModel.copilot', 'copilotModel.copilot.modelProvider']
+        })
 
-		for await (const doc of job.data.docs) {
-			const document = await this.documentService.findOne(doc.id, { relations: ['chunks'] })
+        return this._processJob(knowledgebase, job.data.docs, job)
+    }
 
-			try {
-				// Start processing
-				const processBeginAt = new Date()
-				await this.documentService.update(document.id, { processBeginAt })
+    private async markQueuedDocsFailed(job: Job<{ userId: string; docs: IKnowledgeDocument[] }>, err: unknown) {
+        const processBeginAt = new Date()
+        await Promise.all(
+            job.data.docs.map((doc) =>
+                this.documentService.update(doc.id, {
+                    status: KBDocumentStatusEnum.ERROR,
+                    processBeginAt,
+                    processDuration: 0,
+                    processDuation: 0,
+                    processMsg: getErrorMessage(err),
+                    progress: 0
+                })
+            )
+        )
+    }
 
-				const data = await this.commandBus.execute<
-					KnowledgeDocLoadCommand,
-					{ chunks: Document<ChunkMetadata>[]; }
-				>(new KnowledgeDocLoadCommand({ doc: document, stage: 'prod' }))
+    async _processJob(knowledgebase: IKnowledgebase, docs: IKnowledgeDocument<KnowledgeDocumentMetadata>[], job: Job) {
+        const copilot = knowledgebase?.copilotModel?.copilot
+        let vectorStore: KnowledgeDocumentStore
+        try {
+            // const doc = job.data.docs[0]
+            vectorStore = await this.knowledgebaseService.getActiveVectorStore(knowledgebase, true)
+        } catch (err) {
+            const processBeginAt = new Date()
+            await Promise.all(
+                docs.map((doc) =>
+                    this.documentService.update(doc.id, {
+                        status: KBDocumentStatusEnum.ERROR,
+                        processBeginAt,
+                        processDuration: 0,
+                        processDuation: 0,
+                        processMsg: getErrorMessage(err),
+                        progress: 0
+                    })
+                )
+            )
+            throw err
+        }
 
-				let chunks = data?.chunks // .map(transformDocument2Chunk)
-				let docTokenUsed = 0
-				if (chunks) {
-					this.logger.debug(`Embeddings document '${document.name}' size: ${chunks.length}`)
-					document.chunks = await this.documentService.coverChunks({...document, chunks}, vectorStore)
-					await this.documentService.update(document.id, { status: KBDocumentStatusEnum.EMBEDDING, progress: 0, draft: null })
-					chunks = await this.documentService.findAllEmbeddingNodes(document)
+        for await (const doc of job.data.docs) {
+            const document = await this.documentService.findOne(doc.id, { relations: ['chunks'] })
+            let processBeginAt: Date | null = null
 
-					// Clear history chunks
-					await vectorStore.deleteKnowledgeDocument(document)
-					const batchSize = knowledgebase.parserConfig?.embeddingBatchSize || 10
-					let count = 0
-					while (batchSize * count < chunks.length) {
-						const batch = chunks.slice(batchSize * count, batchSize * (count + 1))
-						// Count and Record token usage for embedding
-						// Use searchContent when present, otherwise fall back to full pageContent
-						let tokenUsed = 0
-						batch.forEach((chunk) => {
-							const contentForEmbedding = chunk.metadata?.searchContent ?? chunk.pageContent
-							chunk.metadata.tokens = countTokensSafe(contentForEmbedding)
-							tokenUsed += chunk.metadata.tokens
-						})
-						docTokenUsed += tokenUsed
-						await this.commandBus.execute(
-							new CopilotTokenRecordCommand({
-								tenantId: knowledgebase.tenantId,
-								organizationId: knowledgebase.organizationId,
-								userId: job.data.userId,
-								copilotId: copilot.id,
-								tokenUsed,
-								model: vectorStore.embeddingModel
-							})
-						)
-						await vectorStore.addKnowledgeDocument(document, batch)
-						count++
-						const progress =
-							batchSize * count >= chunks.length
-								? 100
-								: (((batchSize * count) / chunks.length) * 100).toFixed(1)
-						this.logger.debug(`Embeddings document '${document.name}' progress: ${progress}%`)
-						if (await this.checkIfJobCancelled(doc.id)) {
-							this.logger.debug(`[Job: entity '${job.id}'] Cancelled`)
-							return
-						}
-						await this.documentService.update(doc.id, {
-							status: KBDocumentStatusEnum.EMBEDDING,
-							progress: Number(progress),
-							metadata: { ...doc.metadata, tokens: docTokenUsed }
-						})
-					}
-				}
+            try {
+                // Start processing
+                processBeginAt = new Date()
+                await this.documentService.update(document.id, { processBeginAt })
 
-				await this.documentService.update(doc.id, {
-					status: KBDocumentStatusEnum.FINISH,
-					processMsg: '', 
-					processDuation: new Date().getTime() - processBeginAt.getTime(), 
-					progress: 100, 
-					metadata: { ...doc.metadata, tokens: docTokenUsed }
-				})
+                const data = await this.commandBus.execute<
+                    KnowledgeDocLoadCommand,
+                    { chunks: Document<ChunkMetadata>[] }
+                >(new KnowledgeDocLoadCommand({ doc: document, stage: 'prod' }))
 
-				this.logger.debug(`[Job: entity '${job.id}'] End!`)
-			} catch (err) {
-				this.logger.debug(`[Job: entity '${job.id}'] Error!`)
-				this.documentService.update(document.id, {
-					status: KBDocumentStatusEnum.ERROR,
-					processMsg: getErrorMessage(err)
-				})
-				await job.moveToFailed(err)
-			}
-		}
+                let chunks = data?.chunks // .map(transformDocument2Chunk)
+                let docTokenUsed = 0
+                if (chunks) {
+                    this.logger.debug(`Embeddings document '${document.name}' size: ${chunks.length}`)
+                    document.chunks = await this.documentService.coverChunks({ ...document, chunks }, vectorStore)
+                    await this.documentService.update(document.id, {
+                        status: KBDocumentStatusEnum.EMBEDDING,
+                        progress: 0,
+                        draft: null
+                    })
+                    chunks = await this.documentService.findAllEmbeddingNodes(document)
 
-		return {}
-	}
+                    // Clear history chunks
+                    await vectorStore.deleteKnowledgeDocument(document)
+                    const batchSize = knowledgebase.parserConfig?.embeddingBatchSize || 10
+                    let count = 0
+                    while (batchSize * count < chunks.length) {
+                        const batch = chunks.slice(batchSize * count, batchSize * (count + 1))
+                        // Count and Record token usage for embedding
+                        // Use searchContent when present, otherwise fall back to full pageContent
+                        let tokenUsed = 0
+                        batch.forEach((chunk) => {
+                            const contentForEmbedding = chunk.metadata?.searchContent ?? chunk.pageContent
+                            chunk.metadata.tokens = countTokensSafe(contentForEmbedding)
+                            tokenUsed += chunk.metadata.tokens
+                        })
+                        docTokenUsed += tokenUsed
+                        await this.commandBus.execute(
+                            new CopilotTokenRecordCommand({
+                                tenantId: knowledgebase.tenantId,
+                                organizationId: knowledgebase.organizationId,
+                                userId: job.data.userId,
+                                copilotId: copilot.id,
+                                tokenUsed,
+                                model: vectorStore.embeddingModel
+                            })
+                        )
+                        await vectorStore.addKnowledgeDocument(document, batch)
+                        count++
+                        const progress =
+                            batchSize * count >= chunks.length
+                                ? 100
+                                : (((batchSize * count) / chunks.length) * 100).toFixed(1)
+                        this.logger.debug(`Embeddings document '${document.name}' progress: ${progress}%`)
+                        if (await this.checkIfJobCancelled(doc.id)) {
+                            this.logger.debug(`[Job: entity '${job.id}'] Cancelled`)
+                            const processDuration = new Date().getTime() - processBeginAt.getTime()
+                            await this.documentService.update(doc.id, {
+                                status: KBDocumentStatusEnum.CANCEL,
+                                processMsg: '',
+                                processDuration,
+                                processDuation: processDuration,
+                                progress: Number(progress),
+                                metadata: { ...doc.metadata, tokens: docTokenUsed }
+                            })
+                            return
+                        }
+                        await this.documentService.update(doc.id, {
+                            status: KBDocumentStatusEnum.EMBEDDING,
+                            progress: Number(progress),
+                            metadata: { ...doc.metadata, tokens: docTokenUsed }
+                        })
+                    }
+                }
 
-	async checkIfJobCancelled(docId: string): Promise<boolean> {
-		// Check database/cache for cancellation flag
-		const doc = await this.documentService.findOne(docId)
-		if (doc) {
-			return doc?.status === KBDocumentStatusEnum.CANCEL
-		}
-		return true
-	}
+                const processDuration = new Date().getTime() - processBeginAt.getTime()
+                await this.documentService.update(doc.id, {
+                    status: KBDocumentStatusEnum.FINISH,
+                    processMsg: '',
+                    processDuration,
+                    processDuation: processDuration,
+                    progress: 100,
+                    metadata: { ...doc.metadata, tokens: docTokenUsed }
+                })
+                await this.enqueueGraphIndex(knowledgebase, document.id, job.data.userId)
+
+                this.logger.debug(`[Job: entity '${job.id}'] End!`)
+            } catch (err) {
+                this.logger.debug(`[Job: entity '${job.id}'] Error!`)
+                const processDuration = processBeginAt ? new Date().getTime() - processBeginAt.getTime() : null
+                await this.documentService.update(document.id, {
+                    status: KBDocumentStatusEnum.ERROR,
+                    processMsg: getErrorMessage(err),
+                    processDuration,
+                    processDuation: processDuration
+                })
+                this.logger.warn(`[Job: entity '${job.id}'] Document '${document.id}' failed: ${getErrorMessage(err)}`)
+            }
+        }
+
+        return {}
+    }
+
+    private async enqueueGraphIndex(knowledgebase: IKnowledgebase, documentId: string, userId?: string) {
+        try {
+            await this.commandBus.execute(
+                new KnowledgeGraphEnqueueCommand({
+                    userId,
+                    tenantId: knowledgebase.tenantId,
+                    organizationId: knowledgebase.organizationId,
+                    knowledgebaseId: knowledgebase.id,
+                    documentIds: [documentId],
+                    reason: 'document'
+                })
+            )
+        } catch (error) {
+            this.logger.warn(`Failed to enqueue GraphRAG index for document '${documentId}': ${getErrorMessage(error)}`)
+        }
+    }
+
+    async checkIfJobCancelled(docId: string): Promise<boolean> {
+        // Check database/cache for cancellation flag
+        const doc = await this.documentService.findOne(docId)
+        if (doc) {
+            return doc?.status === KBDocumentStatusEnum.CANCEL
+        }
+        return true
+    }
 }

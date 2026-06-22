@@ -1,8 +1,8 @@
 import { Injectable, signal } from '@angular/core'
 import { ActivatedRoute } from '@angular/router'
-import { PacAuthResult, PacAuthStrategy, PacAuthStrategyClass } from '@metad/cloud/auth'
-import { AuthService } from '@metad/cloud/state'
-import { IAuthResponse, ITag, ITenant, IUser, IUserLoginInput } from '@metad/contracts'
+import { PacAuthResult, PacAuthStrategy, PacAuthStrategyClass } from '@xpert-ai/cloud/auth'
+import { AuthService } from '@xpert-ai/cloud/state'
+import { IAuthResponse, ITag, ITenant, IUser, IUserLoginInput } from '@xpert-ai/contracts'
 import { CookieService } from 'ngx-cookie-service'
 import { Observable, from, of } from 'rxjs'
 import { catchError, map, shareReplay, tap } from 'rxjs/operators'
@@ -176,6 +176,7 @@ export class AuthStrategy extends PacAuthStrategy {
         this.store.userId = user.id
         this.store.token = token
         this.store.refreshToken = refreshToken
+        this.store.restoreRememberedScope(user.id)
         this.store.user = user
 
         return new PacAuthResult(

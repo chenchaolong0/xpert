@@ -23,7 +23,7 @@
   </div>
 
   <div class="relative bg-gradient-to-r from-blue-500 to-orange-500 rounded-[12px] p-[2px] mb-4 shadow-xs">
-    <div class="relative rounded-t-xl bg-neutral-100 pt-1.5">
+    <div class="relative rounded-t-xl bg-background-default-subtle pt-1.5">
       <div class="flex h-6 items-center justify-between pb-1 pl-4 pr-1.5">
         <span class="text-sm font-semibold uppercase leading-4 text-text-secondary">
           {{'PAC.MODEL.SourceText' | translate: {Default: 'Source Text'} }}
@@ -31,9 +31,9 @@
       </div>
     </div>
 
-    <div class="rounded-b-xl bg-white px-4 py-2 pb-11">
-      <textarea class="h-[160px] w-full resize-none border-none bg-transparent text-sm font-normal text-text-secondary caret-[#295EFF]
-        placeholder:text-sm placeholder:font-normal placeholder:text-components-input-text-placeholder focus-visible:outline-none"
+    <div class="rounded-b-xl bg-components-card-bg px-4 py-2 pb-11">
+      <textarea class="xp-input h-[160px] w-full resize-none border-none text-sm text-text-secondary
+        placeholder:font-normal focus-visible:outline-none"
         [(ngModel)]="queryText"
       ></textarea>
       <div class="absolute inset-x-0 bottom-0 mx-4 mb-2 mt-2 flex items-center justify-between">
@@ -52,7 +52,7 @@
 </div>
 
 <div class="p-4 w-[500px]">
-  <div class="relative flex h-full flex-col rounded-3xl bg-neutral-100">
+  <div class="relative flex h-full flex-col rounded-3xl bg-background-default-subtle">
     <div class="shrink-0 p-4 font-semibold leading-6 text-text-primary">
       @if (retrieving()) {
         <i class="ri-crosshair-2-line font-normal inline-block animate-spin"></i>
@@ -71,10 +71,10 @@
               <div class="system-xs-medium text-text-quaternary">·</div>
               <div class="text-xs text-text-tertiary truncate font-mono">{{item[0].metadata.key}}</div>
             </div>
-            <div class="relative shrink-0 items-center overflow-hidden border border-components-progress-bar-border px-[5px] h-[20px] rounded-md">
+            <div class="relative shrink-0 items-center overflow-hidden border border-divider-regular px-[5px] h-[20px] rounded-md">
               <div class="absolute left-0 top-0 h-full border-r-[1.5px] 
                   border-primary-500 bg-primary-200/50"
-                [ngStyle]="{width: (item[1] * 100) + '%'}"
+                [ngStyle]="{width:item[1] * 100 + '%'}"
               ></div>
               <div class="relative flex h-full items-center space-x-0.5 text-util-colors-blue-brand-blue-brand-700">
                 <div class="text-xs font-medium uppercase">score</div>
@@ -97,7 +97,7 @@
     </div>
 
     @if (!members()?.length) {
-      <div class="absolute left-0 top-0 w-full h-full flex flex-col justify-center items-center gap-2 rounded-3xl bg-neutral-100 text-text-tertiary">
+      <div class="absolute left-0 top-0 w-full h-full flex flex-col justify-center items-center gap-2 rounded-3xl bg-background-default-subtle text-text-tertiary">
         <i class="ri-crosshair-2-line text-6xl" [class.animate-spin]="retrieving()"></i>
         <div class="">{{'PAC.MODEL.RetrievalTestingResultsHere' | translate: {Default: 'Retrieval Testing results will show here'} }}
         </div>

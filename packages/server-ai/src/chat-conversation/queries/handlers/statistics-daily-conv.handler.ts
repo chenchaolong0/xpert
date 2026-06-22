@@ -2,8 +2,9 @@ import { IQueryHandler, QueryBus, QueryHandler } from '@nestjs/cqrs'
 import { Repository } from 'typeorm'
 import { ChatConversation } from '../../../core/entities/internal'
 import { StatisticsDailyConvQuery } from '../statistics-daily-conv.query'
-import { RequestContext } from '@metad/server-core'
+import { RequestContext } from '@xpert-ai/server-core'
 import { InjectRepository } from '@nestjs/typeorm'
+import { applyStatisticsFilters } from '../statistics-filters'
 
 @QueryHandler(StatisticsDailyConvQuery)
 export class StatisticsDailyConvHandler implements IQueryHandler<StatisticsDailyConvQuery> {
@@ -14,7 +15,7 @@ export class StatisticsDailyConvHandler implements IQueryHandler<StatisticsDaily
 	) {}
 
 	public async execute(command: StatisticsDailyConvQuery) {
-		const { xpertId, start, end } = command
+		const { xpertId, start, end, filters } = command
 		const tenantId = RequestContext.currentTenantId()
 		const organizationId = RequestContext.getOrganizationId()
 
@@ -28,7 +29,11 @@ export class StatisticsDailyConvHandler implements IQueryHandler<StatisticsDaily
 			.andWhere('conversation.from != :from', { from: 'debugger' })
 
 		if (!xpertId) {
-			query.andWhere('conversation.organizationId = :organizationId', {organizationId})
+			if (organizationId) {
+				query.andWhere('conversation.organizationId = :organizationId', { organizationId })
+			} else {
+				query.andWhere('conversation.organizationId IS NULL')
+			}
 		}
 		if (xpertId) {
 			query.andWhere('conversation.xpertId = :xpertId', { xpertId })
@@ -39,6 +44,7 @@ export class StatisticsDailyConvHandler implements IQueryHandler<StatisticsDaily
 		if (end) {
 			query.andWhere('conversation.createdAt <= :end', { end })
 		}
+		applyStatisticsFilters(query, 'conversation', filters)
 		query.addGroupBy('date').orderBy('date')
 
 		return await query.getRawMany()

@@ -9,8 +9,8 @@ import {
     TXpertChatState,
     TSensitiveOperation,
     XpertAgentExecutionStatusEnum
-} from '@metad/contracts'
-import { getErrorMessage, omit } from '@metad/server-common'
+} from '@xpert-ai/contracts'
+import { getErrorMessage, omit } from '@xpert-ai/server-common'
 import { Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import { instanceToPlain } from 'class-transformer'
@@ -20,6 +20,17 @@ import { XpertAgentExecutionOneQuery } from '../../../xpert-agent-execution/quer
 import { XpertAgentChatCommand } from '../chat.command'
 import { XpertAgentInvokeCommand } from '../invoke.command'
 import { XpertAgentExecutionDTO } from '../../../xpert-agent-execution/dto'
+import { applicationMetrics } from '../../../metrics'
+import { applicationTracing } from '../../../tracing'
+
+function isMiddlewareChatEvent(data: unknown) {
+    return (
+        typeof data === 'object' &&
+        data !== null &&
+        !Array.isArray(data) &&
+        (data as Record<string, unknown>).type === 'middleware_event'
+    )
+}
 
 @CommandHandler(XpertAgentChatCommand)
 export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatCommand> {
@@ -48,7 +59,21 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
 
         const thread_id = execution.threadId
         let operation: TSensitiveOperation = null
-        return new Observable<MessageEvent>((subscriber) => {
+        const stream = new Observable<MessageEvent>((subscriber) => {
+            let agentMetricsFinished = false
+            const finishAgentMetrics = (status: string) => {
+                if (agentMetricsFinished) {
+                    return
+                }
+                agentMetricsFinished = true
+                applicationMetrics.recordAgentExecution({
+                    category: execution?.category,
+                    nodeType: execution?.type,
+                    status,
+                    durationMs: Date.now() - timeStart
+                })
+            }
+
             // Start execution event
             subscriber.next({
                 data: {
@@ -121,12 +146,13 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
                                         operation
                                     })
                                 )
-
                                 const fullExecution = instanceToPlain(
                                     new XpertAgentExecutionDTO(
                                         await this.queryBus.execute(new XpertAgentExecutionOneQuery(execution.id))
                                     )
                                 )
+
+                                finishAgentMetrics(status)
 
                                 // this.#logger.verbose(fullExecution)
 
@@ -138,6 +164,7 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
                                     }
                                 } as MessageEvent
                             } catch (err) {
+                                finishAgentMetrics('error')
                                 this.#logger.warn(err)
                                 subscriber.error(err)
                             }
@@ -167,7 +194,9 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
                                             }
                                         })
                                     )
+                                    finishAgentMetrics('aborted')
                                 } catch (err) {
+                                    finishAgentMetrics('error')
                                     this.#logger.error(err)
                                 }
                             }
@@ -194,6 +223,10 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
                         {
                             handleCustomEvent(eventName, data, runId) {
                                 if (eventName === ChatMessageEventTypeEnum.ON_CHAT_EVENT) {
+                                    if (isMiddlewareChatEvent(data)) {
+                                        return
+                                    }
+
                                     logger.debug(`========= handle custom event in xpert agent: ${eventName} ${runId}`)
                                     subscriber.next({
                                         data: {
@@ -211,6 +244,7 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
                 })
                 .catch((err) => {
                     console.error(`[${xpert.title || xpert.name}]`, err)
+                    finishAgentMetrics('error')
                     subscriber.next({
                         data: {
                             type: ChatMessageTypeEnum.EVENT,
@@ -240,5 +274,13 @@ export class XpertAgentChatHandler implements ICommandHandler<XpertAgentChatComm
                 }
             })
         )
+
+        return applicationTracing.traceObservable(stream, 'execution.root', {
+            'execution.id': execution.id,
+            'execution.category': execution.category,
+            'agent.key': agentKey,
+            'thread.id': thread_id,
+            'xpert.id': xpert.id
+        })
     }
 }

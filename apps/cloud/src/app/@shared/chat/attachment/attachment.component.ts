@@ -1,19 +1,20 @@
-import { CommonModule } from '@angular/common'
+
 import { HttpEventType } from '@angular/common/http'
 import { booleanAttribute, Component, computed, effect, inject, input, model, output, signal, TemplateRef, viewChild } from '@angular/core'
 import { StorageFileService } from '@cloud/app/@core'
-import { getErrorMessage, IStorageFile } from '@cloud/app/@core/types'
-import { FileTypePipe, linkedModel } from '@metad/core'
-import { effectAction, NgmDensityDirective } from '@metad/ocap-angular/core'
+import { getErrorMessage } from '@cloud/app/@core/types'
+import { FileTypePipe, linkedModel } from '@xpert-ai/core'
+import { effectAction, NgmDensityDirective } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import { catchError, EMPTY, Observable, of, switchMap, tap } from 'rxjs'
-import { NgmProgressSpinnerComponent } from '@metad/ocap-angular/common'
+import { NgmProgressSpinnerComponent } from '@xpert-ai/ocap-angular/common'
 import { Dialog, DialogRef } from '@angular/cdk/dialog'
 import { FileIconComponent } from '../../files'
+import { getChatStorageFileId, type ChatAttachmentStorageFile } from '../attachments/agent-file'
 
 @Component({
   standalone: true,
-  imports: [CommonModule, TranslateModule, NgmProgressSpinnerComponent, FileTypePipe, FileIconComponent,],
+  imports: [TranslateModule, NgmProgressSpinnerComponent, FileTypePipe, FileIconComponent],
   selector: 'chat-attachment',
   templateUrl: './attachment.component.html',
   styleUrls: ['./attachment.component.scss'],
@@ -31,7 +32,7 @@ export class ChatAttachmentComponent {
   // Inputs
   readonly file = input<File>()
   readonly url = input<string>()
-  readonly storageFile = model<IStorageFile>()
+  readonly storageFile = model<ChatAttachmentStorageFile>()
 
   readonly immediately = input<boolean, boolean | string>(false, {
     transform: booleanAttribute
@@ -69,7 +70,7 @@ export class ChatAttachmentComponent {
   constructor() {
     effect(() => {
       this.onProgress.emit(this.progress())
-    }, { allowSignalWrites: true })
+    })
 
     effect(() => {
       const file = this.file();
@@ -88,7 +89,7 @@ export class ChatAttachmentComponent {
           this.upload(file)
         }
       }
-    }, { allowSignalWrites: true })
+    })
 
     effect(() => {
       const url = this.url()
@@ -105,22 +106,23 @@ export class ChatAttachmentComponent {
           this.createUrlFile(url)
         }
       }
-    }, { allowSignalWrites: true })
+    })
 
     effect(() => {
       const file = this.storageFile()
       if (file) {
+        const mimeType = 'mimeType' in file ? file.mimeType : undefined
         // Check if file is an image
-        this.isImage.set(file.mimetype.startsWith('image/'));
+        this.isImage.set((mimeType ?? file.mimetype ?? '').startsWith('image/'))
       }
-    }, { allowSignalWrites: true })
+    })
   }
 
   readonly upload = effectAction((file$: Observable<File>) => {
     return file$.pipe(
       switchMap((file) =>
         file
-          ? this.storageFileService.uploadFile(file).pipe(
+          ? this.storageFileService.uploadAgentFile(file).pipe(
               tap((event) => {
                 switch (event.type) {
                   case HttpEventType.UploadProgress:
@@ -157,6 +159,9 @@ export class ChatAttachmentComponent {
         return EMPTY
       }),
       tap((file) => {
+        if (!file) {
+          return
+        }
         this.storageFile.set(file)
         this.uploadedUrl.set(file.url)
       })
@@ -178,8 +183,10 @@ export class ChatAttachmentComponent {
   })
 
   delete() {
-    if (this.storageFile()?.id && this.deletable()) {
-      this.deleteFile(this.storageFile().id)
+    const storageFile = this.storageFile()
+    const storageFileId = storageFile ? getChatStorageFileId(storageFile) : undefined
+    if (storageFileId && this.deletable()) {
+      this.deleteFile(storageFileId)
     }
     this.upload(null)
     this.onDelete.emit()

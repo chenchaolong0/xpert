@@ -1,23 +1,86 @@
 import { IPoint } from '../types'
 import { IXpertAgent } from './xpert-agent.model'
-import { IXpert, TXpertTeamNode } from './xpert.model'
+import { IXpert, TXpertGraph, TXpertTeamConnection, TXpertTeamDraft, TXpertTeamNode } from './xpert.model'
 
 // Helpers
 export function omitXpertRelations(xpert: Partial<IXpert>) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { draft, agent, agents, executors, leaders, knowledgebases, knowledgebase, environment, integrations, toolsets, managers, ...rest } = xpert ?? {}
+  const {
+    draft,
+    agent,
+    agents,
+    executors,
+    leaders,
+    knowledgebases,
+    knowledgebase,
+    environment,
+    integrations,
+    toolsets,
+    userGroups,
+    ...rest
+  } = xpert ?? {}
   return rest
 }
 
 /**
  * Figure out latest xpert or draft xpert.
- * 
- * @param xpert 
+ *
+ * @param xpert
  * @param isDraft Is draft
- * @returns 
+ * @returns
  */
 export function figureOutXpert(xpert: IXpert, isDraft: boolean) {
   return (isDraft ? xpert.draft?.team : xpert) ?? xpert
+}
+
+export function resolveRuntimeXpert(xpert: IXpert, isDraft: boolean): IXpert {
+  if (!isDraft || !xpert.draft) {
+    return xpert
+  }
+
+  const draft = xpert.draft
+  const graph = resolveDraftRuntimeGraph(xpert, draft)
+  const agent = resolveDraftPrimaryAgent(xpert, draft, graph)
+
+  return {
+    ...xpert,
+    ...(draft.team ?? {}),
+    id: xpert.id,
+    tenantId: xpert.tenantId,
+    organizationId: xpert.organizationId,
+    workspaceId: draft.team?.workspaceId ?? xpert.workspaceId,
+    draft: xpert.draft,
+    graph,
+    agent,
+    agentConfig: draft.team?.agentConfig ?? xpert.agentConfig,
+    commandProfile: draft.team?.commandProfile ?? xpert.commandProfile,
+    features: draft.team?.features ?? xpert.features,
+    options: draft.team?.options ?? xpert.options
+  } as IXpert
+}
+
+export function resolveDraftRuntimeGraph(xpert: IXpert, draft: TXpertTeamDraft): TXpertGraph {
+  return {
+    nodes: draft.nodes ?? xpert.graph?.nodes ?? [],
+    connections: draft.connections ?? xpert.graph?.connections ?? []
+  }
+}
+
+export function resolveDraftPrimaryAgent(
+  xpert: IXpert,
+  draft: TXpertTeamDraft,
+  graph: TXpertGraph
+): IXpertAgent | undefined {
+  const draftAgent = draft.team?.agent
+  const targetKey = draftAgent?.key ?? xpert.agent?.key
+  const agentNode = targetKey
+    ? graph.nodes.find(
+        (node): node is TXpertTeamNode<'agent'> =>
+          node.type === 'agent' && (node.key === targetKey || node.entity?.key === targetKey)
+      )
+    : null
+
+  return agentNode?.entity ?? draftAgent ?? xpert.agent
 }
 
 export function xpertLabel(agent: Partial<IXpert>) {
@@ -218,4 +281,75 @@ export function createAgentConnections(agent: IXpertAgent, collaborators: IXpert
   })
 
   return connections
+}
+
+export function replaceAgentInDraft(
+  draft: TXpertTeamDraft,
+  sourceKey: string,
+  agent: Partial<IXpertAgent>,
+  options?: { requireNode?: boolean }
+) {
+  const targetKey = agent?.key
+  if (!targetKey) {
+    throw new Error('Target agent key is required')
+  }
+
+  let replacedNode = false
+  const nodes = draft.nodes?.map((node) => {
+    if (node.type === 'agent' && node.key === sourceKey) {
+      replacedNode = true
+      return {
+        ...node,
+        key: targetKey,
+        entity: {
+          ...(node.entity ?? {}),
+          ...agent,
+          key: targetKey
+        }
+      } as TXpertTeamNode<'agent'>
+    }
+
+    return node
+  })
+
+  if (!replacedNode && options?.requireNode !== false) {
+    throw new Error(`Can't find agent for key: ${sourceKey}`)
+  }
+
+  const connections = draft.connections?.map((connection) => {
+    const from = connection.from === sourceKey ? targetKey : connection.from
+    const to = connection.to === sourceKey ? targetKey : connection.to
+
+    if (from === connection.from && to === connection.to) {
+      return connection
+    }
+
+    return {
+      ...connection,
+      from,
+      to,
+      key: `${from}/${to}`
+    } as TXpertTeamConnection
+  })
+
+  return {
+    ...draft,
+    team: draft.team
+      ? {
+          ...draft.team,
+          agent: draft.team.agent
+            ? {
+                ...draft.team.agent,
+                ...agent,
+                key: targetKey
+              }
+            : {
+                ...agent,
+                key: targetKey
+              }
+        }
+      : draft.team,
+    nodes,
+    connections
+  } as TXpertTeamDraft
 }

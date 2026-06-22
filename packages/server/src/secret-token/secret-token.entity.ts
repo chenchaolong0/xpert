@@ -1,11 +1,20 @@
-import { ISecretToken } from '@metad/contracts'
+import { ISecretToken, SecretTokenBindingType } from '@xpert-ai/contracts'
 import { ApiProperty } from '@nestjs/swagger'
 import { differenceInMinutes } from 'date-fns'
 import { AfterLoad, Column, Entity, Index } from 'typeorm'
-import { BaseEntity } from './../core/entities/base.entity'
+import { TenantOrganizationBaseEntity } from '../core/entities/internal'
 
 @Entity('secret_token')
-export class SecretToken extends BaseEntity implements ISecretToken {
+export class SecretToken extends TenantOrganizationBaseEntity implements ISecretToken {
+	@ApiProperty({ enum: SecretTokenBindingType })
+	@Index()
+	@Column({
+		type: 'varchar',
+		nullable: true,
+		default: SecretTokenBindingType.API_KEY
+	})
+	type?: SecretTokenBindingType
+
 	@ApiProperty({ type: () => String })
 	@Index()
 	@Column()

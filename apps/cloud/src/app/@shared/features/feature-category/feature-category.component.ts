@@ -1,10 +1,9 @@
 import { CdkListboxModule } from '@angular/cdk/listbox'
-import { CommonModule } from '@angular/common'
+
 import { Component, DestroyRef, effect, inject, model, signal } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
 import { FormsModule } from '@angular/forms'
 import {
-  AiFeatureEnum,
   AnalyticsFeatures,
   FeatureEnum,
   FeatureService,
@@ -15,9 +14,12 @@ import { pick } from 'lodash'
 import { NgxControlValueAccessor } from 'ngxtension/control-value-accessor'
 import { map } from 'rxjs/operators'
 
+const COPILOT_FEATURE_GROUP_CODE = 'GROUP_COPILOT'
+const XPERT_FEATURE_GROUP_CODE = 'GROUP_XPERT'
+
 @Component({
   standalone: true,
-  imports: [CommonModule, TranslateModule, CdkListboxModule, FormsModule],
+  imports: [TranslateModule, CdkListboxModule, FormsModule],
   providers: [FeatureService],
   selector: 'xp-feature-category',
   templateUrl: './feature-category.component.html',
@@ -38,7 +40,7 @@ export class FeatureCategoryComponent {
   readonly featureCategories = signal([
     {
       value: 'ai',
-      features: [AiFeatureEnum.FEATURE_COPILOT, AiFeatureEnum.FEATURE_XPERT]
+      features: [COPILOT_FEATURE_GROUP_CODE, XPERT_FEATURE_GROUP_CODE]
     },
     {
       value: 'bi',
@@ -80,8 +82,7 @@ export class FeatureCategoryComponent {
           }))
 
         this.cva.writeValue(features)
-      },
-      { allowSignalWrites: true }
+      }
     )
   }
 }

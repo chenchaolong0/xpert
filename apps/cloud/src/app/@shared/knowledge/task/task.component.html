@@ -3,7 +3,7 @@
     <span class="font-semibold text-xl">
       {{ 'PAC.Knowledgebase.TaskStatus' | translate: {Default: 'Task Status'} }}
     </span>
-    <button type="button" class="w-8 h-8 flex justify-center items-center rounded-full text-sm text-gray-500 hover:text-gray-700 hover:bg-state-base-hover"
+    <button type="button" class="w-8 h-8 flex justify-center items-center rounded-full text-sm text-text-tertiary hover:text-text-secondary hover:bg-hover-bg"
       (click)="onClose()">
       <i class="ri-close-large-line"></i>
     </button>
@@ -33,26 +33,26 @@
             <span class="mr-2">{{ 'PAC.Knowledgebase.Status' | translate: {Default: 'Status'} }}: </span>
             @switch (task.status) {
               @case ('success') {
-                <div class="inline-block h-[8px] w-[8px] rounded-[3px] border border-solid bg-green-500 border-green-600 shadow shadow-green-300 mr-2"></div>
-                <span class="text-sm text-green-600">
+                <div class="inline-block mr-2 xpert-status-indicator xpert-status-indicator--success"></div>
+                <span class="text-sm xpert-status-text--success">
                   {{ 'PAC.Knowledgebase.Success' | translate: {Default: 'Success'} }}
                 </span>
               }
               @case ('pending') {
-                <div class="inline-block h-[8px] w-[8px] rounded-[3px] border border-solid bg-yellow-500 border-yellow-600 shadow shadow-yellow-300 mr-2"></div>
-                <span class="text-sm text-yellow-600">{{ 'PAC.Knowledgebase.Pending' | translate: {Default: 'Pending'} }}</span>
+                <div class="inline-block mr-2 xpert-status-indicator xpert-status-indicator--warning"></div>
+                <span class="text-sm xpert-status-text--warning">{{ 'PAC.Knowledgebase.Pending' | translate: {Default: 'Pending'} }}</span>
               }
               @case ('running') {
-                <div class="inline-block h-[8px] w-[8px] rounded-[3px] border border-solid bg-blue-500 border-blue-600 shadow shadow-blue-300 mr-2"></div>
-                <span class="text-sm text-blue-600">{{ 'PAC.Knowledgebase.Running' | translate: {Default: 'Running'} }}</span>
+                <div class="inline-block mr-2 xpert-status-indicator xpert-status-indicator--running"></div>
+                <span class="text-sm xpert-status-text--running">{{ 'PAC.Knowledgebase.Running' | translate: {Default: 'Running'} }}</span>
               }
               @case ('failed') {
-                <div class="inline-block h-[8px] w-[8px] rounded-[3px] border border-solid bg-red-500 border-red-600 shadow shadow-red-300 mr-2"></div>
-                <span class="text-sm text-red-600">{{ 'PAC.Knowledgebase.Failed' | translate: {Default: 'Failed'} }}</span>
+                <div class="inline-block mr-2 xpert-status-indicator xpert-status-indicator--error"></div>
+                <span class="text-sm xpert-status-text--error">{{ 'PAC.Knowledgebase.Failed' | translate: {Default: 'Failed'} }}</span>
               }
               @default {
-                <div class="inline-block h-[8px] w-[8px] rounded-[3px] border border-solid bg-gray-300 mr-2"></div>
-                <span class="text-sm text-gray-600">{{ 'PAC.Knowledgebase.Unknown' | translate: {Default: 'Unknown'} }}</span>
+                <div class="inline-block mr-2 xpert-status-indicator xpert-status-indicator--neutral"></div>
+                <span class="text-sm xpert-status-text--neutral">{{ 'PAC.Knowledgebase.Unknown' | translate: {Default: 'Unknown'} }}</span>
               }
             }
           </div>
@@ -68,16 +68,16 @@
             </div>
           }
         </div>
-        <!-- <ul class="divide-y divide-gray-200 p-2 border border-gray-200 rounded-xl">
+        <!-- <ul class="divide-y divide-gray-200 p-2 border border-divider-deep rounded-xl">
           @for (step of task.steps; track step) {
             <li class="py-2 flex items-center">
               <span class="w-24 font-medium">{{ step.name }}</span>
               <span class="flex-1 mx-2">
-                <span class="block h-2 bg-gray-200 rounded">
+                <span class="block h-2 bg-components-list-option-active-bg rounded">
                   <span class="block h-2 rounded bg-blue-500" [style.width.%]="step.progress"></span>
                 </span>
               </span>
-              <span class="text-xs text-gray-500">{{ ('PAC.Knowledgebase.StepStatus_' + step.status) | translate: {Default: step.status} }}</span>
+              <span class="text-xs text-text-tertiary">{{ ('PAC.Knowledgebase.StepStatus_' + step.status) | translate: {Default: step.status} }}</span>
             </li>
           }
         </ul> -->

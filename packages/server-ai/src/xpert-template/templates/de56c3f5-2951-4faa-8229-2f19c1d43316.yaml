@@ -306,6 +306,7 @@ connections:
     key: Subflow_jzSikOjWDp/Agent_asX304SSUV
     from: Subflow_jzSikOjWDp
     to: Agent_asX304SSUV
+    required: true
   - type: edge
     key: Http_kjPbgwbQGi/Http_146tWVPVi6
     from: Http_kjPbgwbQGi

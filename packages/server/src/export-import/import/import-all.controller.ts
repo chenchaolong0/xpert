@@ -3,12 +3,13 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 import { FileInterceptor } from '@nestjs/platform-express'
 import path from 'path'
 import { CommandBus } from '@nestjs/cqrs'
-import { IImportHistory, ImportHistoryStatusEnum, IPagination, UploadedFile } from '@metad/contracts'
+import { IImportHistory, ImportHistoryStatusEnum, IPagination, UploadedFile } from '@xpert-ai/contracts'
 // import { ImportAllService } from './import-all.service';
 import { RequestContext } from './../../core/context/request-context'
 import { FileStorage } from '../../file/file-storage/file-storage'
 import { UploadedFileStorage } from '../../file/file-storage/uploaded-file-storage'
-import { ImportHistoryCreateCommand, ImportHistoryService } from './../import-history'
+import { ImportHistoryCreateCommand } from './../import-history/commands/import-history-create.command'
+import { ImportHistoryService } from './../import-history'
 
 @ApiTags('Import')
 @Controller()

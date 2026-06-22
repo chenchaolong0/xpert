@@ -1,14 +1,14 @@
 import { Dialog } from '@angular/cdk/dialog'
 import { DragDropModule } from '@angular/cdk/drag-drop'
 import { CdkMenuModule } from '@angular/cdk/menu'
-import { CommonModule } from '@angular/common'
+
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
-import { DynamicGridDirective, uploadYamlFile } from '@metad/core'
-import { CdkConfirmDeleteComponent, injectConfirmUnique, NgmCommonModule } from '@metad/ocap-angular/common'
-import { AppearanceDirective, myRxResource, NgmI18nPipe } from '@metad/ocap-angular/core'
-import { DisplayBehaviour } from '@metad/ocap-core'
+import { DynamicGridDirective, uploadYamlFile } from '@xpert-ai/core'
+import { CdkConfirmDeleteComponent, injectConfirmUnique, NgmCommonModule } from '@xpert-ai/ocap-angular/common'
+import { AppearanceDirective, myRxResource, NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
+import { DisplayBehaviour } from '@xpert-ai/ocap-core'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
 import { XpertBasicDialogComponent, XpertCardComponent } from 'apps/cloud/src/app/@shared/xpert'
 import { isNil, omitBy } from 'lodash-es'
@@ -28,13 +28,12 @@ import {
   XpertWorkspaceService
 } from '../../../../@core'
 import { AppService } from '../../../../app.service'
-import { XpertNewBlankComponent } from '../../xpert/index'
+import { BlankXpertWizardResult, XpertNewBlankComponent } from '../../xpert/index'
 import { XpertWorkspaceHomeComponent } from '../home/home.component'
 
 @Component({
   standalone: true,
   imports: [
-    CommonModule,
     FormsModule,
     ReactiveFormsModule,
     RouterModule,
@@ -42,12 +41,11 @@ import { XpertWorkspaceHomeComponent } from '../home/home.component'
     CdkMenuModule,
     RouterModule,
     TranslateModule,
-
     DynamicGridDirective,
     NgmCommonModule,
     AppearanceDirective,
     XpertCardComponent
-  ],
+],
   selector: 'xpert-workspace-xperts',
   templateUrl: './xperts.component.html',
   styleUrl: 'xperts.component.scss',
@@ -75,6 +73,7 @@ export class XpertWorkspaceXpertsComponent {
   readonly lang = this.appService.lang
 
   readonly workspace = this.homeComponent.workspace
+  readonly canWriteWorkspace = this.homeComponent.canWriteWorkspace
   readonly type = this.homeComponent.type
   readonly tags = this.homeComponent.tags
   readonly builtinTags = this.homeComponent.toolTags
@@ -90,12 +89,14 @@ export class XpertWorkspaceXpertsComponent {
       const workspaceId = this.workspace().id
       return { workspaceId, where }
     },
-    loader: ({request}) => {
-      return request ? this.xpertService.getAllByWorkspace(request.workspaceId, {
+    loader: ({ request }) => {
+      return request
+        ? this.xpertService.getAllByWorkspace(request.workspaceId, {
           where: omitBy(request.where, isNil),
           order: { updatedAt: OrderTypeEnum.DESC },
-          relations: ['createdBy', 'tags'],
-        }).pipe(map(({ items }) => items.filter((item) => item.latest))) : null
+          relations: ['createdBy', 'tags', 'knowledgebase']
+        }).pipe(map(({ items }) => items.filter((item) => item.latest)))
+        : null
     }
   })
 
@@ -117,31 +118,37 @@ export class XpertWorkspaceXpertsComponent {
 
   readonly loading = computed(() => this.#loading() || this.#xperts.status() === 'loading')
 
-
   refresh() {
     // this.refresh$.next()
     this.#xperts.reload()
   }
 
   newBlank() {
+    if (!this.canWriteWorkspace()) {
+      return
+    }
+
     this.dialog
-      .open<IXpert>(XpertNewBlankComponent, {
+      .open<BlankXpertWizardResult>(XpertNewBlankComponent, {
         disableClose: true,
         data: {
           workspace: this.workspace(),
-          type: this.type()
+          type: this.type(),
+          completionMode: 'create'
         }
       })
-      .closed.subscribe((xpert) => {
-        if (xpert?.type === XpertTypeEnum.Agent) {
-          this.router.navigate(['/xpert/x/', xpert.id, 'agents'])
-        } else if (xpert?.type === XpertTypeEnum.Copilot) {
-          this.router.navigate(['/xpert/x/', xpert.id, 'copilot'])
+      .closed.subscribe((result) => {
+        if (result?.xpert?.id) {
+          this.openXpert(result.xpert)
         }
       })
   }
 
   deleteXpert(xpert: IXpert) {
+    if (!this.canWriteWorkspace()) {
+      return
+    }
+
     this.dialog
       .open(CdkConfirmDeleteComponent, {
         data: {
@@ -173,12 +180,17 @@ export class XpertWorkspaceXpertsComponent {
   }
 
   importDSL() {
+    if (!this.canWriteWorkspace()) {
+      return
+    }
+
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.yaml, .yml'
 
-    input.onchange = (event: any) => {
-      const file = event.target.files[0]
+    input.onchange = (event: Event) => {
+      const target = event.target instanceof HTMLInputElement ? event.target : null
+      const file = target?.files?.[0]
       if (file) {
         uploadYamlFile<TXpertTeamDraft>(file)
           .then((parsedDSL) => {
@@ -248,5 +260,19 @@ export class XpertWorkspaceXpertsComponent {
     if (event.pipelineId) {
       this.refresh()
     }
+  }
+
+  private openXpert(xpert: IXpert) {
+    if (xpert.type === XpertTypeEnum.Knowledge && xpert.knowledgebase?.id) {
+      this.router.navigate(['/xpert/knowledges', xpert.knowledgebase.id, 'xpert', xpert.id])
+      return
+    }
+
+    if (xpert.type === XpertTypeEnum.Copilot) {
+      this.router.navigate(['/xpert/x/', xpert.id, 'copilot'])
+      return
+    }
+
+    this.router.navigate(['/xpert/x/', xpert.id, 'agents'])
   }
 }

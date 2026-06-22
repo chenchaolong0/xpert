@@ -1,4 +1,4 @@
-import { IXpertToolset, TMCPSchema } from "@metad/contracts";
+import { IXpertToolset, TMCPSchema } from "@xpert-ai/contracts";
 import { CommandBus } from '@nestjs/cqrs'
 
 export async function createProMCPClient(
@@ -6,7 +6,8 @@ export async function createProMCPClient(
 	signal: AbortSignal,
 	commandBus: CommandBus,
 	schema: TMCPSchema,
-	envState: Record<string, unknown>
+	envState: Record<string, unknown>,
+	xpertId?: string
 ) {
     // PRO
     return {client: null, destroy: null, logs: null}

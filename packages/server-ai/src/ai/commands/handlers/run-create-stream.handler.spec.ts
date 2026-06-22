@@ -1,18 +1,432 @@
-import { validateRunCreateInput } from './run-create-stream.handler'
+jest.mock('../../../environment', () => {
+    const actual = jest.requireActual('../../../environment/utils')
 
-describe('validateRunCreateInput', () => {
-    it('accepts send payloads', () => {
-        const result = validateRunCreateInput({
+    return {
+        EnvironmentService: class EnvironmentService {},
+        getContextEnvState: actual.getContextEnvState,
+        mergeEnvironmentWithEnvState: actual.mergeEnvironmentWithEnvState
+    }
+})
+
+jest.mock('../../../xpert', () => ({
+    PublishedXpertAccessService: class PublishedXpertAccessService {},
+    XpertPrincipalService: class XpertPrincipalService {}
+}))
+
+jest.mock('@xpert-ai/contracts', () => {
+    const actual = jest.requireActual('@xpert-ai/contracts')
+
+    return {
+        ...actual,
+        RequestScopeLevel: {
+            TENANT: 'tenant',
+            ORGANIZATION: 'organization'
+        }
+    }
+})
+
+jest.mock('@xpert-ai/plugin-sdk', () => ({
+    RequestContext: {
+        currentApiKey: jest.fn(),
+        currentRequest: jest.fn(),
+        currentUser: jest.fn(),
+        isOrganizationScope: jest.fn()
+    }
+}))
+
+import { EMPTY, of } from 'rxjs'
+import { ApiKeyBindingType, ChatMessageEventTypeEnum, ChatMessageTypeEnum } from '@xpert-ai/contracts'
+import { RequestContext } from '@xpert-ai/plugin-sdk'
+import { hydrateSendRequestHumanInput } from '../../../shared/agent/human-input'
+import { XpertAgentExecutionUpsertCommand } from '../../../xpert-agent-execution/commands/upsert.command'
+import { XpertChatCommand } from '../../../xpert/commands/chat.command'
+import { normalizeRunStreamMessage, RunCreateStreamHandler, validateRunCreateInput } from './run-create-stream.handler'
+
+const conversation = {
+    id: 'conversation-1'
+} as any
+
+describe('hydrateSendRequestHumanInput', () => {
+    it('hydrates reference-only send payloads into both message and human state', () => {
+        const referenceText = ['const region = "cn"', 'const workspace = "workspace-1"'].join('\n')
+
+        expect(
+            hydrateSendRequestHumanInput({
+                action: 'send',
+                message: {
+                    input: {
+                        input: '',
+                        references: [
+                            {
+                                path: 'src/example.ts',
+                                startLine: 10,
+                                endLine: 11,
+                                text: referenceText,
+                                taskId: 'task-1'
+                            }
+                        ]
+                    }
+                },
+                state: {
+                    human: {
+                        input: ''
+                    }
+                }
+            })
+        ).toEqual({
             action: 'send',
             message: {
-                input: { input: 'Hi' }
+                input: {
+                    input: `Referenced code:\n[src/example.ts:10-11]\n\`\`\`\n${referenceText}\n\`\`\``,
+                    references: [
+                        {
+                            path: 'src/example.ts',
+                            startLine: 10,
+                            endLine: 11,
+                            text: referenceText,
+                            taskId: 'task-1'
+                        }
+                    ]
+                }
             },
             state: {
                 human: {
-                    input: 'Hi'
+                    input: `Referenced code:\n[src/example.ts:10-11]\n\`\`\`\n${referenceText}\n\`\`\``,
+                    references: [
+                        {
+                            path: 'src/example.ts',
+                            startLine: 10,
+                            endLine: 11,
+                            text: referenceText,
+                            taskId: 'task-1'
+                        }
+                    ]
                 }
             }
         })
+    })
+
+    it('appends structured quote references when the sender requests platform composition', () => {
+        expect(
+            hydrateSendRequestHumanInput({
+                action: 'send',
+                message: {
+                    input: {
+                        input: 'Summarize the discussion.',
+                        referenceComposition: 'compose',
+                        references: [
+                            {
+                                type: 'quote',
+                                text: 'The pipeline failed because the sandbox volume was missing.',
+                                source: 'Assistant',
+                                messageId: 'message-2'
+                            }
+                        ]
+                    }
+                }
+            })
+        ).toEqual({
+            action: 'send',
+            message: {
+                input: {
+                    input: 'Summarize the discussion.\n\nReferenced content:\n[Assistant]\n> The pipeline failed because the sandbox volume was missing.',
+                    referenceComposition: 'compose',
+                    references: [
+                        {
+                            type: 'quote',
+                            text: 'The pipeline failed because the sandbox volume was missing.',
+                            source: 'Assistant',
+                            messageId: 'message-2'
+                        }
+                    ]
+                }
+            }
+        })
+    })
+
+    it('preserves an existing human reference array when synthesizing input', () => {
+        const result = hydrateSendRequestHumanInput({
+            action: 'send',
+            message: {
+                input: {
+                    input: '',
+                    references: [
+                        {
+                            path: 'src/example.ts',
+                            startLine: 3,
+                            endLine: 3,
+                            text: 'const answer = 42'
+                        }
+                    ]
+                }
+            },
+            state: {
+                human: {
+                    input: '',
+                    references: [
+                        {
+                            path: 'src/existing.ts',
+                            startLine: 1,
+                            endLine: 1,
+                            text: 'keep me'
+                        }
+                    ]
+                }
+            }
+        })
+
+        expect(result).toMatchObject({
+            state: {
+                human: {
+                    references: [
+                        {
+                            path: 'src/existing.ts',
+                            startLine: 1,
+                            endLine: 1,
+                            text: 'keep me'
+                        }
+                    ]
+                }
+            }
+        })
+    })
+
+    it('keeps an explicit input untouched when references are present but composition was not requested', () => {
+        expect(
+            hydrateSendRequestHumanInput({
+                action: 'send',
+                message: {
+                    input: {
+                        input: 'Keep this exactly as-is.',
+                        references: [
+                            {
+                                type: 'quote',
+                                text: 'Do not duplicate me.',
+                                source: 'Assistant'
+                            }
+                        ]
+                    }
+                }
+            })
+        ).toEqual({
+            action: 'send',
+            message: {
+                input: {
+                    input: 'Keep this exactly as-is.',
+                    references: [
+                        {
+                            type: 'quote',
+                            text: 'Do not duplicate me.',
+                            source: 'Assistant'
+                        }
+                    ]
+                }
+            }
+        })
+    })
+})
+
+describe('normalizeRunStreamMessage', () => {
+    it('serializes ON_AGENT_END payloads through the execution summary DTO', () => {
+        const message = {
+            data: {
+                type: ChatMessageTypeEnum.EVENT,
+                event: ChatMessageEventTypeEnum.ON_AGENT_END,
+                data: {
+                    id: 'execution-1',
+                    agentKey: 'agent-1',
+                    title: 'Middleware Name',
+                    status: 'error',
+                    error: 'model failed',
+                    elapsedTime: 123,
+                    tokens: 42,
+                    totalTokens: 64,
+                    embedTokens: 3,
+                    inputTokens: 40,
+                    outputTokens: 21,
+                    totalPrice: '0.1000000',
+                    currency: 'USD',
+                    metadata: {
+                        provider: 'openai',
+                        model: 'gpt-test'
+                    },
+                    responseLatency: 1.25,
+                    parentId: 'parent-execution-1',
+                    xpertId: 'xpert-1',
+                    inputs: {
+                        human: {
+                            input: 'large prompt'
+                        }
+                    },
+                    outputs: {
+                        output: 'large answer'
+                    },
+                    messages: [
+                        {
+                            type: 'human',
+                            data: {
+                                content: 'large human message'
+                            }
+                        }
+                    ],
+                    subExecutions: [
+                        {
+                            id: 'sub-1',
+                            agentKey: 'agent-2',
+                            messages: [{ type: 'ai', data: { content: 'nested message' } }],
+                            subExecutions: [
+                                {
+                                    id: 'sub-2',
+                                    messages: [{ type: 'ai', data: { content: 'deep message' } }]
+                                }
+                            ]
+                        }
+                    ],
+                    createdBy: {
+                        id: 'user-1'
+                    },
+                    xpert: {
+                        id: 'xpert-1',
+                        title: 'Xpert'
+                    },
+                    agent: {
+                        key: 'agent-1',
+                        title: 'Agent'
+                    },
+                    optional: null
+                }
+            }
+        } as MessageEvent
+
+        const normalized = normalizeRunStreamMessage(message)
+
+        expect(normalized.data.data).toEqual({
+            id: 'execution-1',
+            agentKey: 'agent-1',
+            title: 'Middleware Name',
+            status: 'error',
+            error: 'model failed',
+            elapsedTime: 123,
+            tokens: 42,
+            totalTokens: 64,
+            embedTokens: 3,
+            inputTokens: 40,
+            outputTokens: 21,
+            totalPrice: '0.1000000',
+            currency: 'USD',
+            metadata: {
+                provider: 'openai',
+                model: 'gpt-test'
+            },
+            responseLatency: 1.25,
+            parentId: 'parent-execution-1',
+            xpertId: 'xpert-1'
+        })
+        expect(normalized.data.data).not.toHaveProperty('inputs')
+        expect(normalized.data.data).not.toHaveProperty('outputs')
+        expect(normalized.data.data).not.toHaveProperty('messages')
+        expect(normalized.data.data).not.toHaveProperty('subExecutions')
+        expect(normalized.data.data).not.toHaveProperty('createdBy')
+        expect(normalized.data.data).not.toHaveProperty('xpert')
+        expect(normalized.data.data).not.toHaveProperty('agent')
+        expect(JSON.stringify(normalized.data)).not.toContain('optional')
+    })
+
+    it('serializes ON_MESSAGE_END payloads through the message lifecycle DTO', () => {
+        const message = {
+            data: {
+                type: ChatMessageTypeEnum.EVENT,
+                event: ChatMessageEventTypeEnum.ON_MESSAGE_END,
+                data: {
+                    id: 'message-1',
+                    conversationId: 'conversation-1',
+                    executionId: 'execution-1',
+                    role: 'ai',
+                    status: 'error',
+                    error: 'tool failed',
+                    content: [{ type: 'text', text: 'large content' }],
+                    parent: {
+                        id: 'parent-message-1',
+                        content: 'large human prompt'
+                    },
+                    tenant: {
+                        id: 'tenant-1'
+                    },
+                    organization: {
+                        id: 'organization-1'
+                    },
+                    createdBy: {
+                        id: 'user-1'
+                    },
+                    updatedAt: '2026-05-16T11:09:13.047Z',
+                    optional: null
+                }
+            }
+        } as MessageEvent
+
+        const normalized = normalizeRunStreamMessage(message)
+
+        expect(normalized.data.data).toEqual({
+            id: 'message-1',
+            conversationId: 'conversation-1',
+            executionId: 'execution-1',
+            role: 'ai',
+            status: 'error',
+            error: 'tool failed'
+        })
+        expect(normalized.data.data).not.toHaveProperty('content')
+        expect(normalized.data.data).not.toHaveProperty('parent')
+        expect(normalized.data.data).not.toHaveProperty('tenant')
+        expect(normalized.data.data).not.toHaveProperty('organization')
+        expect(normalized.data.data).not.toHaveProperty('createdBy')
+        expect(normalized.data.data).not.toHaveProperty('updatedAt')
+        expect(JSON.stringify(normalized.data)).not.toContain('optional')
+    })
+
+    it('leaves uncontrolled event payloads unchanged except existing nil cleanup', () => {
+        const message = {
+            data: {
+                type: ChatMessageTypeEnum.EVENT,
+                event: ChatMessageEventTypeEnum.ON_AGENT_START,
+                data: {
+                    id: 'execution-1',
+                    messages: ['kept'],
+                    subExecutions: [{ id: 'kept-sub' }],
+                    optional: null
+                }
+            }
+        } as MessageEvent
+
+        const normalized = normalizeRunStreamMessage(message)
+
+        expect(normalized.data.data).toEqual({
+            id: 'execution-1',
+            messages: ['kept'],
+            subExecutions: [{ id: 'kept-sub' }]
+        })
+    })
+})
+
+describe('validateRunCreateInput', () => {
+    beforeEach(() => {
+        jest.clearAllMocks()
+    })
+
+    it('accepts send payloads', () => {
+        const result = validateRunCreateInput(
+            {
+                action: 'send',
+                message: {
+                    input: { input: 'Hi' }
+                },
+                state: {
+                    human: {
+                        input: 'Hi'
+                    }
+                }
+            },
+            conversation
+        )
 
         expect(result).toMatchObject({
             action: 'send',
@@ -28,17 +442,20 @@ describe('validateRunCreateInput', () => {
     })
 
     it('accepts resume payloads', () => {
-        const result = validateRunCreateInput({
-            action: 'resume',
-            conversationId: 'conversation-1',
-            target: {
-                aiMessageId: 'message-1',
-                executionId: 'execution-1'
+        const result = validateRunCreateInput(
+            {
+                action: 'resume',
+                conversationId: 'conversation-1',
+                target: {
+                    aiMessageId: 'message-1',
+                    executionId: 'execution-1'
+                },
+                decision: {
+                    type: 'confirm'
+                }
             },
-            decision: {
-                type: 'confirm'
-            }
-        })
+            conversation
+        )
 
         expect(result).toEqual({
             action: 'resume',
@@ -54,19 +471,22 @@ describe('validateRunCreateInput', () => {
     })
 
     it('accepts legacy send payloads and normalizes them to v2', () => {
-        const result = validateRunCreateInput({
-            id: 'client-message-1',
-            conversationId: 'conversation-1',
-            projectId: 'project-1',
-            environmentId: 'environment-1',
-            sandboxEnvironmentId: 'sandbox-1',
-            input: { input: 'Tell me a joke.' },
-            state: {
-                human: {
-                    input: 'Tell me a joke.'
+        const result = validateRunCreateInput(
+            {
+                id: 'client-message-1',
+                conversationId: 'conversation-1',
+                projectId: 'project-1',
+                environmentId: 'environment-1',
+                sandboxEnvironmentId: 'sandbox-1',
+                input: { input: 'Tell me a joke.' },
+                state: {
+                    human: {
+                        input: 'Tell me a joke.'
+                    }
                 }
-            }
-        })
+            },
+            conversation
+        )
 
         expect(result).toEqual({
             action: 'send',
@@ -86,28 +506,114 @@ describe('validateRunCreateInput', () => {
         })
     })
 
-    it('accepts legacy resume payloads and normalizes them to v2', () => {
-        const result = validateRunCreateInput({
+    it('normalizes legacy reference-only payloads to v2 without hydrating message input', () => {
+        const referenceText = [
+            'gramming Language :: Python :: 3.12",',
+            '    "Programming Language :: Python",',
+            '    "Topic :: Software Development",',
+            ']',
+            'requires-python = ">=3.10,<3.13"',
+            'dynamic = ["dependencies", "optional-dependencies", "version"]',
+            ' ',
+            '[project.urls]'
+        ].join('\n')
+
+        const result = validateRunCreateInput(
+            {
+                conversationId: 'conversation-1',
+                input: {
+                    input: '',
+                    references: [
+                        {
+                            label: 'pyproject.toml 14-21',
+                            path: 'pyproject.toml',
+                            startLine: 14,
+                            endLine: 21,
+                            text: referenceText,
+                            taskId: 'task-1'
+                        }
+                    ]
+                },
+                state: {
+                    human: {
+                        input: '',
+                        references: [
+                            {
+                                label: 'pyproject.toml 14-21',
+                                path: 'pyproject.toml',
+                                startLine: 14,
+                                endLine: 21,
+                                text: referenceText,
+                                taskId: 'task-1'
+                            }
+                        ]
+                    }
+                }
+            },
+            conversation
+        )
+
+        expect(result).toEqual({
+            action: 'send',
             conversationId: 'conversation-1',
-            id: 'message-1',
-            executionId: 'execution-1',
-            confirm: true,
-            command: {
-                resume: {
-                    approved: true
-                },
-                toolCalls: [{ id: 'call-1', args: { name: 'updated' } }],
-                update: {
-                    status: 'patched'
-                },
-                agentKey: 'agent-1'
+            message: {
+                input: {
+                    input: '',
+                    references: [
+                        {
+                            label: 'pyproject.toml 14-21',
+                            path: 'pyproject.toml',
+                            startLine: 14,
+                            endLine: 21,
+                            text: referenceText,
+                            taskId: 'task-1'
+                        }
+                    ]
+                }
             },
             state: {
                 human: {
-                    input: 'Continue'
+                    input: '',
+                    references: [
+                        {
+                            label: 'pyproject.toml 14-21',
+                            path: 'pyproject.toml',
+                            startLine: 14,
+                            endLine: 21,
+                            text: referenceText,
+                            taskId: 'task-1'
+                        }
+                    ]
                 }
             }
         })
+    })
+
+    it('accepts legacy resume payloads and normalizes them to v2', () => {
+        const result = validateRunCreateInput(
+            {
+                conversationId: 'conversation-1',
+                id: 'message-1',
+                executionId: 'execution-1',
+                confirm: true,
+                command: {
+                    resume: {
+                        approved: true
+                    },
+                    toolCalls: [{ id: 'call-1', args: { name: 'updated' } }],
+                    update: {
+                        status: 'patched'
+                    },
+                    agentKey: 'agent-1'
+                },
+                state: {
+                    human: {
+                        input: 'Continue'
+                    }
+                }
+            },
+            conversation
+        )
 
         expect(result).toEqual({
             action: 'resume',
@@ -138,15 +644,18 @@ describe('validateRunCreateInput', () => {
     })
 
     it('accepts legacy retry payloads and normalizes them to v2', () => {
-        const result = validateRunCreateInput({
-            conversationId: 'conversation-1',
-            id: 'message-1',
-            executionId: 'execution-1',
-            retry: true,
-            environmentId: 'environment-1',
-            sandboxEnvironmentId: 'sandbox-1',
-            input: { input: 'Retry this' }
-        })
+        const result = validateRunCreateInput(
+            {
+                conversationId: 'conversation-1',
+                id: 'message-1',
+                executionId: 'execution-1',
+                retry: true,
+                environmentId: 'environment-1',
+                sandboxEnvironmentId: 'sandbox-1',
+                input: { input: 'Retry this' }
+            },
+            conversation
+        )
 
         expect(result).toEqual({
             action: 'retry',
@@ -161,6 +670,891 @@ describe('validateRunCreateInput', () => {
     })
 
     it('rejects missing input', () => {
-        expect(() => validateRunCreateInput({})).toThrow()
+        expect(() => validateRunCreateInput({}, conversation)).toThrow()
+    })
+})
+
+describe('RunCreateStreamHandler environment resolution', () => {
+    beforeEach(() => {
+        jest.clearAllMocks()
+    })
+
+    it('merges run context env into the resolved environment', async () => {
+        const environmentService = {
+            findOne: jest.fn().mockResolvedValue({
+                id: 'environment-1',
+                name: 'Default Environment',
+                workspaceId: 'workspace-from-environment',
+                variables: [
+                    {
+                        name: 'region',
+                        value: 'us',
+                        type: 'default'
+                    }
+                ]
+            })
+        }
+        const handler = new RunCreateStreamHandler({} as any, {} as any, environmentService as any, {} as any)
+
+        const result = await handler['resolveRequestEnvironment'](
+            { environmentId: 'environment-1' },
+            {
+                action: 'send',
+                conversationId: 'conversation-1',
+                environmentId: 'environment-1',
+                message: {
+                    input: {
+                        input: 'Create an assistant'
+                    }
+                }
+            } as any,
+            {
+                env: {
+                    workspaceId: 'workspace-from-request'
+                }
+            } as any
+        )
+
+        expect(environmentService.findOne).toHaveBeenCalledWith('environment-1')
+        expect(result).toEqual(
+            expect.objectContaining({
+                workspaceId: 'workspace-from-environment',
+                variables: expect.arrayContaining([
+                    expect.objectContaining({
+                        name: 'workspaceId',
+                        value: 'workspace-from-request'
+                    })
+                ])
+            })
+        )
+    })
+})
+
+describe('RunCreateStreamHandler assistant principal', () => {
+    beforeEach(() => {
+        jest.clearAllMocks()
+    })
+
+    it('ensures the target xpert principal user before returning the assistant runtime context', async () => {
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue(null)
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-1',
+                tenantId: 'tenant-1',
+                organizationId: 'org-1',
+                workspaceId: 'workspace-1',
+                userId: null,
+                user: null
+            })
+        }
+        const xpertPrincipalService = {
+            ensurePrincipalUser: jest.fn().mockResolvedValue({
+                id: 'assistant-user-1',
+                tenantId: 'tenant-1'
+            })
+        }
+        const handler = new RunCreateStreamHandler(
+            {} as any,
+            {} as any,
+            {} as any,
+            publishedXpertAccessService as any,
+            xpertPrincipalService as any
+        )
+
+        await expect(handler['resolveAssistantForRun']('xpert-1')).resolves.toMatchObject({
+            id: 'xpert-1',
+            userId: 'assistant-user-1',
+            user: {
+                id: 'assistant-user-1'
+            }
+        })
+
+        expect(xpertPrincipalService.ensurePrincipalUser).toHaveBeenCalledWith(
+            expect.objectContaining({
+                id: 'xpert-1'
+            })
+        )
+    })
+})
+
+describe('RunCreateStreamHandler execute', () => {
+    beforeEach(() => {
+        jest.clearAllMocks()
+        ;(RequestContext.isOrganizationScope as jest.Mock).mockReturnValue(false)
+    })
+
+    it('forwards the full runCreate.context and merged environment to Xpert chat', async () => {
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue(null)
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertAgentExecutionUpsertCommand) {
+                    return {
+                        id: 'execution-1'
+                    }
+                }
+
+                if (command instanceof XpertChatCommand) {
+                    return of({
+                        data: {
+                            data: null
+                        }
+                    } as any)
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-1',
+                        options: {}
+                    }
+                }
+
+                return {
+                    id: 'xpert-1'
+                }
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-1',
+                environmentId: null
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'xpert-1',
+                input: {
+                    action: 'send',
+                    message: {
+                        input: {
+                            input: 'Create assistant'
+                        }
+                    }
+                },
+                context: {
+                    scope: 'workspace',
+                    target: {
+                        type: 'assistant'
+                    },
+                    env: {
+                        workspaceId: 'workspace-1',
+                        region: 'cn'
+                    }
+                }
+            }
+        } as any)
+
+        const xpertChatCommand = commandBus.execute.mock.calls.find(
+            ([command]) => command instanceof XpertChatCommand
+        )?.[0]
+
+        expect(publishedXpertAccessService.getAccessiblePublishedXpert).toHaveBeenCalledWith('xpert-1', {
+            relations: ['user', 'createdBy', 'workspace']
+        })
+        expect(publishedXpertAccessService.getPublishedXpertInTenant).not.toHaveBeenCalled()
+        expect(xpertChatCommand).toBeInstanceOf(XpertChatCommand)
+        expect(xpertChatCommand.options).toMatchObject({
+            context: {
+                scope: 'workspace',
+                target: {
+                    type: 'assistant'
+                },
+                env: {
+                    workspaceId: 'workspace-1',
+                    region: 'cn'
+                }
+            },
+            environment: {
+                name: 'Request Environment',
+                variables: expect.arrayContaining([
+                    expect.objectContaining({
+                        name: 'workspaceId',
+                        value: 'workspace-1'
+                    }),
+                    expect.objectContaining({
+                        name: 'region',
+                        value: 'cn'
+                    })
+                ])
+            },
+            streamPersistence: {
+                transport: 'redis-stream',
+                threadId: 'thread-1',
+                runId: 'execution-1'
+            }
+        })
+    })
+
+    it('forwards raw message input to Xpert chat and leaves hydration to downstream handlers', async () => {
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue(null)
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertAgentExecutionUpsertCommand) {
+                    return {
+                        id: 'execution-1'
+                    }
+                }
+
+                if (command instanceof XpertChatCommand) {
+                    return of({
+                        data: {
+                            data: null
+                        }
+                    } as any)
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-1',
+                        options: {},
+                        status: 'idle'
+                    }
+                }
+
+                return {
+                    id: 'xpert-1'
+                }
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-1',
+                environmentId: null
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'xpert-1',
+                input: {
+                    action: 'send',
+                    message: {
+                        input: {
+                            input: 'Summarize this',
+                            referenceComposition: 'compose',
+                            references: [
+                                {
+                                    type: 'quote',
+                                    source: 'Pasted text',
+                                    text: 'Long pasted content'
+                                }
+                            ]
+                        }
+                    },
+                    state: {
+                        human: {
+                            input: 'Summarize this',
+                            referenceComposition: 'compose',
+                            references: [
+                                {
+                                    type: 'quote',
+                                    source: 'Pasted text',
+                                    text: 'Long pasted content'
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        } as any)
+
+        const xpertChatCommand = commandBus.execute.mock.calls.find(
+            ([command]) => command instanceof XpertChatCommand
+        )?.[0] as XpertChatCommand
+
+        expect(xpertChatCommand.request).toMatchObject({
+            action: 'send',
+            message: {
+                input: {
+                    input: 'Summarize this',
+                    referenceComposition: 'compose',
+                    references: [
+                        {
+                            type: 'quote',
+                            source: 'Pasted text',
+                            text: 'Long pasted content'
+                        }
+                    ]
+                }
+            }
+        })
+    })
+
+    it('resolves assistant api keys in tenant scope and promotes the assistant principal', async () => {
+        const request = {
+            headers: {
+                'organization-id': 'org-created-by-owner'
+            },
+            user: {
+                id: 'owner-user-1',
+                tenantId: 'tenant-1',
+                ownerUserId: 'owner-user-1',
+                principalType: 'api_key'
+            }
+        }
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue({
+            id: 'key-1',
+            tenantId: 'tenant-1',
+            type: 'assistant',
+            entityId: 'xpert-tenant-1',
+            createdById: 'owner-user-1'
+        })
+        ;(RequestContext.currentRequest as jest.Mock).mockReturnValue(request)
+        ;(RequestContext.currentUser as jest.Mock).mockImplementation(() => request.user)
+
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertAgentExecutionUpsertCommand) {
+                    return {
+                        id: 'execution-1'
+                    }
+                }
+
+                if (command instanceof XpertChatCommand) {
+                    return of({
+                        data: {
+                            data: null
+                        }
+                    } as any)
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-tenant-1',
+                        options: {}
+                    }
+                }
+
+                return null
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-tenant-1',
+                tenantId: 'tenant-1',
+                organizationId: null,
+                workspaceId: 'workspace-1',
+                user: {
+                    id: 'assistant-user-1',
+                    tenantId: 'tenant-1',
+                    username: 'assistant-user'
+                }
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'xpert-tenant-1',
+                input: {
+                    action: 'send',
+                    message: {
+                        input: {
+                            input: 'Create assistant'
+                        }
+                    }
+                }
+            }
+        } as any)
+
+        expect(publishedXpertAccessService.getAccessiblePublishedXpert).toHaveBeenCalledWith('xpert-tenant-1', {
+            relations: ['user', 'createdBy', 'workspace']
+        })
+        expect(request.headers['organization-id']).toBeUndefined()
+        expect(request.headers['x-scope-level']).toBe('tenant')
+        expect(request.user).toMatchObject({
+            id: 'assistant-user-1',
+            tenantId: 'tenant-1',
+            principalType: 'api_key',
+            ownerUserId: 'owner-user-1',
+            apiKeyUserId: 'assistant-user-1',
+            requestedOrganizationId: null
+        })
+    })
+
+    it('keeps an explicit api key request user when resolving assistant runs', async () => {
+        const request = {
+            headers: {
+                'organization-id': 'org-created-by-owner'
+            },
+            user: {
+                id: 'end-user-1',
+                tenantId: 'tenant-1',
+                ownerUserId: 'owner-user-1',
+                requestedUserId: 'end-user-1',
+                principalType: 'api_key'
+            }
+        }
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue({
+            id: 'key-1',
+            tenantId: 'tenant-1',
+            type: 'assistant',
+            entityId: 'xpert-tenant-1',
+            createdById: 'owner-user-1'
+        })
+        ;(RequestContext.currentRequest as jest.Mock).mockReturnValue(request)
+        ;(RequestContext.currentUser as jest.Mock).mockImplementation(() => request.user)
+
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertAgentExecutionUpsertCommand) {
+                    return {
+                        id: 'execution-1'
+                    }
+                }
+
+                if (command instanceof XpertChatCommand) {
+                    return of({
+                        data: {
+                            data: null
+                        }
+                    } as any)
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-tenant-1',
+                        options: {}
+                    }
+                }
+
+                return null
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-tenant-1',
+                tenantId: 'tenant-1',
+                organizationId: null,
+                user: {
+                    id: 'assistant-user-1',
+                    tenantId: 'tenant-1',
+                    username: 'assistant-user'
+                }
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'xpert-tenant-1',
+                input: {
+                    action: 'send',
+                    message: {
+                        input: {
+                            input: 'Create assistant'
+                        }
+                    }
+                }
+            }
+        } as any)
+
+        expect(request.headers['organization-id']).toBeUndefined()
+        expect(request.headers['x-scope-level']).toBe('tenant')
+        expect(request.user).toMatchObject({
+            id: 'end-user-1',
+            tenantId: 'tenant-1',
+            requestedUserId: 'end-user-1',
+            principalType: 'api_key',
+            ownerUserId: 'owner-user-1'
+        })
+    })
+
+    it('allows workspace-bound api keys for assistants in the same workspace', async () => {
+        const request = {
+            headers: {
+                'organization-id': 'org-created-by-owner'
+            },
+            user: {
+                id: 'owner-user-1',
+                tenantId: 'tenant-1',
+                ownerUserId: 'owner-user-1',
+                principalType: 'api_key'
+            }
+        }
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue({
+            id: 'key-1',
+            tenantId: 'tenant-1',
+            type: ApiKeyBindingType.WORKSPACE,
+            entityId: 'workspace-1',
+            createdById: 'owner-user-1'
+        })
+        ;(RequestContext.currentRequest as jest.Mock).mockReturnValue(request)
+        ;(RequestContext.currentUser as jest.Mock).mockImplementation(() => request.user)
+
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertAgentExecutionUpsertCommand) {
+                    return {
+                        id: 'execution-1'
+                    }
+                }
+
+                if (command instanceof XpertChatCommand) {
+                    return of({
+                        data: {
+                            data: null
+                        }
+                    } as any)
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-workspace-1',
+                        options: {}
+                    }
+                }
+
+                return null
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-workspace-1',
+                tenantId: 'tenant-1',
+                organizationId: null,
+                workspaceId: 'workspace-1',
+                user: {
+                    id: 'assistant-user-1',
+                    tenantId: 'tenant-1',
+                    username: 'assistant-user'
+                }
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'xpert-workspace-1',
+                input: {
+                    action: 'send',
+                    message: {
+                        input: {
+                            input: 'Create assistant'
+                        }
+                    }
+                }
+            }
+        } as any)
+
+        expect(publishedXpertAccessService.getAccessiblePublishedXpert).toHaveBeenCalledWith('xpert-workspace-1', {
+            relations: ['user', 'createdBy', 'workspace']
+        })
+        expect(request.headers['organization-id']).toBeUndefined()
+        expect(request.headers['x-scope-level']).toBe('tenant')
+    })
+
+    it('rejects workspace-bound api keys for assistants in a different workspace', async () => {
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue({
+            id: 'key-1',
+            tenantId: 'tenant-1',
+            type: ApiKeyBindingType.WORKSPACE,
+            entityId: 'workspace-1',
+            createdById: 'owner-user-1'
+        })
+        ;(RequestContext.currentRequest as jest.Mock).mockReturnValue({
+            headers: {
+                'organization-id': 'org-created-by-owner'
+            }
+        })
+        ;(RequestContext.currentUser as jest.Mock).mockReturnValue(null)
+
+        const commandBus = {
+            execute: jest.fn()
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-workspace-2',
+                        options: {}
+                    }
+                }
+
+                return null
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'xpert-workspace-2',
+                tenantId: 'tenant-1',
+                organizationId: null,
+                workspaceId: 'workspace-2'
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await expect(
+            handler.execute({
+                threadId: 'thread-1',
+                runCreate: {
+                    assistant_id: 'xpert-workspace-2',
+                    input: {
+                        action: 'send',
+                        message: {
+                            input: {
+                                input: 'Create assistant'
+                            }
+                        }
+                    }
+                }
+            } as any)
+        ).rejects.toThrow('API key is not allowed to access this workspace assistant.')
+
+        expect(commandBus.execute).not.toHaveBeenCalled()
+        expect(publishedXpertAccessService.getAccessiblePublishedXpert).toHaveBeenCalledWith('xpert-workspace-2', {
+            relations: ['user', 'createdBy', 'workspace']
+        })
+    })
+
+    it('uses published access checks for system-bound assistant ids in external run APIs', async () => {
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue(null)
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertAgentExecutionUpsertCommand) {
+                    return { id: 'execution-1' }
+                }
+
+                if (command instanceof XpertChatCommand) {
+                    return of({
+                        data: {
+                            data: null
+                        }
+                    } as any)
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'org-assistant-1',
+                        options: {}
+                    }
+                }
+
+                return null
+            })
+        }
+        const publishedXpertAccessService = {
+            getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                id: 'org-assistant-1',
+                tenantId: 'tenant-1',
+                organizationId: 'org-1',
+                environmentId: null
+            }),
+            getPublishedXpertInTenant: jest.fn()
+        }
+
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            publishedXpertAccessService as any
+        )
+
+        await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'org-assistant-1',
+                input: {
+                    action: 'send',
+                    message: {
+                        input: {
+                            input: 'Create assistant'
+                        }
+                    }
+                }
+            }
+        } as any)
+
+        expect(publishedXpertAccessService.getAccessiblePublishedXpert).toHaveBeenCalledWith('org-assistant-1', {
+            relations: ['user', 'createdBy', 'workspace']
+        })
+        expect(publishedXpertAccessService.getPublishedXpertInTenant).not.toHaveBeenCalled()
+    })
+
+    it('returns a direct stream when background follow_up is submitted', async () => {
+        ;(RequestContext.currentApiKey as jest.Mock).mockReturnValue(null)
+        const commandBus = {
+            execute: jest.fn(async (command) => {
+                if (command instanceof XpertChatCommand) {
+                    return EMPTY
+                }
+
+                return null
+            })
+        }
+        const queryBus = {
+            execute: jest.fn(async (query) => {
+                if (query.constructor.name === 'GetChatConversationQuery') {
+                    return {
+                        id: 'conversation-1',
+                        threadId: 'thread-1',
+                        xpertId: 'xpert-1',
+                        status: 'busy',
+                        options: {}
+                    }
+                }
+
+                if (query.constructor.name === 'XpertAgentExecutionOneQuery') {
+                    return {
+                        id: 'execution-1',
+                        threadId: 'thread-1'
+                    }
+                }
+
+                return {
+                    id: 'xpert-1'
+                }
+            })
+        }
+        const handler = new RunCreateStreamHandler(
+            commandBus as any,
+            queryBus as any,
+            {
+                findOne: jest.fn().mockResolvedValue(undefined)
+            } as any,
+            {
+                getAccessiblePublishedXpert: jest.fn().mockResolvedValue({
+                    id: 'xpert-1',
+                    environmentId: null
+                }),
+                getPublishedXpertInTenant: jest.fn()
+            } as any
+        )
+
+        const { stream, streamTransport } = await handler.execute({
+            threadId: 'thread-1',
+            runCreate: {
+                assistant_id: 'xpert-1',
+                input: {
+                    action: 'follow_up',
+                    conversationId: 'conversation-1',
+                    mode: 'steer',
+                    target: {
+                        executionId: 'execution-1'
+                    },
+                    message: {
+                        clientMessageId: 'client-message-1',
+                        input: {
+                            input: 'Please change direction'
+                        }
+                    }
+                }
+            }
+        } as any)
+
+        expect(streamTransport).toBe('direct')
+        await new Promise<void>((resolve, reject) => {
+            stream.subscribe({
+                complete: () => resolve(),
+                error: reject
+            })
+        })
     })
 })

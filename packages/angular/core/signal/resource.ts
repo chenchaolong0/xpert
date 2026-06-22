@@ -41,15 +41,14 @@ export function myResource<TReq, TRes>(options: ResourceOptions<TReq, TRes>) {
           errorSig.set(err)
           statusSig.set('error')
         })
-    },
-    { allowSignalWrites: true }
+    }
   )
 
   return {
     value: computed(() => valueSig()),
     error: computed(() => errorSig()),
     status: computed(() => statusSig()),
-    reload: () => refreshTrigger.set(refreshTrigger() + 1)
+    reload: () => untracked(() => refreshTrigger.set(refreshTrigger() + 1))
   }
 }
 
@@ -106,8 +105,7 @@ export function myRxResource<TReq, TRes>(options: RxResourceOptions<TReq, TRes>)
           statusSig.set('error')
         }
       })
-    },
-    { allowSignalWrites: true }
+    }
   )
 
   // Guaranteed resource release (avoiding subscription leaks)
@@ -121,6 +119,6 @@ export function myRxResource<TReq, TRes>(options: RxResourceOptions<TReq, TRes>)
     value: computed(() => valueSig()),
     error: computed(() => getErrorMessage(errorSig())),
     status: computed(() => statusSig()),
-    reload: () => refreshTrigger.set(refreshTrigger() + 1)
+    reload: () => untracked(() => refreshTrigger.set(refreshTrigger() + 1))
   }
 }

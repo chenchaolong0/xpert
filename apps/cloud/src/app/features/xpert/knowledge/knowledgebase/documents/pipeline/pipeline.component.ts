@@ -1,10 +1,9 @@
-import { CommonModule } from '@angular/common'
 import { SelectionModel } from '@angular/cdk/collections'
 import { Component, computed, effect, inject, model, signal } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
 import { FormsModule } from '@angular/forms'
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
-import { myRxResource } from '@metad/ocap-angular/core'
+import { myRxResource } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import { injectQueryParams } from 'ngxtension/inject-query-params'
 import { BehaviorSubject } from 'rxjs'
@@ -34,7 +33,6 @@ import { KnowledgeDocumentCreateStep3Component } from '../step-3/step.component'
   templateUrl: './pipeline.component.html',
   styleUrls: ['./pipeline.component.scss'],
   imports: [
-    CommonModule,
     FormsModule,
     TranslateModule,
     RouterModule,
@@ -69,14 +67,17 @@ export class KnowledgeDocumentPipelineComponent {
   readonly #pipeline = toSignal(
     this.knowledgebaseAPI.getOneById(this.knowledgebaseComponent.paramId(), {
       relations: ['pipeline'],
-      select: ['id', 'name']
+      select: ['id', 'name', 'tenantId', 'organizationId', 'workspaceId']
     })
   )
 
   readonly pipeline = computed(() => this.#pipeline()?.pipeline)
   readonly graph = computed(() => this.pipeline()?.graph)
   readonly sources = computed(() =>
-    this.graph()?.nodes.filter((node): node is TXpertTeamNode & {type: 'workflow'; entity: IWFNSource } => node.type === 'workflow' && node.entity.type === WorkflowNodeTypeEnum.SOURCE)
+    this.graph()?.nodes.filter(
+      (node): node is TXpertTeamNode & { type: 'workflow'; entity: IWFNSource } =>
+        node.type === 'workflow' && node.entity.type === WorkflowNodeTypeEnum.SOURCE
+    )
   )
 
   readonly strategies = toSignal(this.knowledgebaseAPI.documentSourceStrategies$)
@@ -92,7 +93,7 @@ export class KnowledgeDocumentPipelineComponent {
       })
   )
 
-  readonly selectedSource = signal<TXpertTeamNode & {type: 'workflow'; entity: IWFNSource }>(null)
+  readonly selectedSource = signal<TXpertTeamNode & { type: 'workflow'; entity: IWFNSource }>(null)
   readonly selectedStrategy = computed(
     () =>
       this.selectedSource() &&
@@ -120,7 +121,9 @@ export class KnowledgeDocumentPipelineComponent {
     }
   })
   readonly documentIds = new SelectionModel<string>(true, [])
-  readonly documents = computed(() => this.#taskResource.value()?.context?.documents?.filter((doc) => this.documentIds.isSelected(doc.id)))
+  readonly documents = computed(() =>
+    this.#taskResource.value()?.context?.documents?.filter((doc) => this.documentIds.isSelected(doc.id))
+  )
 
   readonly files = model<KnowledgeFileUploader[]>([])
 

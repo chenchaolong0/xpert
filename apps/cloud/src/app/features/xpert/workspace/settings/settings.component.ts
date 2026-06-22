@@ -1,12 +1,13 @@
 import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog'
 import { DragDropModule } from '@angular/cdk/drag-drop'
 import { CdkListboxModule } from '@angular/cdk/listbox'
-import { CommonModule } from '@angular/common'
+
 import { Component, computed, inject, model, signal } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { TranslateModule } from '@ngx-translate/core'
-import { IfAnimation, XpertWorkspaceService } from 'apps/cloud/src/app/@core'
+import { ApiKeyBindingType, IfAnimation, XpertWorkspaceService } from 'apps/cloud/src/app/@core'
 import { derivedAsync } from 'ngxtension/derived-async'
+import { XpertDevelopApiKeyComponent } from '../../xpert/develop'
 import { XpertWorkspaceSettingsGeneralComponent } from './general/general.component'
 import { XpertWorkspaceMembersComponent } from './members/members.component'
 import { XpertWorkspaceModelsComponent } from './models/models.component'
@@ -15,14 +16,14 @@ import { XpertWorkspaceModelsComponent } from './models/models.component'
   selector: 'xpert-workspace-settings',
   standalone: true,
   imports: [
-    CommonModule,
     FormsModule,
     CdkListboxModule,
     DragDropModule,
     TranslateModule,
     XpertWorkspaceModelsComponent,
     XpertWorkspaceMembersComponent,
-    XpertWorkspaceSettingsGeneralComponent
+    XpertWorkspaceSettingsGeneralComponent,
+    XpertDevelopApiKeyComponent
   ],
   templateUrl: './settings.component.html',
   styleUrl: './settings.component.scss',
@@ -30,6 +31,7 @@ import { XpertWorkspaceModelsComponent } from './models/models.component'
 })
 export class XpertWorkspaceSettingsComponent {
   readonly workspaceService = inject(XpertWorkspaceService)
+  readonly apiKeyBindingType = ApiKeyBindingType
 
   readonly #data = inject<{ id: string }>(DIALOG_DATA)
   readonly #dialogRef = inject(DialogRef)
@@ -44,7 +46,7 @@ export class XpertWorkspaceSettingsComponent {
 
   readonly owner = computed(() => this.workspace()?.owner)
 
-  readonly selectedMenus = model<Array<'general' | 'models' | 'members'>>(['general'])
+  readonly selectedMenus = model<Array<'general' | 'models' | 'members' | 'apiKeys'>>(['general'])
   readonly menu = computed(() => this.selectedMenus()[0])
 
   close(reason?: string) {

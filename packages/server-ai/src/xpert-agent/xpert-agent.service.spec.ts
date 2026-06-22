@@ -1,11 +1,69 @@
+jest.mock('@xpert-ai/server-core', () => ({
+    TenantOrganizationAwareCrudService: class {
+        protected repository
+
+        constructor(repository: unknown) {
+            this.repository = repository
+        }
+    }
+}))
+
+jest.mock('../shared', () => ({
+    ToolSchemaParser: {
+        parseZodToJsonSchema: jest.fn()
+    }
+}))
+
+jest.mock('../xpert/queries', () => ({
+    FindXpertQuery: class FindXpertQuery {
+        constructor(
+            public readonly conditions: Record<string, unknown>,
+            public readonly params: Record<string, unknown>
+        ) {}
+    }
+}))
+
+jest.mock('../shared/agent/middleware-runtime.service', () => ({
+    AgentMiddlewareRuntimeService: class AgentMiddlewareRuntimeService {}
+}))
+
+jest.mock('@xpert-ai/plugin-sdk', () => ({
+    AgentMiddlewareRegistry: class AgentMiddlewareRegistry {},
+    RequestContext: {
+        currentTenantId: jest.fn().mockReturnValue('tenant-1'),
+        currentUserId: jest.fn().mockReturnValue('user-1')
+    }
+}))
+
+jest.mock('./commands', () => ({
+    XpertAgentChatCommand: class XpertAgentChatCommand {
+        constructor(
+            public readonly state: Record<string, unknown>,
+            public readonly agentKey: string,
+            public readonly xpert: Record<string, unknown>,
+            public readonly options: Record<string, unknown>
+        ) {}
+    }
+}))
+
+jest.mock('./xpert-agent.entity', () => ({
+    XpertAgent: class XpertAgent {}
+}))
+
 import { of } from 'rxjs'
-import { FindXpertQuery } from '../xpert/queries/get-one.query'
-import { XpertAgentChatCommand } from './commands/chat.command'
+import { FindXpertQuery } from '../xpert/queries'
+import { XpertAgentChatCommand } from './commands'
 import { XpertAgentService } from './xpert-agent.service'
 
 describe('XpertAgentService', () => {
     let commandBus: { execute: jest.Mock }
     let queryBus: { execute: jest.Mock }
+    let agentMiddlewareRuntimeService: {
+        api: {
+            createModelClient: jest.Mock
+            wrapWorkflowNodeExecution: jest.Mock
+        }
+    }
     let service: XpertAgentService
 
     beforeEach(() => {
@@ -20,8 +78,31 @@ describe('XpertAgentService', () => {
                 }
             })
         }
+        agentMiddlewareRuntimeService = {
+            api: {
+                createModelClient: jest.fn(),
+                wrapWorkflowNodeExecution: jest.fn()
+            }
+        }
 
-        service = new XpertAgentService({} as any, commandBus as any, queryBus as any)
+        service = new XpertAgentService(
+            {} as any,
+            commandBus as any,
+            queryBus as any,
+            agentMiddlewareRuntimeService as any
+        )
+        ;(service as any).agentMiddlewareRegistry = {
+            list: jest.fn().mockReturnValue([
+                {
+                    meta: {
+                        name: 'scheduler',
+                        label: {
+                            en_US: 'Scheduler'
+                        }
+                    }
+                }
+            ])
+        }
     })
 
     it('maps run requests to a new agent chat command', async () => {
@@ -104,22 +185,141 @@ describe('XpertAgentService', () => {
         })
     })
 
-    it('rejects legacy agent payloads', async () => {
-        await expect(
-            service.chatAgent(
-                {
-                    agentKey: 'agent-1',
-                    xpertId: 'xpert-1',
-                    executionId: 'execution-1',
-                    reject: true,
-                    state: {
-                        human: {
-                            input: 'Reject this'
-                        }
+    it('treats legacy agent payloads as run requests', async () => {
+        await service.chatAgent(
+            {
+                agentKey: 'agent-1',
+                xpertId: 'xpert-1',
+                executionId: 'execution-1',
+                reject: true,
+                state: {
+                    human: {
+                        input: 'Reject this'
                     }
-                } as any,
-                {} as any
-            )
-        ).rejects.toThrow('Invalid agent chat request action')
+                }
+            } as any,
+            {} as any
+        )
+
+        const command = commandBus.execute.mock.calls[0][0] as XpertAgentChatCommand
+        expect(command.options.execution).toBeUndefined()
+        expect(command.options.resume).toBeUndefined()
+    })
+
+    it('returns scheduler middleware from the middleware registry', () => {
+        expect(service.getMiddlewareStrategies()).toEqual([
+            {
+                meta: {
+                    name: 'scheduler',
+                    label: {
+                        en_US: 'Scheduler'
+                    }
+                }
+            }
+        ])
+    })
+
+    it('loads draft features and injects them into middleware tooling requests', async () => {
+        const createMiddleware = jest.fn().mockResolvedValue({
+            tools: [
+                {
+                    name: 'sandbox_shell',
+                    description: 'Run shell commands',
+                    schema: null
+                }
+            ]
+        })
+        ;(service as any).agentMiddlewareRegistry = {
+            list: jest.fn().mockReturnValue([]),
+            get: jest.fn().mockReturnValue({
+                createMiddleware
+            })
+        }
+        queryBus.execute.mockResolvedValueOnce({
+            id: 'xpert-1',
+            features: {
+                sandbox: {
+                    enabled: true
+                }
+            }
+        })
+
+        await service.getMiddlewareTools('SandboxShell', {
+            xpertId: 'xpert-1',
+            options: {}
+        })
+
+        expect(queryBus.execute).toHaveBeenCalledWith(
+            expect.objectContaining({
+                conditions: {
+                    id: 'xpert-1'
+                },
+                params: {
+                    isDraft: true
+                }
+            })
+        )
+        expect(createMiddleware).toHaveBeenCalledWith(
+            {},
+            expect.objectContaining({
+                xpertId: 'xpert-1',
+                xpertFeatures: {
+                    sandbox: {
+                        enabled: true
+                    }
+                },
+                runtime: agentMiddlewareRuntimeService.api
+            })
+        )
+    })
+
+    it('loads draft features for middleware tool test requests', async () => {
+        const invoke = jest.fn().mockResolvedValue('ok')
+        const createMiddleware = jest.fn().mockResolvedValue({
+            tools: [
+                {
+                    name: 'sandbox_shell',
+                    invoke
+                }
+            ]
+        })
+        ;(service as any).agentMiddlewareRegistry = {
+            list: jest.fn().mockReturnValue([]),
+            get: jest.fn().mockReturnValue({
+                createMiddleware
+            })
+        }
+        queryBus.execute.mockResolvedValueOnce({
+            id: 'xpert-1',
+            features: {
+                sandbox: {
+                    enabled: true
+                }
+            }
+        })
+
+        await service.testMiddlewareTool('SandboxShell', 'sandbox_shell', {
+            xpertId: 'xpert-1',
+            options: {},
+            parameters: {
+                command: 'pwd'
+            }
+        })
+
+        expect(createMiddleware).toHaveBeenCalledWith(
+            {},
+            expect.objectContaining({
+                xpertId: 'xpert-1',
+                xpertFeatures: {
+                    sandbox: {
+                        enabled: true
+                    }
+                },
+                runtime: agentMiddlewareRuntimeService.api
+            })
+        )
+        expect(invoke).toHaveBeenCalledWith({
+            command: 'pwd'
+        })
     })
 })

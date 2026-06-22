@@ -1,29 +1,15 @@
-import { CommonModule } from '@angular/common'
 import { Component, inject, input } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { MatInputModule } from '@angular/material/input'
-import { MatSelectModule } from '@angular/material/select'
-import { MatSlideToggleModule } from '@angular/material/slide-toggle'
-import { MatSliderModule } from '@angular/material/slider'
-import { NgmDensityDirective } from '@metad/ocap-angular/core'
+import { ZardInputDirective, ZardSliderComponent, ZardSwitchComponent } from '@xpert-ai/headless-ui'
 import { NgxControlValueAccessor } from 'ngxtension/control-value-accessor'
-import { ParameterRule, ParameterType } from '../../../@core'
-
+import { ParameterRule, ParameterType } from '@xpert-ai/contracts'
 
 /**
  * @todo Use JSON Schema to implement
  */
 @Component({
   standalone: true,
-  imports: [
-    CommonModule,
-    FormsModule,
-    MatSliderModule,
-    MatSelectModule,
-    MatInputModule,
-    MatSlideToggleModule,
-    NgmDensityDirective
-  ],
+  imports: [FormsModule, ZardInputDirective, ZardSliderComponent, ZardSwitchComponent],
   selector: 'copilot-model-parameter-input',
   templateUrl: 'input.component.html',
   styleUrls: ['input.component.scss'],
@@ -38,7 +24,28 @@ export class ModelParameterInputComponent {
 
   readonly value$ = this.cva.value$
 
-  updateValue(value) {
+  updateValue(value: unknown) {
     this.value$.set(value)
+  }
+
+  updateNumericValue(value: unknown, type: ParameterType.FLOAT | ParameterType.INT) {
+    this.updateValue(this.normalizeNumericValue(value, type))
+  }
+
+  private normalizeNumericValue(value: unknown, type: ParameterType.FLOAT | ParameterType.INT): number | undefined {
+    if (value === '' || value === null || value === undefined) {
+      return undefined
+    }
+
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : undefined
+    }
+
+    if (typeof value === 'string') {
+      const parsed = type === ParameterType.INT ? Number.parseInt(value, 10) : Number.parseFloat(value)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    return undefined
   }
 }

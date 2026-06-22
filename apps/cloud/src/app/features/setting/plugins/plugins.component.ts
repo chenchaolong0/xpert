@@ -1,31 +1,59 @@
 import { Dialog, DialogRef } from '@angular/cdk/dialog'
 import { CdkMenuModule } from '@angular/cdk/menu'
 import { CommonModule } from '@angular/common'
-import { Component, computed, inject, model, signal, TemplateRef, viewChild } from '@angular/core'
+import { Component, computed, effect, inject, model, signal, TemplateRef, viewChild } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { Router } from '@angular/router'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import {
   getErrorMessage,
   injectHelpWebsite,
   injectToastr,
+  injectUser,
   routeAnimations,
   KnowledgebaseService,
   XpertAgentService,
   XpertToolsetService
 } from '@cloud/app/@core'
+import { environment } from '@cloud/environments/environment'
 import { IconComponent } from '@cloud/app/@shared/avatar'
 import { NgmSelectComponent } from '@cloud/app/@shared/common'
-import { injectPluginAPI } from '@metad/cloud/state'
-import { OverlayAnimations } from '@metad/core'
-import { injectConfirmDelete, NgmHighlightDirective, NgmSpinComponent } from '@metad/ocap-angular/common'
-import { debouncedSignal, linkedModel, myRxResource } from '@metad/ocap-angular/core'
+import { injectActiveScope, injectPluginAPI } from '@xpert-ai/cloud/state'
+import { OverlayAnimations } from '@xpert-ai/core'
+import { injectConfirmDelete, NgmHighlightDirective, NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
+import { debouncedSignal, linkedModel, myRxResource, NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import { injectQueryParams } from 'ngxtension/inject-query-params'
+import { firstValueFrom } from 'rxjs'
 import { I18nService } from '@cloud/app/@shared/i18n'
 import { PluginConfigureComponent } from './configure/configure.component'
 import { PluginsMarketplaceComponent } from './marketplace/marketplace.component'
-import { TInstalledPlugin } from './types'
+import { ZardButtonComponent, ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { PluginMarketplaceDetailComponent } from './marketplace/marketplace-detail.component'
+import { TInstalledPlugin, TPluginMarketplaceContribution, TPluginWithDownloads } from './types'
+import { PluginMarketplaceCategory, RolesEnum } from '@xpert-ai/contracts'
+import { PluginResourcesComponent } from './resources/resources.component'
+import {
+  marketplaceCategoryOptions as buildMarketplaceCategoryOptions,
+  developerToolSubcategoryOptionsFor,
+  groupPluginsByMarketplaceCategory,
+  matchesPluginMarketplaceCategoryFilters,
+  PLUGIN_MARKETPLACE_TARGET_APP
+} from './plugin-marketplace-categories'
+import {
+  buildMarketplacePluginMetadataLookup,
+  enrichInstalledPluginWithMarketplaceMetadata,
+  mergeMarketplaceContributions
+} from './plugin-marketplace-metadata'
+
+const INSTALLABLE_MARKETPLACE_CONTENT_TYPES = new Set(['assistant-template', 'skill', 'tool', 'app', 'hook'])
+
+type TPluginComponentSummaryItem = {
+  key: 'skills' | 'mcpServers' | 'apps' | 'hooks'
+  count: number
+  icon: string
+  label: string
+  defaultLabel: string
+}
 
 @Component({
   standalone: true,
@@ -34,8 +62,10 @@ import { TInstalledPlugin } from './types'
     TranslateModule,
     FormsModule,
     CdkMenuModule,
-    MatTooltipModule,
+    ZardButtonComponent,
+    ...ZardTooltipImports,
     NgmSelectComponent,
+    NgmI18nPipe,
     NgmHighlightDirective,
     IconComponent,
     NgmSpinComponent,
@@ -47,18 +77,25 @@ import { TInstalledPlugin } from './types'
   animations: [routeAnimations, ...OverlayAnimations]
 })
 export class PluginsComponent {
+  #latestVersionsRequestId = 0
+  readonly isDevEnvironment = !environment.production
   readonly router = inject(Router)
   readonly #dialog = inject(Dialog)
   readonly _category = injectQueryParams<'plugins' | 'marketplace'>('category')
   readonly releaseHelpUrl = injectHelpWebsite('/docs/plugin/release-to-xpert-marketplace')
   readonly i18nService = inject(I18nService)
   readonly pluginAPI = injectPluginAPI()
+  readonly #activeScope = injectActiveScope()
+  readonly currentUser = injectUser()
   readonly #toastr = injectToastr()
   readonly confirmDelete = injectConfirmDelete()
   readonly #agentService = inject(XpertAgentService)
   readonly #knowledgebaseService = inject(KnowledgebaseService)
   readonly #toolsetService = inject(XpertToolsetService)
+  readonly marketplace = viewChild(PluginsMarketplaceComponent)
   readonly npmInstallDialog = viewChild('npmInstallDialog', { read: TemplateRef })
+  readonly localInstallDialog = viewChild('localInstallDialog', { read: TemplateRef })
+  readonly archiveInstallDialog = viewChild('archiveInstallDialog', { read: TemplateRef })
 
   readonly category = linkedModel({
     initialValue: this._category() ?? 'plugins',
@@ -72,39 +109,83 @@ export class PluginsComponent {
   })
 
   readonly #plugins = myRxResource({
-    request: () => ({}),
+    request: () => ({
+      scope: this.#activeScope()
+    }),
     loader: () => this.pluginAPI.getPlugins()
   })
 
-  readonly plugins = linkedModel({
-    initialValue: [] as Array<TInstalledPlugin>,
-    compute: () =>
-      (this.#plugins.value() ?? []).map((plugin, index) => ({
-        ...plugin,
-        __trackId: this.buildPluginTrackId(plugin, index)
-      })),
-    update: () => {
-      // No-op
-    }
+  readonly #installedMarketplace = myRxResource({
+    request: () => ({
+      scope: this.#activeScope()
+    }),
+    loader: () => this.pluginAPI.getMarketplace({ targetApp: PLUGIN_MARKETPLACE_TARGET_APP })
   })
+
+  readonly pluginsLoading = computed(() => this.#plugins.status() === 'loading')
+  readonly pluginsError = computed(() => {
+    const error = this.#plugins.error()
+    return error ? getErrorMessage(error) : null
+  })
+
+  readonly #marketplacePluginsByName = computed(() =>
+    buildMarketplacePluginMetadataLookup(this.#installedMarketplace.value()?.items ?? [])
+  )
+
+  readonly #basePlugins = computed(() => {
+    const marketplacePluginsByName = this.#marketplacePluginsByName()
+    return (this.#plugins.value() ?? []).map((plugin, index) => {
+      const enrichedPlugin = enrichInstalledPluginWithMarketplaceMetadata(plugin, marketplacePluginsByName)
+
+      return {
+        ...enrichedPlugin,
+        __trackId: this.buildPluginTrackId(plugin, index)
+      }
+    })
+  })
+  readonly plugins = signal<Array<TInstalledPlugin>>([])
   readonly removing = signal('')
   readonly updating = signal('')
+  readonly refreshing = signal('')
   readonly npmPackageName = model('')
   readonly npmPackageVersion = model('')
   readonly npmInstalling = signal(false)
   readonly npmInstallError = signal<string | null>(null)
+  readonly localPluginName = model('')
+  readonly localWorkspacePath = model('')
+  readonly localInstalling = signal(false)
+  readonly localInstallError = signal<string | null>(null)
+  readonly archiveFile = signal<File | null>(null)
+  readonly archiveInstalling = signal(false)
+  readonly archiveInstallError = signal<string | null>(null)
 
   readonly searchText = model('')
   readonly #searchText = debouncedSignal(this.searchText, 300)
 
-  readonly categories = model<string[]>([])
+  readonly marketplaceCategories = model<PluginMarketplaceCategory[]>([])
+  readonly developerToolSubcategories = model<string[]>([])
   readonly keywords = model<string[]>([])
+  readonly marketplaceLoading = computed(() => this.marketplace()?.loading() ?? true)
+  readonly marketplaceRefreshingSource = computed(() => this.marketplace()?.refreshingSource() ?? false)
+  readonly isSuperAdmin = computed(() => this.currentUser()?.role?.name === RolesEnum.SUPER_ADMIN)
+  readonly showDeveloperToolSubcategoryFilter = computed(
+    () => this.marketplaceCategories().length === 0 || this.marketplaceCategories().includes('developer-tools')
+  )
 
   readonly filteredPlugins = computed(() => {
     const searchText = this.#searchText().toLowerCase()
     let plugins = this.plugins()
-    if (this.categories().length) {
-      plugins = plugins.filter((plugin) => this.categories().includes(plugin.meta.category))
+    if (this.marketplaceCategories().length || this.developerToolSubcategories().length) {
+      plugins = plugins.filter((plugin) =>
+        matchesPluginMarketplaceCategoryFilters(
+          {
+            category: plugin.meta.category,
+            targetAppMeta: plugin.meta.targetAppMeta
+          },
+          this.marketplaceCategories(),
+          this.developerToolSubcategories()
+        )
+      )
     }
     if (this.keywords().length) {
       plugins = plugins.filter(
@@ -124,27 +205,39 @@ export class PluginsComponent {
     return plugins
   })
 
-  readonly #categories = computed(() => {
-    const categories = new Set<string>()
-    this.plugins().forEach((plugin) => {
-      if (plugin.meta.category) {
-        categories.add(plugin.meta.category)
-      }
-    })
-    return Array.from(categories)
+  readonly pluginCategoryGroups = computed(() =>
+    groupPluginsByMarketplaceCategory(
+      this.filteredPlugins().map((plugin) => ({
+        ...plugin,
+        category: plugin.meta.category,
+        targetAppMeta: plugin.meta.targetAppMeta
+      }))
+    )
+  )
+
+  readonly marketplaceCategoryOptions = computed(() => {
+    return buildMarketplaceCategoryOptions().map((category) => ({
+      label: this.i18nService.instant(category.labelKey, { Default: category.defaultLabel }),
+      value: category.value
+    }))
   })
 
-  readonly categoriesOptions = computed(() => {
-    return this.#categories().map((category) => ({
-      label: this.i18nService.instant('PAC.Plugin.Category_' + category, { Default: category }),
-      value: category
+  readonly developerToolSubcategoryOptions = computed(() => {
+    return developerToolSubcategoryOptionsFor(
+      this.plugins().map((plugin) => ({
+        category: plugin.meta.category,
+        targetAppMeta: plugin.meta.targetAppMeta
+      }))
+    ).map((category) => ({
+      label: this.i18nService.instant(category.labelKey, { Default: category.defaultLabel }),
+      value: category.value
     }))
   })
 
   readonly #keywords = computed(() => {
     const keywords = new Set<string>()
     this.plugins().forEach((plugin) => {
-      if (plugin.meta.keywords) {
+      if (plugin.loadStatus !== 'failed' && plugin.meta.keywords) {
         plugin.meta.keywords.forEach((keyword) => keywords.add(keyword))
       }
     })
@@ -163,6 +256,52 @@ export class PluginsComponent {
   //     console.log(this.filteredPlugins())
   //   })
   // }
+
+  constructor() {
+    effect(
+      () => {
+        this.#activeScope()
+        this.#latestVersionsRequestId += 1
+        this.removing.set('')
+        this.updating.set('')
+        this.refreshing.set('')
+      },
+      { allowSignalWrites: true }
+    )
+
+    effect(
+      () => {
+        if (!this.showDeveloperToolSubcategoryFilter() && this.developerToolSubcategories().length) {
+          this.developerToolSubcategories.set([])
+        }
+      },
+      { allowSignalWrites: true }
+    )
+
+    effect(
+      () => {
+        const basePlugins = this.#basePlugins()
+        this.plugins.set(basePlugins)
+
+        const requestId = ++this.#latestVersionsRequestId
+        const pluginNames = Array.from(
+          new Set(
+            basePlugins
+              .filter((plugin) => plugin.canUpdate)
+              .map((plugin) => plugin.name)
+              .filter((name): name is string => !!name)
+          )
+        )
+
+        if (!pluginNames.length) {
+          return
+        }
+
+        void this.loadLatestPluginVersions(pluginNames, requestId)
+      },
+      { allowSignalWrites: true }
+    )
+  }
 
   private buildPluginTrackId(plugin: TInstalledPlugin, index: number): string {
     const name =
@@ -187,8 +326,90 @@ export class PluginsComponent {
     })
   }
 
+  sdkCompatibilityWarningMessage(plugin: TInstalledPlugin) {
+    return (
+      plugin.sdkCompatibilityWarnings
+        ?.map((warning) => warning.message)
+        .filter(Boolean)
+        .join('\n') ?? ''
+    )
+  }
+
+  componentSummaryItems(plugin: TInstalledPlugin): TPluginComponentSummaryItem[] {
+    const summary = plugin.componentSummary
+    if (!summary?.total) {
+      return []
+    }
+
+    const items: TPluginComponentSummaryItem[] = [
+      {
+        key: 'skills',
+        count: summary.skills,
+        icon: 'ri-book-open-line',
+        label: 'PAC.Plugin.ComponentSkills',
+        defaultLabel: 'Skills'
+      },
+      {
+        key: 'mcpServers',
+        count: summary.mcpServers,
+        icon: 'ri-server-line',
+        label: 'PAC.Plugin.ComponentMcpServers',
+        defaultLabel: 'MCP servers'
+      },
+      {
+        key: 'apps',
+        count: summary.apps,
+        icon: 'ri-apps-2-line',
+        label: 'PAC.Plugin.ComponentApps',
+        defaultLabel: 'Apps'
+      },
+      {
+        key: 'hooks',
+        count: summary.hooks,
+        icon: 'ri-terminal-box-line',
+        label: 'PAC.Plugin.ComponentHooks',
+        defaultLabel: 'Hooks'
+      }
+    ]
+
+    return items.filter((item) => item.count > 0)
+  }
+
+  hasInstallablePluginContent(plugin: TInstalledPlugin) {
+    return (
+      plugin.loadStatus !== 'failed' &&
+      (this.hasInstallableBundleResources(plugin) || this.hasInstallableMarketplaceContributions(plugin))
+    )
+  }
+
+  hasInstallableBundleResources(plugin: TInstalledPlugin) {
+    const summary = plugin.componentSummary
+    return !!summary && (summary.skills > 0 || summary.mcpServers > 0 || summary.apps > 0 || summary.hooks > 0)
+  }
+
+  hasInstallableMarketplaceContributions(plugin: TInstalledPlugin) {
+    return getInstalledPluginMarketplaceContributions(plugin).some((content) =>
+      INSTALLABLE_MARKETPLACE_CONTENT_TYPES.has(content.type)
+    )
+  }
+
   reload() {
-    this.#plugins.reload()
+    this.reloadInstalledPlugins()
+  }
+
+  refreshMarketplaceSource() {
+    if (!this.isSuperAdmin()) {
+      return
+    }
+    this.marketplace()?.refreshSelectedSource()
+  }
+
+  openAddMarketplace() {
+    this.marketplace()?.openAddSource()
+  }
+
+  openManageRegisteredPlugins() {
+    this.marketplace()?.openRegistryManager()
   }
 
   configure(plugin: TInstalledPlugin) {
@@ -201,7 +422,39 @@ export class PluginsComponent {
     })
   }
 
-  uninstall(plugin: { name: string; meta: { displayName?: string } }) {
+  openPluginDetails(plugin: TInstalledPlugin) {
+    this.#dialog.open(PluginMarketplaceDetailComponent, {
+      data: {
+        plugin: toPluginMarketplaceDetails(plugin)
+      },
+      backdropClass: 'backdrop-blur-sm-black'
+    })
+  }
+
+  openInstallOptions(plugin: TInstalledPlugin) {
+    if (!this.hasInstallablePluginContent(plugin)) {
+      return
+    }
+
+    if (this.hasInstallableMarketplaceContributions(plugin)) {
+      this.openPluginDetails(plugin)
+      return
+    }
+
+    this.initializeResources(plugin)
+  }
+
+  initializeResources(plugin: TInstalledPlugin) {
+    this.#dialog.open(PluginResourcesComponent, {
+      data: {
+        plugin,
+        reload: this.reload.bind(this)
+      },
+      backdropClass: 'backdrop-blur-sm-black'
+    })
+  }
+
+  uninstall(plugin: Pick<TInstalledPlugin, 'name' | 'meta' | 'organizationId'>) {
     this.confirmDelete(
       {
         title: this.i18nService.instant('PAC.Plugin.Uninstall_Title', { Default: 'Uninstall Plugin' }),
@@ -211,12 +464,12 @@ export class PluginsComponent {
       },
       () => {
         this.removing.set(plugin.name)
-        return this.pluginAPI.uninstall([plugin.name])
+        return this.pluginAPI.uninstall([plugin.name], plugin.organizationId)
       }
     ).subscribe({
       next: () => {
         this.removing.set('')
-        this.plugins.update((plugins) => plugins.filter((item) => item.name !== plugin.name))
+        this.reloadInstalledPlugins()
         this.refreshStrategyCaches()
       },
       error: () => {
@@ -230,7 +483,7 @@ export class PluginsComponent {
     this.pluginAPI.update(plugin.name).subscribe({
       next: (result) => {
         this.updating.set('')
-        this.#plugins.reload()
+        this.reloadInstalledPlugins()
         this.refreshStrategyCaches()
         if (result.updated) {
           this.#toastr.success(
@@ -245,6 +498,24 @@ export class PluginsComponent {
       },
       error: (err) => {
         this.updating.set('')
+        this.#toastr.error(getErrorMessage(err))
+      }
+    })
+  }
+
+  refresh(plugin: TInstalledPlugin) {
+    this.refreshing.set(plugin.name)
+    this.pluginAPI.refresh(plugin.name).subscribe({
+      next: () => {
+        this.refreshing.set('')
+        this.reloadInstalledPlugins()
+        this.refreshStrategyCaches()
+        this.#toastr.success('PAC.Plugin.RefreshPluginSuccess', {
+          Default: `${plugin.meta?.displayName || plugin.name} reloaded from local workspace`
+        })
+      },
+      error: (err) => {
+        this.refreshing.set('')
         this.#toastr.error(getErrorMessage(err))
       }
     })
@@ -268,6 +539,55 @@ export class PluginsComponent {
     })
   }
 
+  installLocal() {
+    const template = this.localInstallDialog()
+    if (!template) {
+      return
+    }
+
+    this.localInstallError.set(null)
+    this.localInstalling.set(false)
+
+    const dialogRef = this.#dialog.open(template, {
+      backdropClass: 'backdrop-blur-sm-black',
+      minWidth: '480px'
+    })
+    dialogRef.closed.subscribe(() => {
+      this.localInstalling.set(false)
+    })
+  }
+
+  installArchive() {
+    const template = this.archiveInstallDialog()
+    if (!template) {
+      return
+    }
+
+    this.archiveFile.set(null)
+    this.archiveInstallError.set(null)
+    this.archiveInstalling.set(false)
+
+    const dialogRef = this.#dialog.open(template, {
+      backdropClass: 'backdrop-blur-sm-black',
+      minWidth: '480px'
+    })
+    dialogRef.closed.subscribe(() => {
+      this.archiveInstalling.set(false)
+    })
+  }
+
+  selectArchiveFile(event: Event) {
+    const input = event.target as HTMLInputElement
+    this.archiveFile.set(input.files?.[0] ?? null)
+    this.archiveInstallError.set(null)
+  }
+
+  clearArchiveFile(input: HTMLInputElement) {
+    input.value = ''
+    this.archiveFile.set(null)
+    this.archiveInstallError.set(null)
+  }
+
   confirmInstallNpm(dialogRef: DialogRef) {
     const packageName = this.npmPackageName()?.trim()
     if (!packageName) {
@@ -277,24 +597,127 @@ export class PluginsComponent {
     this.npmInstallError.set(null)
     const version = this.npmPackageVersion()?.trim()
     this.pluginAPI
-      .create({
+      .install({
         pluginName: packageName,
-        packageName,
         version: version || undefined,
         source: 'npm'
       })
+
       .subscribe({
         next: () => {
           this.npmInstalling.set(false)
-          dialogRef.close()
-          this.#plugins.reload()
-          this.refreshStrategyCaches()
+          this.handleInstallSuccess(dialogRef)
         },
         error: (err) => {
           this.npmInstallError.set(getErrorMessage(err))
           this.npmInstalling.set(false)
         }
       })
+  }
+
+  confirmInstallLocal(dialogRef: DialogRef) {
+    const pluginName = this.localPluginName()?.trim()
+    const workspacePath = this.localWorkspacePath()?.trim()
+    if (!pluginName || !workspacePath) {
+      return
+    }
+
+    this.localInstalling.set(true)
+    this.localInstallError.set(null)
+    this.pluginAPI
+      .install({
+        pluginName,
+        source: 'code',
+        sourceConfig: {
+          workspacePath
+        }
+      })
+      .subscribe({
+        next: () => {
+          this.localInstalling.set(false)
+          this.handleInstallSuccess(dialogRef)
+        },
+        error: (err) => {
+          this.localInstallError.set(getErrorMessage(err))
+          this.localInstalling.set(false)
+        }
+      })
+  }
+
+  confirmInstallArchive(dialogRef: DialogRef) {
+    const file = this.archiveFile()
+    if (!file) {
+      return
+    }
+
+    this.archiveInstalling.set(true)
+    this.archiveInstallError.set(null)
+    this.pluginAPI.installArchive(file).subscribe({
+      next: () => {
+        this.archiveInstalling.set(false)
+        this.handleInstallSuccess(dialogRef)
+      },
+      error: (err) => {
+        this.archiveInstallError.set(getErrorMessage(err))
+        this.archiveInstalling.set(false)
+      }
+    })
+  }
+
+  private handleInstallSuccess(dialogRef: DialogRef) {
+    dialogRef.close()
+    this.reloadInstalledPlugins()
+    this.refreshStrategyCaches()
+  }
+
+  private reloadInstalledPlugins() {
+    this.#latestVersionsRequestId += 1
+    this.plugins.update((plugins) =>
+      plugins.map((plugin) => ({
+        ...plugin,
+        latestVersion: undefined,
+        hasUpdate: false
+      }))
+    )
+    this.#plugins.reload()
+  }
+
+  private buildPluginVersionStatusKey(organizationId: string | undefined, name: string) {
+    return `${organizationId ?? ''}:${name}`
+  }
+
+  private async loadLatestPluginVersions(pluginNames: string[], requestId: number) {
+    try {
+      const latestVersions = await firstValueFrom(this.pluginAPI.getLatestVersions(pluginNames))
+      if (requestId !== this.#latestVersionsRequestId) {
+        return
+      }
+
+      const latestVersionMap = new Map(
+        latestVersions.map((plugin) => [this.buildPluginVersionStatusKey(plugin.organizationId, plugin.name), plugin])
+      )
+
+      this.plugins.update((plugins) =>
+        plugins.map((plugin) => {
+          const latestVersion = latestVersionMap.get(
+            this.buildPluginVersionStatusKey(plugin.organizationId, plugin.name)
+          )
+          if (!latestVersion) {
+            return plugin
+          }
+
+          return {
+            ...plugin,
+            latestVersion: latestVersion.latestVersion,
+            hasUpdate: latestVersion.hasUpdate
+          }
+        })
+      )
+    } catch {
+      if (requestId !== this.#latestVersionsRequestId) {
+        return
+      }
+    }
   }
 
   /**
@@ -304,5 +727,62 @@ export class PluginsComponent {
     this.#agentService.refresh()
     this.#knowledgebaseService.refresh()
     this.#toolsetService.refresh()
+  }
+}
+
+function toPluginMarketplaceDetails(plugin: TInstalledPlugin): TPluginWithDownloads {
+  const contributions = getInstalledPluginMarketplaceContributions(plugin)
+  return {
+    name: plugin.packageName ?? plugin.name,
+    packageName: plugin.packageName ?? plugin.name,
+    displayName: (plugin.meta.displayName ?? plugin.name) as unknown as TPluginWithDownloads['displayName'],
+    description: (plugin.meta.description ?? plugin.name) as unknown as TPluginWithDownloads['description'],
+    version: plugin.currentVersion ?? plugin.meta.version ?? '',
+    level: plugin.level ?? plugin.meta.level,
+    deprecated: plugin.meta.deprecated,
+    deprecationMessage: plugin.meta.deprecationMessage,
+    category: plugin.meta.category ?? 'integration',
+    icon: plugin.meta.icon ?? {
+      type: 'font',
+      value: 'ri-puzzle-2-line'
+    },
+    author: {
+      name: plugin.meta.author ?? 'XpertAI',
+      url: plugin.meta.homepage ?? ''
+    },
+    source: plugin.meta.homepage
+      ? {
+          type: 'website',
+          url: plugin.meta.homepage
+        }
+      : undefined,
+    keywords: plugin.meta.keywords,
+    installed: plugin.loadStatus !== 'failed',
+    contributions,
+    operationSummary: countMarketplaceOperations(contributions),
+    targetAppMeta: plugin.meta.targetAppMeta
+  }
+}
+
+function getInstalledPluginMarketplaceContributions(plugin: TInstalledPlugin): TPluginMarketplaceContribution[] {
+  const targetAppMeta = plugin.meta.targetAppMeta
+  if (!targetAppMeta) {
+    return []
+  }
+
+  return mergeMarketplaceContributions(
+    ...Object.values(targetAppMeta).map((metadata) => metadata?.marketplace?.contents)
+  ).filter((content): content is TPluginMarketplaceContribution => !!content?.name && !!content?.type)
+}
+
+function countMarketplaceOperations(
+  contributions: TPluginMarketplaceContribution[]
+): TPluginWithDownloads['operationSummary'] {
+  const operations = contributions.flatMap((content) => (Array.isArray(content.operations) ? content.operations : []))
+  return {
+    total: operations.length,
+    read: operations.filter((operation) => operation.access === 'read').length,
+    write: operations.filter((operation) => operation.access === 'write').length,
+    admin: operations.filter((operation) => operation.access === 'admin').length
   }
 }

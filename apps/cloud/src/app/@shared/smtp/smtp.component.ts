@@ -1,16 +1,29 @@
-import { AfterViewInit, ChangeDetectorRef, Component, DestroyRef, Input, OnChanges, OnInit, SimpleChanges, inject, signal } from '@angular/core'
+import {
+  AfterViewInit,
+  ChangeDetectorRef,
+  Component,
+  DestroyRef,
+  Input,
+  OnChanges,
+  OnInit,
+  SimpleChanges,
+  inject,
+  signal
+} from '@angular/core'
 import { FormBuilder, FormControl, FormGroup, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms'
-import { MatButtonModule } from '@angular/material/button'
+
 import { ActivatedRoute } from '@angular/router'
-import { ICustomSmtp, IOrganization, IUser, SMTPSecureEnum } from '@metad/contracts'
-import { ButtonGroupDirective, OcapCoreModule } from '@metad/ocap-angular/core'
+import { ICustomSmtp, ICustomSmtpFindInput, IOrganization, IUser, SMTPSecureEnum } from '@xpert-ai/contracts'
+import { ButtonGroupDirective, OcapCoreModule } from '@xpert-ai/ocap-angular/core'
 import { FormlyFieldConfig, FormlyModule } from '@ngx-formly/core'
 import { TranslateModule } from '@ngx-translate/core'
-import { filter, pairwise, tap } from 'rxjs/operators'
+import { combineLatest } from 'rxjs'
+import { distinctUntilChanged, filter, map, pairwise, startWith } from 'rxjs/operators'
 import { CustomSmtpService, Store, ToastrService } from '../../@core/services'
 import { patterns } from '../regex/regex-patterns.const'
 import { TranslationBaseComponent } from '../language/translation-base.component'
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop'
+import { ZardButtonComponent } from '@xpert-ai/headless-ui'
 
 @Component({
   standalone: true,
@@ -20,7 +33,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop'
     TranslateModule,
 
     FormlyModule,
-    MatButtonModule,
+    ZardButtonComponent,
     ButtonGroupDirective,
 
     OcapCoreModule
@@ -30,7 +43,6 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop'
   styleUrls: ['./smtp.component.scss']
 })
 export class SMTPComponent extends TranslationBaseComponent implements OnInit, OnChanges, AfterViewInit {
-
   private readonly _activatedRoute = inject(ActivatedRoute)
   private readonly fb = inject(FormBuilder)
   private readonly customSmtpService = inject(CustomSmtpService)
@@ -41,6 +53,11 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
 
   @Input() organization?: IOrganization
   @Input() isOrganization?: boolean
+
+  private routeIsOrganization?: boolean
+  private storeOrganization: IOrganization | null = null
+  private resolvedIsOrganization = false
+  private resolvedOrganization?: IOrganization
 
   loading: boolean
   secureOptions = [
@@ -77,21 +94,28 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
   | Subscriptions (effect)
   |--------------------------------------------------------------------------
   */
-  private _activatedRouteSub = this._activatedRoute.data.pipe(takeUntilDestroyed()).subscribe(({ isOrganization }) => {
-    this.isOrganization = isOrganization
-  })
-
-  private _userSub = this.store.user$.pipe(filter(Boolean), takeUntilDestroyed()).subscribe((user) => {
-    this.user = user
-  })
-  private _selectedOrganizationSub = this.store.selectedOrganization$
-    .pipe(
-      filter((organization) => !!organization),
-      tap((organization) => (this.organization = organization)),
-      tap(() => this.getTenantSmtpSetting()),
-      takeUntilDestroyed()
+  private _smtpScopeSub = combineLatest([
+    this._activatedRoute.data.pipe(
+      map(({ isOrganization }) => (typeof isOrganization === 'boolean' ? isOrganization : undefined)),
+      distinctUntilChanged()
+    ),
+    this.store.user$.pipe(filter(Boolean)),
+    this.store.selectedOrganization$.pipe(
+      startWith(this.store.selectedOrganization ?? null),
+      distinctUntilChanged((prev, curr) => prev?.id === curr?.id)
     )
-    .subscribe()
+  ])
+    .pipe(takeUntilDestroyed())
+    .subscribe(([routeIsOrganization, user, organization]) => {
+      this.user = user
+      this.syncResolvedScope(routeIsOrganization, organization)
+
+      if (this.resolvedIsOrganization && !this.resolvedOrganization?.id) {
+        return
+      }
+
+      void this.getTenantSmtpSetting()
+    })
 
   ngOnInit(): void {
     this.translateService
@@ -106,9 +130,7 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
           False: 'False'
         }
       })
-      .pipe(
-        takeUntilDestroyed(this.destroyRef)
-      )
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((SMTP) => {
         this.schema = [
           {
@@ -186,8 +208,11 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
   }
 
   ngOnChanges(change: SimpleChanges) {
-    if (change.organization.previousValue) {
-      this.getTenantSmtpSetting()
+    if (change['organization'] || change['isOrganization']) {
+      this.syncResolvedScope(this.routeIsOrganization, this.storeOrganization)
+      if (this.user && (!this.resolvedIsOrganization || this.resolvedOrganization?.id)) {
+        void this.getTenantSmtpSetting()
+      }
     }
   }
 
@@ -219,10 +244,10 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
    */
   async getTenantSmtpSetting() {
     const { tenantId } = this.user
-    const find = { tenantId }
+    const find: ICustomSmtpFindInput = { tenantId }
 
-    if (this.organization && this.isOrganization) {
-      find['organizationId'] = this.organization.id
+    if (this.resolvedOrganization && this.resolvedIsOrganization) {
+      find.organizationId = this.resolvedOrganization.id
     }
 
     this.loading = true
@@ -237,15 +262,22 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
       this.patchValue()
     }
     // if organization exist
-    if (this.organization && this.isOrganization) {
+    if (this.resolvedOrganization && this.resolvedIsOrganization) {
       this.form.patchValue({
-        organizationId: this.organization.id
+        organizationId: this.resolvedOrganization.id
       })
     }
     this.form.markAsPristine()
     this._cdr.detectChanges()
 
     this.loading = false
+  }
+
+  private syncResolvedScope(routeIsOrganization?: boolean, organization: IOrganization | null = null) {
+    this.routeIsOrganization = routeIsOrganization
+    this.storeOrganization = organization
+    this.resolvedIsOrganization = this.isOrganization ?? routeIsOrganization ?? false
+    this.resolvedOrganization = this.organization ?? organization ?? undefined
   }
 
   /*
@@ -342,11 +374,11 @@ export class SMTPComponent extends TranslationBaseComponent implements OnInit, O
       if (isValidated) {
         this.toastrService.success(this.getTranslation('TOASTR.TITLE.SUCCESS', { Default: 'Success' }))
       } else {
-        this.toastrService.error('PAC.SHARED.SMTP.VerifyFailed', '', {Default: 'Verify failed'})
+        this.toastrService.error('PAC.SHARED.SMTP.VerifyFailed', '', { Default: 'Verify failed' })
       }
     } catch (error) {
       this.isValidated.set(false)
-      this.toastrService.error('PAC.SHARED.SMTP.VerifyFailed', '', {Default: 'Verify failed'})
+      this.toastrService.error('PAC.SHARED.SMTP.VerifyFailed', '', { Default: 'Verify failed' })
     }
   }
 }

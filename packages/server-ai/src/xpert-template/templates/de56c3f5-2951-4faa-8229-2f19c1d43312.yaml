@@ -1018,6 +1018,7 @@ connections:
     key: Agent_zm7jnDN2qV/Agent_UN2XNbk31L
     from: Agent_zm7jnDN2qV
     to: Agent_UN2XNbk31L
+    required: true
   - type: toolset
     key: Agent_ofRiMQMYVu/77f75dfd-9b77-447f-b120-8a4667b8e291
     from: Agent_ofRiMQMYVu
@@ -1026,14 +1027,17 @@ connections:
     key: Agent_zm7jnDN2qV/Agent_ghbDKZJKl9
     from: Agent_zm7jnDN2qV
     to: Agent_ghbDKZJKl9
+    required: true
   - type: agent
     key: Agent_ghbDKZJKl9/Agent_ofRiMQMYVu
     from: Agent_ghbDKZJKl9
     to: Agent_ofRiMQMYVu
+    required: true
   - type: agent
     key: Agent_ghbDKZJKl9/Agent_rE9Y0RrhhW
     from: Agent_ghbDKZJKl9
     to: Agent_rE9Y0RrhhW
+    required: true
   - type: toolset
     key: Agent_rE9Y0RrhhW/77f75dfd-9b77-447f-b120-8a4667b8e291
     from: Agent_rE9Y0RrhhW

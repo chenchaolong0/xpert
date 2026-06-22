@@ -1,14 +1,12 @@
 import { CdkMenuModule } from '@angular/cdk/menu'
-import { CommonModule } from '@angular/common'
+
 import { ChangeDetectionStrategy, Component, computed, ElementRef, inject, input } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { XpertParametersEditComponent } from '@cloud/app/@shared/xpert'
-import { attrModel, linkedModel } from '@metad/ocap-angular/core'
+import { attrModel, linkedModel } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import {
   AiModelTypeEnum,
-  channelName,
   IWFNTrigger,
   IWorkflowNode,
   WorkflowNodeTypeEnum,
@@ -21,6 +19,8 @@ import { XpertStudioApiService } from '../../../domain'
 import { XpertStudioComponent } from '../../../studio.component'
 import { XpertWorkflowBaseComponent } from '../workflow-base.component'
 import { JSONSchemaFormComponent } from '@cloud/app/@shared/forms'
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { createChatTriggerInputParameters } from '../../../../draft'
 
 @Component({
   selector: 'xpert-workflow-trigger',
@@ -29,14 +29,13 @@ import { JSONSchemaFormComponent } from '@cloud/app/@shared/forms'
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
-    CommonModule,
     FormsModule,
     CdkMenuModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
     TranslateModule,
     JSONSchemaFormComponent,
     XpertParametersEditComponent
-  ]
+]
 })
 export class XpertWorkflowTriggerComponent extends XpertWorkflowBaseComponent {
   eXpertAgentExecutionEnum = XpertAgentExecutionStatusEnum
@@ -79,23 +78,8 @@ export class XpertWorkflowTriggerComponent extends XpertWorkflowBaseComponent {
         }
       })
       if (from === 'chat') {
-        const hasParameters = !!value?.length
-        const groupName = triggerKey ? channelName(triggerKey) : null
-        this.studioService.agentConfig.update((state) => {
-          return {
-            ...(state ?? {}),
-            parameters:
-              hasParameters && groupName
-                ? [
-                    {
-                      type: XpertParameterTypeEnum.OBJECT,
-                      name: groupName,
-                      optional: true,
-                      item: value
-                    }
-                  ]
-                : null
-          }
+        this.studioService.updateXpertAgentConfig({
+          parameters: createChatTriggerInputParameters(triggerKey, value)
         })
       }
     }

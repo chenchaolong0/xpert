@@ -1,7 +1,9 @@
+@reference "../../../../styles/tailwind-reference.css";
 :host {
   @apply max-w-full flex-1 w-full h-full flex flex-col items-start overflow-y-auto overflow-x-hidden;
 }
 
-chat-input, .header {
-  background-color: var(--ngm-shell-primary-container-bg-color);
+chat-input,
+.header {
+  background-color: var(--color-background-body);
 }

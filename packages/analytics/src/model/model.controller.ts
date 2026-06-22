@@ -7,7 +7,7 @@ import {
 	TSemanticModelDraft,
 	VisitEntityEnum,
 	VisitTypeEnum
-} from '@metad/contracts'
+} from '@xpert-ai/contracts'
 import {
 	CrudController,
 	CurrentUser,
@@ -21,7 +21,7 @@ import {
 	RoleGuard,
 	Roles,
 	UUIDValidationPipe
-} from '@metad/server-core'
+} from '@xpert-ai/server-core'
 import {
 	Body,
 	ClassSerializerInterceptor,
@@ -77,12 +77,14 @@ export class ModelController extends CrudController<SemanticModel> {
 	@Roles(RolesEnum.ADMIN)
 	@Get()
 	async findAll(@Query('$query', ParseJsonPipe) data: any): Promise<IPagination<SemanticModel>> {
-		const { relations, findInput, order } = data
+		const { relations, findInput, where, order, orderBy, take, skip } = data ?? {}
 
 		return await this.modelService.findAll({
-			where: findInput,
+			where: findInput ?? where,
 			relations,
-			order
+			order: order ?? orderBy,
+			take,
+			skip
 		})
 	}
 
@@ -107,18 +109,22 @@ export class ModelController extends CrudController<SemanticModel> {
 		@Query('$query', ParseJsonPipe) data: any,
 		@Query('businessAreaId') businessAreaId: string
 	): Promise<IPagination<SemanticModel>> {
-		const { relations, findInput, order, select } = data
+		const { relations, findInput, where: inputWhere, order, orderBy, select, take, skip } = data ?? {}
 
-		const where = findInput ?? {}
+		let where = findInput ?? inputWhere ?? {}
 		if (businessAreaId) {
-			where.businessAreaId = businessAreaId
+			where = Array.isArray(where)
+				? where.map((item) => ({ ...item, businessAreaId }))
+				: { ...where, businessAreaId }
 		}
 
 		const { items, total } = await this.modelService.findMy({
 			select,
 			where,
 			relations,
-			order
+			order: order ?? orderBy,
+			take,
+			skip
 		})
 
 		return {
@@ -199,6 +205,14 @@ export class ModelController extends CrudController<SemanticModel> {
 		return await this.commandBus.execute(new SemanticModelPublishCommand(id, body.releaseNotes))
 	}
 
+	@Post('query')
+	@HttpCode(200)
+	async queryUose(
+		@Body() body: any,
+		@Headers('Accept-Language') acceptLanguage: string
+	): Promise<any> {
+		return this.modelService.queryUose(body, { acceptLanguage })
+	}
 
 	@Post('/:id/query')
 	async query(

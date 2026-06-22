@@ -1,6 +1,6 @@
 @if (transformerStrategy(); as strategy) {
   <div class="flex items-start px-4 pt-4">
-    <div class="w-10 h-10 flex items-center justify-center relative overflow-hidden shadow-md rounded-lg bg-gray-100">
+    <div class="w-10 h-10 flex items-center justify-center relative overflow-hidden shadow-md rounded-lg bg-components-input-bg-normal">
       <xp-icon [icon]="strategy.meta.icon" />
     </div>
 
@@ -28,9 +28,7 @@
     @case ('integration') {
       <xp-integration-select class="grow" [provider]="integrationProvider()" [(ngModel)]="integrationId">
         @if (integrationId()) {
-          <div icon class="inline-block h-2 w-2 rounded-[3px] border border-solid shadow-sm
-          bg-green-500 border-green-600 shadow-green-300 mr-1.5">
-          </div>
+          <div icon class="inline-block mr-1.5 xpert-status-indicator xpert-status-indicator--success"></div>
         }
       </xp-integration-select>
     }

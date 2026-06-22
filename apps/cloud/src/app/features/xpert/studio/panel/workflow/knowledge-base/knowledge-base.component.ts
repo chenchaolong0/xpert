@@ -1,21 +1,18 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { CdkMenuModule } from '@angular/cdk/menu'
 import { FormsModule } from '@angular/forms'
-import { MatTooltipModule } from '@angular/material/tooltip'
+import { RouterLink } from '@angular/router'
 import { StateVariableSelectComponent } from '@cloud/app/@shared/agent'
-import { CopilotModelSelectComponent } from '@cloud/app/@shared/copilot'
-import { attrModel, linkedModel } from '@metad/ocap-angular/core'
+import { attrModel, linkedModel } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import {
-  AiModelTypeEnum,
   IWFNKnowledgeBase,
   IWorkflowNode,
-  KnowledgebaseService,
-  KnowledgeStructureEnum,
-  ModelFeature,
+  KnowledgeStructureEnum
 } from 'apps/cloud/src/app/@core'
 import { XpertStudioApiService } from '../../../domain'
 import { XpertWorkflowBaseComponent } from '../workflow-base.component'
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
 
 @Component({
   selector: 'xpert-workflow-knowledge-base',
@@ -26,22 +23,20 @@ import { XpertWorkflowBaseComponent } from '../workflow-base.component'
   imports: [
     FormsModule,
     CdkMenuModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
+    RouterLink,
     TranslateModule,
-    StateVariableSelectComponent,
-    CopilotModelSelectComponent
+    StateVariableSelectComponent
   ]
 })
 export class XpertWorkflowKnowledgeBaseComponent extends XpertWorkflowBaseComponent {
   eKnowledgeStructureEnum = KnowledgeStructureEnum
-  eModelType = AiModelTypeEnum
-  eModelFeature = ModelFeature
 
   readonly studioService = inject(XpertStudioApiService)
-  readonly knowledgebaseAPI = inject(KnowledgebaseService)
 
   // Inputs
   readonly entity = input<IWorkflowNode>()
+  readonly knowledgebaseId = computed(() => this.xpert()?.knowledgebase?.id)
 
   // States
   readonly workspaceId = computed(() => this.xpert()?.workspaceId)
@@ -57,9 +52,6 @@ export class XpertWorkflowKnowledgeBaseComponent extends XpertWorkflowBaseCompon
 
   readonly structure = attrModel(this.knowledgeBaseNode, 'structure', KnowledgeStructureEnum.General)
   readonly inputs = attrModel(this.knowledgeBaseNode, 'inputs')
-  readonly copilotModel = attrModel(this.knowledgeBaseNode, 'copilotModel')
-  readonly rerankModel = attrModel(this.knowledgeBaseNode, 'rerankModel')
-  readonly visionModel = attrModel(this.knowledgeBaseNode, 'visionModel')
 
   updateInput(index: number, value: string) {
     this.inputs.update((inputs) => {

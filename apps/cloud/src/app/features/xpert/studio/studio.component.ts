@@ -1,7 +1,7 @@
 import { DragDropModule } from '@angular/cdk/drag-drop'
 import { CdkListboxModule } from '@angular/cdk/listbox'
 import { CdkContextMenuTrigger, CdkMenuModule } from '@angular/cdk/menu'
-import {Clipboard} from '@angular/cdk/clipboard'
+import { Clipboard } from '@angular/cdk/clipboard'
 import { CommonModule } from '@angular/common'
 import {
   afterNextRender,
@@ -9,6 +9,7 @@ import {
   ChangeDetectorRef,
   Component,
   computed,
+  DestroyRef,
   effect,
   HostListener,
   inject,
@@ -18,7 +19,6 @@ import {
 } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
 import { IPoint, IRect, PointExtensions } from '@foblex/2d'
 import {
@@ -28,6 +28,7 @@ import {
   FCanvasChangeEvent,
   FCanvasComponent,
   FConnectionComponent,
+  FConnectionContent,
   FCreateConnectionEvent,
   FDropToGroupEvent,
   FFlowComponent,
@@ -36,9 +37,9 @@ import {
   FSelectionChangeEvent,
   FZoomDirective
 } from '@foblex/flow'
-import { NgmCommonModule } from '@metad/ocap-angular/common'
-import { DisplayBehaviour, isEqual } from '@metad/ocap-core'
-import { effectAction } from '@metad/ocap-angular/core'
+import { NgmCommonModule } from '@xpert-ai/ocap-angular/common'
+import { DisplayBehaviour, isEqual } from '@xpert-ai/ocap-core'
+import { effectAction } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import { NgxFloatUiModule, NgxFloatUiPlacements, NgxFloatUiTriggers } from 'ngx-float-ui'
 import { NGXLogger } from 'ngx-logger'
@@ -66,12 +67,9 @@ import {
   XpertWorkspaceService,
   isXpertNodeType,
   isIteratingKey,
-  isRouterKey,
+  isRouterKey
 } from '../../../@core'
-import {
-  XpertAgentExecutionStatusComponent,
-  XpertAgentExecutionLogComponent
-} from '../../../@shared/xpert'
+import { XpertAgentExecutionStatusComponent, XpertAgentExecutionLogComponent } from '../../../@shared/xpert'
 import {
   XpertStudioConnectionMenuComponent,
   XpertStudioConnectionCenterComponent,
@@ -89,8 +87,11 @@ import { XpertStudioToolbarComponent } from './toolbar/toolbar.component'
 import { EmojiAvatarComponent } from '../../../@shared/avatar'
 import { XpertStudioFeaturesComponent } from './features/features.component'
 import { XpertService } from '../xpert/xpert.service'
+import { XpertStudioStateInspectorComponent } from './components/state-inspector/state-inspector.component'
+import { XpertAssistantFacade } from '../assistant-shell/assistant.facade'
 import { GROUP_NODE_TYPES, provideJsonSchemaWidgets, readClipboardNode } from './types'
-
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { calculateHash } from '../../../@shared/utils'
 
 @Component({
   standalone: true,
@@ -105,14 +106,16 @@ import { GROUP_NODE_TYPES, provideJsonSchemaWidgets, readClipboardNode } from '.
     RouterModule,
     TranslateModule,
     FFlowModule,
+    FConnectionContent,
     NgxFloatUiModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
 
     NgmCommonModule,
 
     EmojiAvatarComponent,
     XpertStudioFeaturesComponent,
     XpertStudioToolbarComponent,
+    XpertStudioStateInspectorComponent,
     XpertStudioContextMenuComponent,
     XpertStudioNodeAgentComponent,
     XpertStudioNodeKnowledgeComponent,
@@ -160,6 +163,8 @@ export class XpertStudioComponent {
   readonly helpUrl = injectHelpWebsite()
   readonly #cdr = inject(ChangeDetectorRef)
   readonly #clipboard = inject(Clipboard)
+  readonly #destroyRef = inject(DestroyRef)
+  readonly #assistantFacade = inject(XpertAssistantFacade, { optional: true })
   readonly paramId = injectParams('id')
   readonly xpertService = inject(XpertService)
 
@@ -192,7 +197,9 @@ export class XpertStudioComponent {
    */
   readonly nodes = computed(() => {
     const viewModelNodes = this.viewModel()?.nodes ?? []
-    const nodes = viewModelNodes.filter((_) => _.type !== 'xpert' && !(isXpertNodeType('workflow')(_) && GROUP_NODE_TYPES.includes(_.entity?.type)))
+    const nodes = viewModelNodes.filter(
+      (_) => _.type !== 'xpert' && !(isXpertNodeType('workflow')(_) && GROUP_NODE_TYPES.includes(_.entity?.type))
+    )
     const xpertNodes = viewModelNodes.filter((_) => _.type === 'xpert') as TXpertTeamNode<'xpert'>[]
 
     xpertNodes.forEach((node) => {
@@ -201,7 +208,7 @@ export class XpertStudioComponent {
     return nodes
   })
   readonly xperts = computed(() => {
-    const xperts: (NodeOf<'xpert'>)[] = []
+    const xperts: NodeOf<'xpert'>[] = []
     extractXpertGroup(xperts, this.viewModel()?.nodes)
     return xperts
   })
@@ -212,7 +219,7 @@ export class XpertStudioComponent {
       ?.nodes?.filter(isXpertNodeType('xpert'))
       .forEach((node) => {
         node.connections?.forEach((connection) => {
-          viewModelConnections.push({...connection, readonly: true})
+          viewModelConnections.push({ ...connection, readonly: true })
         })
       })
     return viewModelConnections
@@ -227,10 +234,13 @@ export class XpertStudioComponent {
         running = this.runningToolsets().some((_) => _.key === conn.to && _.agentKey === conn.from && _.running)
       } else {
         if (isWorkflowKey(conn.to)) {
-          running = connections.filter((_) => _.from.startsWith(conn.to)).some((_) =>
-            agentExecutions[_.to]?.some((_) => _.status === XpertAgentExecutionStatusEnum.RUNNING))
+          running = connections
+            .filter((_) => _.from.startsWith(conn.to))
+            .some((_) => agentExecutions[_.to]?.some((_) => _.status === XpertAgentExecutionStatusEnum.RUNNING))
         } else {
-          running = agentExecutions[conn.to]?.some((_) => _.status === XpertAgentExecutionStatusEnum.RUNNING && _.predecessor === conn.from)
+          running = agentExecutions[conn.to]?.some(
+            (_) => _.status === XpertAgentExecutionStatusEnum.RUNNING && _.predecessor === conn.from
+          )
         }
       }
       return {
@@ -239,6 +249,10 @@ export class XpertStudioComponent {
       }
     })
   })
+
+  isOptionalSubAgentConnection(connection: TXpertTeamConnection): boolean {
+    return (connection.type === 'agent' || connection.type === 'xpert') && !connection.required
+  }
 
   readonly groups = computed(() => {
     const draft = this.viewModel()
@@ -260,34 +274,81 @@ export class XpertStudioComponent {
   // Agent Execution Running status
   readonly executions = this.executionService.executions
   readonly toolMessages = this.executionService.toolMessages
-  readonly sidePanel = model<"preview" | "variables">()
+  readonly sidePanel = model<'preview' | 'variables' | 'environments' | 'commands'>()
   readonly showFeatures = model(false)
 
-  readonly runningToolsets = computed<Array<{key: string; agentKey: string; running: boolean}>>(() => {
-    const toolMessages = this.toolMessages()
-    const toolsetNodes = this.viewModel()?.nodes.filter((n) => n.type === 'toolset')
-    const running = []
-    toolsetNodes?.forEach((node) => {
-      (<IXpertToolset>node.entity).tools?.forEach((t) => {
-        toolMessages?.filter((exec) => exec.data.status === XpertAgentExecutionStatusEnum.RUNNING)
-          .forEach((execution) => {
-            running.push({
-              key: node.key,
-              agentKey: execution.agentKey,
-              running: true,
+  readonly runningToolsets = computed<Array<{ key: string; agentKey: string; running: boolean }>>(
+    () => {
+      const toolMessages = this.toolMessages()
+      const toolsetNodes = this.viewModel()?.nodes.filter((n) => n.type === 'toolset')
+      const running = []
+      toolsetNodes?.forEach((node) => {
+        ;(<IXpertToolset>node.entity).tools?.forEach((t) => {
+          toolMessages
+            ?.filter((exec) => exec.data.status === XpertAgentExecutionStatusEnum.RUNNING)
+            .forEach((execution) => {
+              running.push({
+                key: node.key,
+                agentKey: execution.agentKey,
+                running: true
+              })
             })
-          })
+        })
       })
-    })
-    return running
-  }, { equal: isEqual })
+      return running
+    },
+    { equal: isEqual }
+  )
 
   constructor() {
-    effect(() => {
-      if (this.paramId()) {
-        this.xpertService.paramId.set(this.paramId())
+    this.#destroyRef.onDestroy(() => {
+      this.subscriptions$.unsubscribe()
+      this.#assistantFacade?.clearStudioContext()
+    })
+
+    effect(
+      () => {
+        if (this.paramId()) {
+          this.xpertService.paramId.set(this.paramId())
+        }
       }
-    }, { allowSignalWrites: true })
+    )
+
+    effect(() => {
+      if (!this.#assistantFacade) {
+        return
+      }
+
+      const assistantRouteXpertId = this.#assistantFacade.xpertId()
+      const currentXpertId = this.id()
+      if (!currentXpertId || assistantRouteXpertId !== currentXpertId) {
+        this.#assistantFacade.clearStudioContext()
+        return
+      }
+
+      const pristineDraft = this.apiService.pristineDraft()
+      this.#assistantFacade.setStudioContext({
+        targetXpertId: currentXpertId,
+        baseDraftHash: pristineDraft ? calculateHash(JSON.stringify(pristineDraft)) : null,
+        unsaved: this.apiService.unsaved()
+      })
+    })
+
+    effect(() => {
+      const assistantRouteXpertId = this.#assistantFacade?.xpertId()
+      const refreshEvent = this.#assistantFacade?.studioRefresh()
+      const currentXpertId = this.id()
+
+      if (!refreshEvent || !currentXpertId || assistantRouteXpertId !== currentXpertId) {
+        return
+      }
+
+      if (refreshEvent.xpertId && refreshEvent.xpertId !== currentXpertId) {
+        return
+      }
+
+      this.apiService.refresh()
+    })
 
     afterNextRender(() => {
       this.subscriptions$.add(this.subscribeOnReloadData())
@@ -295,23 +356,22 @@ export class XpertStudioComponent {
   }
 
   private subscribeOnReloadData(): Subscription {
-    return this.apiService.reload$
-      .pipe(delay(100))
-      .subscribe((reason: EReloadReason | null) => {
-        if (reason === EReloadReason.INIT) {
-          if (this.xpert().options?.position) {
-            this.position.set(this.xpert().options.position)
-          }
-          if (this.xpert().options?.scale) {
-            this.scale.set(this.xpert().options.scale)
-          }
+    return this.apiService.reload$.pipe(delay(100)).subscribe((reason: EReloadReason | null) => {
+      if (reason === EReloadReason.INIT) {
+        if (this.xpert().options?.position) {
+          this.position.set(this.xpert().options.position)
         }
-        if (reason === EReloadReason.CONNECTION_CHANGED) {
-          this.fFlowComponent().clearSelection()
+        if (this.xpert().options?.scale) {
+          this.scale.set(this.xpert().options.scale)
         }
+      }
+      if (reason === EReloadReason.CONNECTION_CHANGED) {
+        this.fFlowComponent().clearSelection()
+      }
 
-        this.#cdr.detectChanges()
-      })
+      this.releaseInvalidParentNodes()
+      this.#cdr.detectChanges()
+    })
   }
 
   public onLoaded(): void {
@@ -324,6 +384,16 @@ export class XpertStudioComponent {
     )
     // Clear insert connection when using right-click context menu
     this.insertConnection = null
+  }
+
+  public openConnectionMenu(event: MouseEvent, trigger: CdkContextMenuTrigger): void {
+    event.preventDefault()
+    event.stopPropagation()
+    this.insertConnection = null
+    trigger.open({
+      x: event.clientX,
+      y: event.clientY
+    })
   }
 
   /**
@@ -356,7 +426,7 @@ export class XpertStudioComponent {
     if (!event.fInputId) {
       this.contextMenuTrigger().menuData = {
         menuTrigger: this.contextMenuTrigger(),
-        fromNode: this.apiService.getNode(event.fOutputId),
+        fromNode: this.apiService.getNode(event.fOutputId)
       }
       this.contextMenuTrigger().open(event.fDropPosition)
       return
@@ -373,12 +443,12 @@ export class XpertStudioComponent {
     if (event.newTargetId) {
       this.apiService.createConnection({
         sourceId: event.newSourceId || event.oldSourceId,
-        targetId: event.newTargetId,
+        targetId: event.newTargetId
       })
     }
   }
 
-  public moveNode({key, point}: {point: IPoint; key: string}) {
+  public moveNode({ key, point }: { point: IPoint; key: string }) {
     this.apiService.moveNode(key, point)
   }
 
@@ -415,8 +485,7 @@ export class XpertStudioComponent {
   }
 
   public onSelectNode($event: MouseEvent, node: TXpertTeamNode) {
-    if (Math.abs(this.mousePosition.x - $event.screenX) < 5 && 
-        Math.abs(this.mousePosition.y - $event.screenY) < 5) {
+    if (Math.abs(this.mousePosition.x - $event.screenX) < 5 && Math.abs(this.mousePosition.y - $event.screenY) < 5) {
       // Execute Click when click in place
       this.selectionService.selectNode(node.key)
     }
@@ -427,7 +496,7 @@ export class XpertStudioComponent {
   }
 
   removeConnection(connection: FConnectionComponent) {
-    this.apiService.removeConnection(connection.fOutputId, connection.fInputId)
+    this.apiService.removeConnection(connection.fOutputId(), connection.fInputId())
   }
 
   onCanvasChange = effectAction((origin$: Observable<FCanvasChangeEvent>) => {
@@ -445,7 +514,7 @@ export class XpertStudioComponent {
   updateXpertAgentConfig(config: Partial<TXpertAgentConfig>) {
     this.apiService.updateXpertAgentConfig(config)
   }
-  
+
   onPreview(preview: boolean) {
     this.sidePanel.set(preview ? 'preview' : null)
   }
@@ -461,7 +530,7 @@ export class XpertStudioComponent {
 
   copyNode(node: TXpertTeamNode) {
     this.#clipboard.copy(JSON.stringify(node))
-    this.#toastr.success('PAC.Messages.CopiedToClipboard', {Default: 'Copied to clipboard'})
+    this.#toastr.success('PAC.Messages.CopiedToClipboard', { Default: 'Copied to clipboard' })
   }
 
   duplicateNode(node: TXpertTeamNode) {
@@ -489,18 +558,21 @@ export class XpertStudioComponent {
     }
 
     // Remove parameters of xpert when removed chat trigger point
-    if (node.type === 'workflow' && (<NodeEntity<'workflow'>>node.entity)?.type === WorkflowNodeTypeEnum.TRIGGER
-      && (<IWFNTrigger>node.entity).from === 'chat') {
+    if (
+      node.type === 'workflow' &&
+      (<NodeEntity<'workflow'>>node.entity)?.type === WorkflowNodeTypeEnum.TRIGGER &&
+      (<IWFNTrigger>node.entity).from === 'chat'
+    ) {
       this.apiService.agentConfig.update((state) => {
-          return {
-            ...(state ?? {}),
-            parameters: null
-          }
-        })
+        return {
+          ...(state ?? {}),
+          parameters: null
+        }
+      })
     }
   }
 
-  centerGroupOrNode(id: string,) {
+  centerGroupOrNode(id: string) {
     this.fCanvasComponent().centerGroupOrNode(id, true)
   }
 
@@ -513,7 +585,8 @@ export class XpertStudioComponent {
     const flowElement = this.fFlowComponent()?.hostElement
     const activeElement = document.activeElement as HTMLElement | null
 
-    const isInFlow = !!flowElement && ((!!activeElement && flowElement.contains(activeElement)) || flowElement.contains(target))
+    const isInFlow =
+      !!flowElement && ((!!activeElement && flowElement.contains(activeElement)) || flowElement.contains(target))
     if (!isInFlow) {
       return
     }
@@ -523,8 +596,8 @@ export class XpertStudioComponent {
       return
     }
 
-    const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
-    const ctrlKey = isMac ? event.metaKey : event.ctrlKey;
+    const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent)
+    const ctrlKey = isMac ? event.metaKey : event.ctrlKey
 
     // Delete/Backspace - Delete selection
     if (event.key === 'Delete' || event.key === 'Backspace') {
@@ -608,8 +681,8 @@ export class XpertStudioComponent {
     const selection = this.fFlowComponent().getSelection()
 
     // Delete selected connections
-    selection.fConnectionIds.forEach(connectionKey => {
-      const connection = this.connections().find(c => c.key === connectionKey)
+    selection.fConnectionIds.forEach((connectionKey) => {
+      const connection = this.connections().find((c) => c.key === connectionKey)
       if (connection && !connection.readonly) {
         const sourceId = connection.from + '/' + connection.type
         const targetId = connection.to + (connection.type === 'edge' ? '/edge' : '')
@@ -618,7 +691,7 @@ export class XpertStudioComponent {
     })
 
     // Delete selected nodes
-    selection.fNodeIds.forEach(nodeKey => {
+    selection.fNodeIds.forEach((nodeKey) => {
       const node = this.apiService.getNode(nodeKey)
       if (node && !node.readonly && !node.parentId) {
         this.deleteNode(node)
@@ -626,8 +699,8 @@ export class XpertStudioComponent {
     })
 
     // Delete selected groups (xpert nodes)
-    selection.fGroupIds.forEach(groupKey => {
-      const group = this.xperts().find(x => x.key === groupKey)
+    selection.fGroupIds.forEach((groupKey) => {
+      const group = this.xperts().find((x) => x.key === groupKey)
       if (group) {
         this.removeNode(group.key)
       }
@@ -637,21 +710,47 @@ export class XpertStudioComponent {
   }
 
   onDropToGroup(event: FDropToGroupEvent) {
-     if (!event.fTargetNode) {
+    if (!event.fTargetNode) {
       console.warn('Drop to group without target node', event)
       return
     }
-    
-    console.log('Drop to group', event)
+
+    const targetNode = this.apiService.getNode(event.fTargetNode)
+    if (!this.isCanvasGroupTarget(targetNode)) {
+      return
+    }
+
     for (const key of event.fNodes) {
       this.apiService.updateNode(key, (state) => {
-        console.log('Update node parentId', state, event.fTargetNode)
         return {
           ...state,
           parentId: event.fTargetNode
         }
       })
     }
+  }
+
+  private isCanvasGroupTarget(node: TXpertTeamNode | undefined): boolean {
+    return !!node && (node.type === 'xpert' || (node.type === 'workflow' && GROUP_NODE_TYPES.includes(node.entity.type)))
+  }
+
+  private releaseInvalidParentNodes(): void {
+    const invalidNodes =
+      this.viewModel()?.nodes.filter((node) => {
+        if (!node.parentId) {
+          return false
+        }
+
+        const parentNode = this.apiService.getNode(node.parentId)
+        return !this.isCanvasGroupTarget(parentNode)
+      }) ?? []
+
+    invalidNodes.forEach((node) => {
+      this.apiService.updateNode(node.key, (state) => ({
+        ...state,
+        parentId: null
+      }))
+    })
   }
 }
 
@@ -668,7 +767,7 @@ function extractXpertNodes(nodes: TXpertTeamNode[], xpertNode: TXpertTeamNode<'x
 function extractXpertGroup(results: TXpertTeamNode[], nodes: TXpertTeamNode[], parentId = null) {
   nodes?.forEach((node) => {
     if (node.type === 'xpert') {
-      results.push({...node, parentId})
+      results.push({ ...node, parentId })
       extractXpertGroup(results, (node as NodeOf<'xpert'>).nodes, node.key)
     }
   })

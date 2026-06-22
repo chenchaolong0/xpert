@@ -1,7 +1,4 @@
+@reference "../../../../styles/tailwind-reference.css";
 :host {
-    @apply w-full;
-}
-
-.mat-mdc-slide-toggle {
-    @apply inline-flex;
+  @apply w-full;
 }

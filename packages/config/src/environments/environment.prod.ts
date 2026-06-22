@@ -1,7 +1,7 @@
 import 'dotenv/config'
 
-import { FileStorageProviderEnum, VectorTypeEnum } from '@metad/contracts'
-import { IEnvironment, IPACFeatures, LogLevel } from './ienvironment'
+import { FileStorageProviderEnum, VectorTypeEnum } from '@xpert-ai/contracts'
+import { IEnvironment, IPACFeatures, LogLevel, normalizeDeploymentTarget } from './ienvironment'
 
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000'
 
@@ -12,6 +12,7 @@ export const prodEnvironment: IEnvironment = {
   clientBaseUrl: process.env.CLIENT_BASE_URL || 'http://localhost:4200',
   production: true,
   envName: 'prod',
+  deploymentTarget: normalizeDeploymentTarget(process.env.DEPLOYMENT_TARGET, 'cloud'),
 
   env: {
     ...process.env,
@@ -21,7 +22,7 @@ export const prodEnvironment: IEnvironment = {
   pro: process.env.PRO === 'true',
 
   secretsEncryptionKey: process.env.SECRETS_ENCRYPTION_KEY || 'default_secrets_encryption_key',
-  EXPRESS_SESSION_SECRET: 'pangolin',
+  EXPRESS_SESSION_SECRET: 'xpert',
   USER_PASSWORD_BCRYPT_SALT_ROUNDS: 12,
   JWT_SECRET: process.env.JWT_SECRET,
   JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET,
@@ -224,6 +225,8 @@ export const prodToggleFeatures: IPACFeatures = {
   FEATURE_GOAL_SETTING: process.env.FEATURE_GOAL_SETTING === 'false' ? false : true,
   FEATURE_REPORT: process.env.FEATURE_REPORT === 'false' ? false : true,
   FEATURE_USER: process.env.FEATURE_USER === 'false' ? false : true,
+  FEATURE_USERS: process.env.FEATURE_USERS === 'false' ? false : true,
+  FEATURE_USER_GROUPS: process.env.FEATURE_USER_GROUPS === 'false' ? false : true,
   FEATURE_ORGANIZATIONS: process.env.FEATURE_ORGANIZATIONS === 'false' ? false : true,
   FEATURE_APP_INTEGRATION: process.env.FEATURE_APP_INTEGRATION === 'false' ? false : true,
   FEATURE_SETTING: process.env.FEATURE_SETTING === 'false' ? false : true,
@@ -239,6 +242,8 @@ export const prodToggleFeatures: IPACFeatures = {
   FEATURE_COPILOT: process.env.FEATURE_COPILOT === 'false' ? false : true,
   FEATURE_COPILOT_CHAT: process.env.FEATURE_COPILOT_CHAT === 'false' ? false : true,
   FEATURE_COPILOT_KNOWLEDGEBASE: process.env.FEATURE_COPILOT_KNOWLEDGEBASE === 'false' ? false : true,
+  FEATURE_COPILOT_MONITORING: process.env.FEATURE_COPILOT_MONITORING === 'false' ? false : true,
   FEATURE_COPILOT_CHATBI: process.env.FEATURE_COPILOT_CHATBI === 'false' ? false : true,
-  FEATURE_XPERT: process.env.FEATURE_XPERT === 'false' ? false : true
+  FEATURE_XPERT: process.env.FEATURE_XPERT === 'false' ? false : true,
+  FEATURE_XPERT_DATA_ONTOLOGY: process.env.FEATURE_XPERT_DATA_ONTOLOGY === 'false' ? false : true
 }

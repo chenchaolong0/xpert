@@ -1,4 +1,3 @@
-import { CommonModule } from '@angular/common'
 import {
   booleanAttribute,
   ChangeDetectionStrategy,
@@ -12,10 +11,8 @@ import {
   signal
 } from '@angular/core'
 import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { MatSlideToggleModule } from '@angular/material/slide-toggle'
-import { MatTooltipModule } from '@angular/material/tooltip'
-import { NgmSpinComponent } from '@metad/ocap-angular/common'
-import { NgmDensityDirective } from '@metad/ocap-angular/core'
+import { NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
+import { NgmDensityDirective } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import {
   getErrorMessage,
@@ -30,20 +27,20 @@ import {
 import { JSONSchemaFormComponent } from 'apps/cloud/src/app/@shared/forms'
 import { isNil, omit } from 'lodash-es'
 import { Subscription } from 'rxjs'
-
+import { ZardInputDirective, ZardSwitchComponent, ZardTooltipImports } from '@xpert-ai/headless-ui'
 
 @Component({
   standalone: true,
   imports: [
-    CommonModule,
     FormsModule,
     ReactiveFormsModule,
     TranslateModule,
-    MatTooltipModule,
-    MatSlideToggleModule,
+    ...ZardTooltipImports,
     NgmDensityDirective,
     NgmSpinComponent,
-    JSONSchemaFormComponent
+    JSONSchemaFormComponent,
+    ZardSwitchComponent,
+    ZardInputDirective
   ],
   selector: 'mcp-toolset-tool-test',
   templateUrl: './tool.component.html',
@@ -81,7 +78,9 @@ export class MCPToolsetToolTestComponent {
   })
 
   readonly parameters = model<Record<string, any>>(null)
-  readonly invalid = computed(() => this.parameterList()?.some((param) => param.required && isNil(this.parameters()?.[param.name])))
+  readonly invalid = computed(() =>
+    this.parameterList()?.some((param) => param.required && isNil(this.parameters()?.[param.name]))
+  )
   readonly testResult = signal(null)
 
   readonly loading = signal(false)
@@ -111,7 +110,7 @@ export class MCPToolsetToolTestComponent {
       .test({
         ...this.tool(),
         toolset: (this.toolset() ? omit(this.toolset(), 'tools') : this.tool().toolset) as IXpertToolset,
-        parameters: this.parameters(),
+        parameters: this.parameters()
       })
       .subscribe({
         next: (result) => {

@@ -1,0 +1,679 @@
+import { Dialog, DialogRef } from '@angular/cdk/dialog'
+import { CdkMenuModule } from '@angular/cdk/menu'
+import { CommonModule } from '@angular/common'
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  inject,
+  model,
+  signal,
+  TemplateRef,
+  viewChild
+} from '@angular/core'
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'
+import { IconComponent } from '@cloud/app/@shared/avatar'
+import {
+  FileWorkbenchComponent,
+  FileWorkbenchDownloadPayload,
+  FileWorkbenchFileDeleter,
+  FileWorkbenchFileDownloader,
+  FileWorkbenchFileLoader,
+  FileWorkbenchFilesLoader,
+  FileWorkbenchFileSaver,
+  FileWorkbenchFileUploader
+} from '@cloud/app/@shared/files'
+import {
+  XpertGithubSkillInstallComponent,
+  XpertSkillIndexesComponent,
+  XpertSkillRepositoriesComponent
+} from '@cloud/app/@shared/skills'
+import { OverlayAnimation1 } from '@xpert-ai/core'
+import { injectConfirmDelete, NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
+import { myRxResource, NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
+import { TranslateModule, TranslateService } from '@ngx-translate/core'
+import { firstValueFrom, forkJoin } from 'rxjs'
+import {
+  getErrorMessage,
+  IconDefinition,
+  injectSkillPackageAPI,
+  injectToastr,
+  ISkillPackage,
+  ISkillRepository,
+  ISkillRepositoryIndex
+} from '../../../../@core'
+import { XpertAssistantFacade } from '../../assistant-shell/assistant.facade'
+import { XpertWorkspaceHomeComponent } from '../home/home.component'
+import { XpertSkillUploadDialogComponent } from './skill-upload-dialog.component'
+import { cx } from '@xpert-ai/headless-ui'
+
+type MobilePane = 'skills' | 'tree' | 'file'
+
+@Component({
+  standalone: true,
+  imports: [
+    CommonModule,
+    FormsModule,
+    ReactiveFormsModule,
+    TranslateModule,
+    CdkMenuModule,
+    NgmI18nPipe,
+    NgmSpinComponent,
+    IconComponent,
+    FileWorkbenchComponent,
+    XpertGithubSkillInstallComponent,
+    XpertSkillRepositoriesComponent,
+    XpertSkillIndexesComponent
+  ],
+  selector: 'xp-workspace-skills',
+  templateUrl: './skills.component.html',
+  styleUrls: ['skills.component.css'],
+  animations: [OverlayAnimation1],
+  changeDetection: ChangeDetectionStrategy.OnPush
+})
+export class XpertWorkspaceSkillsComponent {
+  readonly cx = cx
+
+  readonly defaultSkillIcon: IconDefinition = {
+    type: 'emoji',
+    value: '🧩',
+    size: 20
+  }
+
+  readonly #translate = inject(TranslateService)
+  readonly #dialog = inject(Dialog)
+  readonly #toastr = injectToastr()
+  readonly #assistantFacade = inject(XpertAssistantFacade, { optional: true })
+  readonly homeComponent = inject(XpertWorkspaceHomeComponent)
+  readonly skillPackageAPI = injectSkillPackageAPI()
+  readonly confirmDelete = injectConfirmDelete()
+  readonly #compactNumber = new Intl.NumberFormat('en', {
+    notation: 'compact',
+    maximumFractionDigits: 1
+  })
+
+  readonly registerRepositoryDialog = viewChild<TemplateRef<unknown>>('registerRepositoryDialog')
+  readonly githubInstallDialog = viewChild<TemplateRef<unknown>>('githubInstallDialog')
+  readonly fileWorkbench = viewChild(FileWorkbenchComponent)
+
+  readonly workspace = this.homeComponent.workspace
+  readonly #skillsResource = myRxResource({
+    request: () => this.workspace()?.id,
+    loader: ({ request: workspaceId }) =>
+      workspaceId
+        ? this.skillPackageAPI.getAllByWorkspace(workspaceId, {
+            relations: ['skillIndex', 'skillIndex.repository']
+          })
+        : null
+  })
+
+  readonly #loading = signal(false)
+  readonly loading = computed(() => this.#skillsResource.status() === 'loading' || this.#loading())
+  readonly skills = computed(() => this.#skillsResource.value()?.items ?? [])
+  readonly search = model<string>('')
+  readonly selectedRepository = model<ISkillRepository | null>(null)
+  readonly mobilePane = model<MobilePane>('skills')
+  readonly workbenchPane = computed<'tree' | 'file'>(() => (this.mobilePane() === 'file' ? 'file' : 'tree'))
+
+  readonly selectedSkillIds = signal<Set<string>>(new Set())
+  readonly activeSkillId = signal<string | null>(null)
+  readonly downloadingSkillIds = signal<Set<string>>(new Set())
+  readonly #pendingAssistantSkillId = signal<string | null>(null)
+  readonly activeSkill = computed(
+    () => this.skills().find((skill) => skill.id && skill.id === this.activeSkillId()) ?? null
+  )
+  readonly filteredSkills = computed(() => {
+    const term = this.search().trim().toLowerCase()
+    if (!term) {
+      return this.skills()
+    }
+
+    return this.skills().filter((skill) =>
+      [
+        this.displayName(skill),
+        this.skillSummary(skill),
+        this.repositoryLabel(skill),
+        this.providerLabel(skill),
+        this.publisherLabel(skill),
+        ...(skill.metadata?.tags ?? []),
+        skill.skillIndex?.skillId,
+        skill.packagePath
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(term)
+    )
+  })
+  readonly hasSelection = computed(() => this.selectedSkillIds().size > 0)
+  readonly allSelected = computed(
+    () => this.skills().length > 0 && this.selectedSkillIds().size === this.skills().length
+  )
+  readonly partialSelected = computed(() => {
+    const total = this.skills().length
+    const selected = this.selectedSkillIds().size
+    return selected > 0 && selected < total
+  })
+
+  readonly registering = signal(false)
+  #registerDialogRef: DialogRef<unknown, unknown> | null = null
+  #githubInstallDialogRef: DialogRef<unknown, unknown> | null = null
+  #lastAssistantSkillRefreshKey: string | null = null
+
+  readonly #refreshFromAssistantTool = effect(
+    () => {
+      const refreshEvent = this.#assistantFacade?.workspaceSkillRefresh()
+      const workspaceId = this.workspace()?.id
+      if (!refreshEvent || !workspaceId || refreshEvent.workspaceId !== workspaceId) {
+        return
+      }
+      const refreshKey = `${workspaceId}:${refreshEvent.nonce}`
+      if (refreshKey === this.#lastAssistantSkillRefreshKey) {
+        return
+      }
+
+      this.#lastAssistantSkillRefreshKey = refreshKey
+      if (refreshEvent.skillId && refreshEvent.operation !== 'deleted') {
+        this.#pendingAssistantSkillId.set(refreshEvent.skillId)
+      }
+      this.#skillsResource.reload()
+    },
+    { allowSignalWrites: true }
+  )
+
+  readonly #selectAssistantToolSkill = effect(
+    () => {
+      const pendingSkillId = this.#pendingAssistantSkillId()
+      if (!pendingSkillId) {
+        return
+      }
+
+      const skill = this.skills().find((item) => item.id === pendingSkillId)
+      if (!skill) {
+        return
+      }
+
+      this.activeSkillId.set(pendingSkillId)
+      this.mobilePane.set('tree')
+      this.#pendingAssistantSkillId.set(null)
+    },
+    { allowSignalWrites: true }
+  )
+
+  readonly loadActiveSkillFiles: FileWorkbenchFilesLoader = (path?: string) => {
+    const workspaceId = this.workspace()?.id
+    const skillId = this.activeSkillId()
+    if (!workspaceId || !skillId) {
+      return []
+    }
+    return this.skillPackageAPI.getFiles(workspaceId, skillId, path)
+  }
+
+  readonly loadActiveSkillFile: FileWorkbenchFileLoader = (path: string) => {
+    const workspaceId = this.workspace()?.id
+    const skillId = this.activeSkillId()
+    if (!workspaceId || !skillId) {
+      throw new Error('Active skill is required')
+    }
+    return this.skillPackageAPI.getFile(workspaceId, skillId, path)
+  }
+
+  readonly saveActiveSkillFile: FileWorkbenchFileSaver = (path: string, content: string) => {
+    const workspaceId = this.workspace()?.id
+    const skillId = this.activeSkillId()
+    if (!workspaceId || !skillId) {
+      throw new Error('Active skill is required')
+    }
+    return this.skillPackageAPI.saveFile(workspaceId, skillId, path, content)
+  }
+
+  readonly uploadActiveSkillFile: FileWorkbenchFileUploader = (file: File, path: string) => {
+    const workspaceId = this.workspace()?.id
+    const skillId = this.activeSkillId()
+    if (!workspaceId || !skillId) {
+      throw new Error('Active skill is required')
+    }
+
+    return this.skillPackageAPI.uploadFile(workspaceId, skillId, file, path)
+  }
+
+  readonly deleteActiveSkillFile: FileWorkbenchFileDeleter = (path: string) => {
+    const workspaceId = this.workspace()?.id
+    const skillId = this.activeSkillId()
+    if (!workspaceId || !skillId) {
+      throw new Error('Active skill is required')
+    }
+
+    return this.skillPackageAPI.deleteFile(workspaceId, skillId, path)
+  }
+
+  readonly downloadActiveSkillFile: FileWorkbenchFileDownloader = async (path, item) => {
+    const workspaceId = this.workspace()?.id
+    const skillId = this.activeSkillId()
+    if (!workspaceId || !skillId) {
+      throw new Error('Active skill is required')
+    }
+
+    const blob = await firstValueFrom(this.skillPackageAPI.downloadFile(workspaceId, skillId, path))
+    return {
+      kind: 'blob',
+      blob,
+      fileName: item?.hasChildren ? `${path.split('/').pop() || path}.zip` : path.split('/').pop() || path
+    } satisfies FileWorkbenchDownloadPayload
+  }
+
+  readonly #syncSelectionWithData = effect(
+    () => {
+      const ids = new Set(
+        this.skills()
+          .map((skill) => skill.id)
+          .filter((id): id is string => !!id)
+      )
+      this.selectedSkillIds.update((selected) => {
+        const next = new Set<string>()
+        selected.forEach((id) => {
+          if (ids.has(id)) {
+            next.add(id)
+          }
+        })
+        if (next.size === selected.size) {
+          return selected
+        }
+        return next
+      })
+    },
+    { allowSignalWrites: true }
+  )
+
+  readonly #syncActiveSkillWithData = effect(
+    () => {
+      const skills = this.skills()
+      const activeId = this.activeSkillId()
+
+      if (!skills.length) {
+        this.activeSkillId.set(null)
+        return
+      }
+
+      if (!activeId || !skills.some((skill) => skill.id === activeId)) {
+        this.activeSkillId.set(skills[0]?.id ?? null)
+      }
+    },
+    { allowSignalWrites: true }
+  )
+
+  getSkillIcon(skill: ISkillPackage | null | undefined): IconDefinition {
+    return skill?.metadata?.icon ?? this.defaultSkillIcon
+  }
+
+  displayName(skill: ISkillPackage | null | undefined): string {
+    return readI18nText(skill?.metadata?.displayName) || skill?.name || skill?.metadata?.name || '-'
+  }
+
+  skillSummary(skill: ISkillPackage | null | undefined): string {
+    return readI18nText(skill?.metadata?.summary) || readI18nText(skill?.metadata?.description) || '-'
+  }
+
+  repositoryLabel(skill: ISkillPackage | null | undefined): string {
+    return (
+      skill?.skillIndex?.repository?.name ||
+      readGithubProvenanceText(skill?.metadata, 'repositoryUrl') ||
+      this.translateDefault('PAC.Skill.DirectUpload', 'Direct Upload')
+    )
+  }
+
+  providerLabel(skill: ISkillPackage | null | undefined): string {
+    if (skill?.skillIndex?.repository?.provider) {
+      return skill.skillIndex.repository.provider
+    }
+
+    return (
+      readGithubProvenanceText(skill?.metadata, 'sourceProvider') ||
+      this.translateDefault('PAC.Skill.LocalProvider', 'local')
+    )
+  }
+
+  publisherLabel(skill: ISkillPackage | null | undefined): string {
+    return (
+      skill?.skillIndex?.publisher?.displayName ||
+      skill?.skillIndex?.publisher?.name ||
+      skill?.skillIndex?.publisher?.handle ||
+      skill?.metadata?.author?.name ||
+      this.translateDefault('PAC.Skill.LocalAuthor', 'Local upload')
+    )
+  }
+
+  formatStat(value?: number | null): string {
+    return typeof value === 'number' && Number.isFinite(value) ? this.#compactNumber.format(value) : '--'
+  }
+
+  isDownloadingSkill(skillId: string | null | undefined) {
+    return !!skillId && this.downloadingSkillIds().has(skillId)
+  }
+
+  async onInstalling(skill: ISkillRepositoryIndex) {
+    const workspaceId = this.workspace()?.id
+    const indexId = skill.id
+    if (!workspaceId || !indexId) {
+      return
+    }
+
+    this.registering.set(true)
+    try {
+      await firstValueFrom(this.skillPackageAPI.installPackage(workspaceId, indexId))
+      this.#toastr.success(
+        this.#translate.instant('PAC.Skill.SkillPackageInstalled', {
+          Default: 'Skill is ready. Existing installs are reused, and newer versions update automatically.'
+        })
+      )
+      this.#skillsResource.reload()
+    } catch (error) {
+      this.#toastr.danger(getErrorMessage(error))
+    } finally {
+      this.registering.set(false)
+    }
+  }
+
+  openUploadDialog() {
+    const workspaceId = this.workspace()?.id
+    if (!workspaceId) {
+      return
+    }
+
+    this.#dialog
+      .open<ISkillPackage[] | null>(XpertSkillUploadDialogComponent, {
+        data: { workspaceId }
+      })
+      .closed.subscribe((result) => {
+        if (result?.length) {
+          this.#skillsResource.reload()
+        }
+      })
+  }
+
+  openGithubInstallDialog() {
+    const dialogTemplate = this.githubInstallDialog()
+    if (!dialogTemplate || !this.workspace()?.id) {
+      return
+    }
+
+    this.#githubInstallDialogRef = this.#dialog.open(dialogTemplate, {
+      maxWidth: 'min(92vw, 44rem)',
+      disableClose: true,
+      backdropClass: 'xp-overlay-share-sheet',
+      panelClass: 'xp-overlay-pane-share-sheet'
+    })
+  }
+
+  closeGithubInstallDialog() {
+    this.#githubInstallDialogRef?.close()
+    this.#githubInstallDialogRef = null
+  }
+
+  onGithubSkillsInstalled(packages: ISkillPackage[]) {
+    this.#skillsResource.reload()
+    const firstPackageId = packages.find((item) => !!item.id)?.id
+    if (firstPackageId) {
+      this.activeSkillId.set(firstPackageId)
+    }
+    this.closeGithubInstallDialog()
+  }
+
+  registerFromRepository() {
+    const dialogTemplate = this.registerRepositoryDialog()
+    if (!dialogTemplate) {
+      return
+    }
+
+    this.#registerDialogRef = this.#dialog.open(dialogTemplate, {
+      maxWidth: '80vw',
+      maxHeight: '80vh',
+      disableClose: true,
+      backdropClass: 'xp-overlay-share-sheet',
+      panelClass: 'xp-overlay-pane-share-sheet'
+    })
+
+    this.#registerDialogRef.closed?.subscribe({
+      next: () => {
+        this.selectedRepository.set(null)
+      }
+    })
+  }
+
+  closeRegisterDialog() {
+    this.#registerDialogRef?.close()
+  }
+
+  async activateSkill(skill: ISkillPackage) {
+    const skillId = skill.id
+    if (!skillId) {
+      return
+    }
+
+    if (skillId === this.activeSkillId()) {
+      this.mobilePane.set('tree')
+      return
+    }
+
+    const run = async () => {
+      this.activeSkillId.set(skillId)
+      this.mobilePane.set('tree')
+    }
+
+    const fileWorkbench = this.fileWorkbench()
+    if (fileWorkbench) {
+      await fileWorkbench.guardDirtyBefore(run)
+    } else {
+      await run()
+    }
+  }
+
+  async downloadSkillPackage(skill: ISkillPackage, event?: MouseEvent) {
+    event?.stopPropagation()
+    const workspaceId = this.workspace()?.id
+    const skillId = skill.id
+    if (!workspaceId || !skillId || this.isDownloadingSkill(skillId)) {
+      return
+    }
+
+    this.markDownloadingSkill(skillId, true)
+    try {
+      const blob = await firstValueFrom(this.skillPackageAPI.downloadPackage(workspaceId, skillId))
+      triggerSkillPackageDownload(blob, `${toDownloadFileName(this.displayName(skill) || skill.name || skillId)}.zip`)
+    } catch (error) {
+      this.#toastr.danger(getErrorMessage(error))
+    } finally {
+      this.markDownloadingSkill(skillId, false)
+    }
+  }
+
+  deleteSkill(skill: ISkillPackage) {
+    const skillId = skill.id
+    const workspaceId = this.workspace()?.id
+    if (!skillId) {
+      return
+    }
+    if (!workspaceId) {
+      return
+    }
+
+    this.confirmDelete(
+      {
+        title: this.#translate.instant('PAC.Skill.DeleteSkillPackageTitle', {
+          Default: 'Delete Skill Package'
+        }),
+        value: skill.name,
+        information: this.#translate.instant('PAC.Skill.DeleteSkillPackageInfo', {
+          Default: 'Are you sure you want to delete this skill package? This action cannot be undone.'
+        })
+      },
+      () => {
+        this.#loading.set(true)
+        return this.skillPackageAPI.uninstallPackageInWorkspace(workspaceId, skillId)
+      }
+    ).subscribe({
+      next: () => {
+        this.#loading.set(false)
+        this.#toastr.success(
+          this.#translate.instant('PAC.Skill.SkillPackageDeleted', {
+            Default: 'Skill Package Deleted'
+          })
+        )
+        this.#skillsResource.reload()
+      },
+      error: (error) => {
+        this.#loading.set(false)
+        this.#toastr.danger(getErrorMessage(error))
+      }
+    })
+  }
+
+  toggleSelectAll(event: Event) {
+    const checked = (event.target as HTMLInputElement).checked
+    this.selectedSkillIds.set(
+      checked
+        ? new Set(
+            this.skills()
+              .map((skill) => skill.id)
+              .filter((id): id is string => !!id)
+          )
+        : new Set()
+    )
+  }
+
+  toggleSkillSelection(skillId: string | null | undefined, event: Event) {
+    if (!skillId) {
+      return
+    }
+
+    const checked = (event.target as HTMLInputElement).checked
+    this.selectedSkillIds.update((selected) => {
+      const next = new Set(selected)
+      if (checked) {
+        next.add(skillId)
+      } else {
+        next.delete(skillId)
+      }
+      return next
+    })
+  }
+
+  deleteSelectedSkills() {
+    const workspaceId = this.workspace()?.id
+    if (!workspaceId) {
+      return
+    }
+
+    const ids = Array.from(this.selectedSkillIds())
+    if (!ids.length) {
+      return
+    }
+
+    this.confirmDelete(
+      {
+        title: this.#translate.instant('PAC.Skill.DeleteSkillPackageTitle', {
+          Default: 'Delete Skill Package'
+        }),
+        value: this.#translate.instant('PAC.Skill.SelectedSkillPackages', {
+          Default: `${ids.length} selected`,
+          count: ids.length
+        }),
+        information: this.#translate.instant('PAC.Skill.DeleteSkillPackageInfo', {
+          Default: 'Are you sure you want to delete this skill package? This action cannot be undone.'
+        })
+      },
+      () => {
+        this.#loading.set(true)
+        return forkJoin(ids.map((id) => this.skillPackageAPI.uninstallPackageInWorkspace(workspaceId, id)))
+      }
+    ).subscribe({
+      next: () => {
+        this.#loading.set(false)
+        this.selectedSkillIds.set(new Set())
+        this.#toastr.success(
+          this.#translate.instant('PAC.Skill.SkillPackagesDeleted', {
+            Default: 'Selected Skill Packages Deleted'
+          })
+        )
+        this.#skillsResource.reload()
+      },
+      error: (error) => {
+        this.#loading.set(false)
+        this.#toastr.danger(getErrorMessage(error))
+      }
+    })
+  }
+
+  private translateDefault(key: string, fallback: string) {
+    const result = this.#translate.instant(key, { Default: fallback })
+    return !result || result === key ? fallback : result
+  }
+
+  private markDownloadingSkill(skillId: string, downloading: boolean) {
+    this.downloadingSkillIds.update((ids) => {
+      const next = new Set(ids)
+      if (downloading) {
+        next.add(skillId)
+      } else {
+        next.delete(skillId)
+      }
+      return next
+    })
+  }
+
+  setWorkbenchPane(pane: 'tree' | 'file') {
+    this.mobilePane.set(pane)
+  }
+}
+
+function triggerSkillPackageDownload(blob: Blob, fileName: string) {
+  const anchor = document.createElement('a')
+  const objectUrl = URL.createObjectURL(blob)
+  anchor.href = objectUrl
+  anchor.download = fileName
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(objectUrl)
+}
+
+function toDownloadFileName(value: string) {
+  return value.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'skill'
+}
+
+function readI18nText(value: unknown) {
+  if (!value) {
+    return ''
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (isObjectValue(value)) {
+    return readStringProperty(value, 'zh_Hans') || readStringProperty(value, 'en_US')
+  }
+  return ''
+}
+
+function readGithubProvenanceText(metadata: ISkillPackage['metadata'] | null | undefined, key: string): string {
+  const provenance = metadata?.provenance
+  if (!isObjectValue(provenance)) {
+    return ''
+  }
+
+  const sourceProvider = readStringProperty(provenance, 'sourceProvider')
+  if (sourceProvider !== 'github') {
+    return ''
+  }
+
+  return readStringProperty(provenance, key)
+}
+
+function readStringProperty(value: object, key: string): string {
+  const property = Reflect.get(value, key)
+  return typeof property === 'string' ? property.trim() : ''
+}
+
+function isObjectValue(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}

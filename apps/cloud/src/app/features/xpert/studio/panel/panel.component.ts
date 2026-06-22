@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common'
 import { Component, computed, HostListener, inject, model, signal } from '@angular/core'
 import { listFadeIn } from 'apps/cloud/src/app/@core'
 import { SelectionService } from '../domain'
+import { XpertExecutionService } from '../services/execution.service'
 import { XpertStudioComponent } from '../studio.component'
 import { XpertStudioPanelExecutionComponent } from './execution/execution.component'
 import { XpertStudioPanelKnowledgeComponent } from './knowledge/knowledge.component'
@@ -13,6 +14,7 @@ import { XpertStudioPanelWorkflowComponent } from './workflow/workflow.component
 import { XpertStudioPanelAgentComponent } from './xpert-agent/agent.component'
 import { XpertStudioPanelXpertComponent } from './xpert/xpert.component'
 import { XpertStudioPanelEnvironmentComponent } from './environment/environment.component'
+import { XpertStudioPanelCommandsComponent } from './commands/commands.component'
 
 @Component({
   selector: 'xpert-studio-panel',
@@ -28,7 +30,8 @@ import { XpertStudioPanelEnvironmentComponent } from './environment/environment.
     XpertStudioPanelExecutionComponent,
     XpertStudioPanelVariablesComponent,
     XpertStudioPanelWorkflowComponent,
-    XpertStudioPanelEnvironmentComponent
+    XpertStudioPanelEnvironmentComponent,
+    XpertStudioPanelCommandsComponent
   ],
   templateUrl: './panel.component.html',
   styleUrl: './panel.component.scss',
@@ -37,11 +40,11 @@ import { XpertStudioPanelEnvironmentComponent } from './environment/environment.
 export class XpertStudioPanelComponent {
   readonly studioComponent = inject(XpertStudioComponent)
   readonly selectionService = inject(SelectionService)
-
+  readonly executionService = inject(XpertExecutionService)
 
   // Inputs
-  readonly sidePanel = model<'preview' | 'variables' | 'environments'>(null)
-  readonly executionId = model<string>()
+  readonly sidePanel = model<'preview' | 'variables' | 'environments' | 'commands'>(null)
+  readonly executionId = this.executionService.panelExecutionId
 
   // States
   readonly selectedNodes = computed(() => {
@@ -62,7 +65,7 @@ export class XpertStudioPanelComponent {
   }
 
   closeExecution() {
-    this.executionId.set(null)
+    this.executionService.selectPanelExecution(null)
   }
 
   onResized() {}

@@ -1,9 +1,10 @@
+@reference "../../../styles/tailwind-reference.css";
 :host {
   @apply relative;
 }
 
 .ping-badge {
   span {
-    background-color: var(--ngm-color-secondary);
+    background-color: var(--color-components-accent-indicator-bg);
   }
 }

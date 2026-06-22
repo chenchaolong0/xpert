@@ -1,9 +1,9 @@
 @use 'sass:map';
 @use 'sass:color';
-@use '@angular/material' as mat;
+@use 'packages/angular/core/style/runtime-theme' as themeCompat;
 
 @mixin color($config-or-theme) {
-  $config: mat.get-color-config($config-or-theme);
+  $config: themeCompat.m2-get-color-config($config-or-theme);
   $background: map.get($config, background);
   $foreground: map.get($config, foreground);
   $primary: map.get($config, primary);
@@ -14,33 +14,33 @@
     .pac-filter-tree__line {
       width: 0.5rem;
       min-width: 0.5rem;
-      margin-right: .5rem;
+      margin-right: 0.5rem;
       outline-style: none;
       border-radius: 0.25rem;
       cursor: pointer;
     }
 
     .pac-filter-tree__line--and {
-      background: mat.get-color-from-palette($primary, 200);
+      background: themeCompat.m2-get-color-from-palette($primary, 200);
 
       &-selected {
-        background: mat.get-color-from-palette($primary, 300);
+        background: themeCompat.m2-get-color-from-palette($primary, 300);
       }
 
       &:focus {
-        box-shadow: inset 0 0 0 2px mat.get-color-from-palette($primary, 300);
+        box-shadow: inset 0 0 0 2px themeCompat.m2-get-color-from-palette($primary, 300);
       }
     }
 
     .pac-filter-tree__line--or {
-      background: mat.get-color-from-palette($accent, 200);
+      background: themeCompat.m2-get-color-from-palette($accent, 200);
 
       &-selected {
-        background-color: mat.get-color-from-palette($accent, 300);
+        background-color: themeCompat.m2-get-color-from-palette($accent, 300);
       }
 
       &:focus {
-        box-shadow: inset 0 0 0 2px mat.get-color-from-palette($accent, 300);
+        box-shadow: inset 0 0 0 2px themeCompat.m2-get-color-from-palette($accent, 300);
       }
     }
 
@@ -50,7 +50,7 @@
     }
 
     .pac-filter-tree__buttons {
-      margin-top: .5rem;
+      margin-top: 0.5rem;
     }
 
     .pac-filter-tree__expression-item {
@@ -62,19 +62,20 @@
       + .pac-filter-tree,
       + .pac-filter-tree__inputs,
       + .pac-filter-tree__expression-item {
-        margin-top: .5rem;
+        margin-top: 0.5rem;
       }
     }
 
-    .pac-filter-tree__expression-column, .pac-filter-tree__expression-condition {
-      margin-right: .5rem;
+    .pac-filter-tree__expression-column,
+    .pac-filter-tree__expression-condition {
+      margin-right: 0.5rem;
     }
 
     .pac-filter-legend__item {
       position: relative;
       display: inline-flex;
       align-items: center;
-      font-size: .75rem;
+      font-size: 0.75rem;
 
       &::before {
         content: '';
@@ -91,11 +92,11 @@
     }
 
     .pac-filter-legend__item--and::before {
-      background: mat.get-color-from-palette($primary, 300);
+      background: themeCompat.m2-get-color-from-palette($primary, 300);
     }
 
     .pac-filter-legend__item--or::before {
-      background: mat.get-color-from-palette($accent, 300);
+      background: themeCompat.m2-get-color-from-palette($accent, 300);
     }
   }
 }
@@ -106,20 +107,20 @@
 @mixin density($config-or-theme) {
   .ngm-advanced-filter {
     .pac-filter-tree {
-      margin-top: .5rem;
+      margin-top: 0.5rem;
     }
 
     .pac-filter-tree__inputs-actions {
-      margin: 0 .5rem;
+      margin: 0 0.5rem;
     }
   }
 
 }
 
 @mixin theme($theme) {
-  $color: mat.get-color-config($theme);
-  $density: mat.get-density-config($theme);
-  $typography: mat.get-typography-config($theme);
+  $color: themeCompat.m2-get-color-config($theme);
+  $density: themeCompat.m2-get-density-config($theme);
+  $typography: themeCompat.m2-get-typography-config($theme);
 
   @if $color != null {
     @include color($color);

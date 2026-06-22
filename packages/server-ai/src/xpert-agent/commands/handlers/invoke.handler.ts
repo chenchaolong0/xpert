@@ -9,8 +9,14 @@ import {
     KnowledgeTask,
     LanguagesEnum,
     mapTranslationLanguage,
+    STATE_SYS_AGENT_WORKSPACE_PATH,
+    STATE_SYS_MEMORY_WORKSPACE_PATH,
+    STATE_SYS_SESSION_WORKSPACE_PATH,
+    STATE_SYS_SHARED_WORKSPACE_PATH,
+    STATE_SYS_THREAD_ID,
     STATE_SYS_VOLUME,
     STATE_SYS_WORKSPACE_PATH,
+    STATE_SYS_WORKSPACE_ROOT,
     STATE_SYS_WORKSPACE_URL,
     STATE_VARIABLE_HUMAN,
     STATE_VARIABLE_SYS,
@@ -19,28 +25,38 @@ import {
     TXpertAgentConfig,
     XpertAgentExecutionStatusEnum,
     figureOutXpert,
+    getXpertAgentRecursionLimit,
     IXpert
-} from '@metad/contracts'
-import { AgentRecursionLimit, isNil } from '@metad/copilot'
-import { RequestContext } from '@metad/server-core'
-import { getErrorMessage, omit } from '@metad/server-common'
+} from '@xpert-ai/contracts'
+import { isNil } from '@xpert-ai/copilot'
+import { RequestContext } from '@xpert-ai/server-core'
+import { getErrorMessage, omit } from '@xpert-ai/server-common'
 import { Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
+import { InjectRepository } from '@nestjs/typeorm'
 import { format } from 'date-fns/format'
 import { pick } from 'lodash'
 import { I18nService } from 'nestjs-i18n'
 import { catchError, concat, filter, from, map, Observable, of, switchMap, tap } from 'rxjs'
+import { Repository } from 'typeorm'
 import { CopilotCheckpointSaver, GetCopilotCheckpointsByParentQuery } from '../../../copilot-checkpoint'
+import { ChatMessage } from '../../../chat-message/chat-message.entity'
 import { XpertAgentExecutionUpsertCommand } from '../../../xpert-agent-execution/commands'
 import { createMapStreamEvents } from '../../agent'
 import { CompleteToolCallsQuery } from '../../queries'
 import { CompileGraphCommand } from '../compile-graph.command'
 import { XpertAgentInvokeCommand } from '../invoke.command'
-import { EnvironmentService } from '../../../environment'
-import { getWorkspace, VolumeClient, ExecutionCancelService } from '../../../shared'
+import {
+    EnvironmentService,
+    getContextEnvState,
+    mergeEnvironmentWithEnvState,
+    mergeRuntimeContextWithEnv
+} from '../../../environment'
+import { ExecutionCancelService, isPlanModeEnabledFromState, XpertWorkAreaResolver } from '../../../shared'
 import { KnowledgebaseTaskService, KnowledgeTaskServiceQuery } from '../../../knowledgebase'
 import { validateXpertParameterValues } from '../../../shared/agent/parameter'
 import { SandboxAcquireBackendCommand } from '../../../sandbox/commands'
+import { applicationTracing } from '../../../tracing'
 
 @CommandHandler(XpertAgentInvokeCommand)
 export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvokeCommand> {
@@ -52,8 +68,42 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
         private readonly checkpointSaver: CopilotCheckpointSaver,
         private readonly envService: EnvironmentService,
         private readonly i18nService: I18nService,
-        private readonly executionCancelService: ExecutionCancelService
+        private readonly executionCancelService: ExecutionCancelService,
+        private readonly workAreaResolver: XpertWorkAreaResolver,
+        @InjectRepository(ChatMessage)
+        private readonly chatMessageRepository: Repository<ChatMessage>
     ) {}
+
+    private async downgradePendingSteerFollowUpsToQueue(conversationId?: string, executionId?: string) {
+        if (!conversationId || !executionId) {
+            return []
+        }
+
+        const pendingMessages = await this.chatMessageRepository.find({
+            where: {
+                conversationId,
+                targetExecutionId: executionId,
+                followUpMode: 'steer',
+                followUpStatus: 'pending'
+            },
+            order: {
+                createdAt: 'ASC'
+            }
+        })
+
+        if (!pendingMessages.length) {
+            return []
+        }
+
+        await this.chatMessageRepository.save(
+            pendingMessages.map((message) => ({
+                ...message,
+                followUpMode: 'queue' as const
+            }))
+        )
+
+        return pendingMessages.map((message) => message.id).filter((id): id is string => Boolean(id))
+    }
 
     public async execute(command: XpertAgentInvokeCommand): Promise<Observable<MessageContent>> {
         const { state, agentKeyOrName, xpert, options } = command
@@ -62,12 +112,17 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
         const organizationId = RequestContext.getOrganizationId()
         const userId = RequestContext.currentUserId()
         const user = RequestContext.currentUser()
+        if (!tenantId) {
+            throw new Error('Xpert workspace requires tenantId')
+        }
+        if (!userId) {
+            throw new Error('Xpert workspace requires userId')
+        }
         const mute = [] as TXpertAgentConfig['mute']
         let unmutes = [] as TXpertAgentConfig['mute']
         const threadId = options.thread_id
-        const workspacePath = await VolumeClient.getWorkspacePath(tenantId, options.projectId, userId, threadId)
-        const workspaceUrl = VolumeClient.getWorkspaceUrl(options.projectId, userId, threadId)
         const latestXpert = figureOutXpert(xpert as IXpert, options?.isDraft)
+        const workspaceXpertId = resolveWorkspaceXpertId(latestXpert, xpert)
         const sandboxFeature = latestXpert.features?.sandbox
         const sandboxEnvironmentId = options?.sandboxEnvironmentId
         const sandboxWorkFor = {
@@ -76,6 +131,18 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
         } as const
         const hasSandboxWorkForId = Boolean(sandboxWorkFor.id)
         const hasExplicitSandboxEnvironment = sandboxWorkFor.type === 'environment' && hasSandboxWorkForId
+        const workArea = await this.workAreaResolver.resolve({
+            tenantId,
+            userId,
+            provider: sandboxFeature?.provider,
+            xpertId: workspaceXpertId,
+            projectId: options.projectId,
+            conversationId: options.conversationId,
+            environmentId: sandboxEnvironmentId
+        })
+        const volumeScope = workArea.volumeScope
+        const initialWorkspaceBinding =
+            hasSandboxWorkForId && sandboxFeature?.provider ? workArea.workspaceBinding : null
         let sandboxContext: TSandboxConfigurable | null = null
 
         if (hasSandboxWorkForId && (sandboxFeature?.enabled || hasExplicitSandboxEnvironment)) {
@@ -83,29 +150,39 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                 sandboxContext = await this.commandBus.execute(
                     new SandboxAcquireBackendCommand({
                         provider: sandboxFeature?.provider,
-                        workingDirectory: sandboxEnvironmentId ? null : workspacePath,
+                        workingDirectory: initialWorkspaceBinding?.workspacePath,
+                        workspaceBinding: initialWorkspaceBinding ?? undefined,
+                        volumeScope,
                         tenantId,
                         workFor: sandboxWorkFor
                     })
                 )
             } catch (err) {
                 this.#logger.warn(`Sandbox backend acquire failed: ${getErrorMessage(err)}`)
+                throw err
             }
         }
+        const volumePath = workArea.volumePath
+        const workspacePath =
+            sandboxContext?.workingDirectory ?? initialWorkspaceBinding?.workspacePath ?? workArea.workingDirectory
+        const workspaceUrl = workArea.workspaceUrl
 
         // Env
         if (!options.environment && xpert.environmentId) {
             const environment = await this.envService.findOne(xpert.environmentId)
             options.environment = environment
         }
+        options.environment = mergeEnvironmentWithEnvState(options.environment, getContextEnvState(options.context))
 
         const abortController = new AbortController()
         if (execution?.id) {
             this.executionCancelService.register(execution.id, abortController)
         }
+        const planMode = options.planMode === true || isPlanModeEnabledFromState(state)
         const { graph, agent, xpertGraph } = await this.commandBus.execute(
             new CompileGraphCommand(agentKeyOrName, xpert, {
                 ...options,
+                planMode,
                 execution,
                 rootController: abortController,
                 signal: abortController.signal,
@@ -197,6 +274,24 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
         }
 
         const languageCode = options.language || user.preferredLanguage || 'en-US'
+        const runtimeContext = withHumanInputFileContext(
+            mergeRuntimeContextWithEnv(options.context, options.environment),
+            state?.[STATE_VARIABLE_HUMAN]?.files
+        )
+        const runtimeSystemState = buildRuntimeSystemState(state?.[STATE_VARIABLE_SYS], {
+            language: languageCode,
+            userEmail: user.email,
+            timezone: user.timeZone || options.timeZone,
+            threadId,
+            volume: volumePath,
+            workspacePath,
+            workspaceUrl,
+            workspaceRoot: workArea.workspaceRoot,
+            sharedWorkspacePath: workArea.sharedPath?.workspacePath,
+            agentWorkspacePath: workArea.agentPath?.workspacePath,
+            sessionWorkspacePath: workArea.sessionPath?.workspacePath,
+            memoryWorkspacePath: workArea.memoryPath?.workspacePath
+        })
         let graphInput = null
         const interruptCommand = toInterruptCommand(options.resume)
         if (options.resume) {
@@ -214,9 +309,18 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                 await this.updateToolCalls(graph, config, commandPayload)
             }
             if (shouldRejectResumeWithGraph(options.resume)) {
+                await graph.updateState(
+                    { configurable: config },
+                    {
+                        [STATE_VARIABLE_SYS]: runtimeSystemState
+                    }
+                )
                 await this.reject(graph, config, commandPayload)
             } else {
-                graphInput = new Command(pick(commandPayload, 'resume', 'update'))
+                graphInput = new Command({
+                    ...pick(commandPayload, 'resume'),
+                    update: mergeCommandUpdateWithSystemState(commandPayload.update, runtimeSystemState)
+                })
             }
         } else if (state[STATE_VARIABLE_HUMAN]) {
             // English note: Validate human-provided parameter values before building graph input.
@@ -225,14 +329,12 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
             if (options.checkpointId) {
                 // Replay from the saved checkpoint state instead of submitting a fresh input.
                 // This matches LangGraph time-travel semantics and avoids injecting a new HumanMessage on retry.
-                graphInput = null
-            } else {
-                const volumeClient = new VolumeClient({
-                    tenantId,
-                    catalog: 'users',
-                    userId,
-                    projectId: options.projectId
+                graphInput = new Command({
+                    update: {
+                        [STATE_VARIABLE_SYS]: runtimeSystemState
+                    }
                 })
+            } else {
                 graphInput = {
                     ...(state ?? {}),
                     ...omit(state[STATE_VARIABLE_HUMAN], 'input', 'files'),
@@ -240,18 +342,7 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                      * @deprecated use `human.input` instead
                      */
                     input: state[STATE_VARIABLE_HUMAN].input,
-                    [STATE_VARIABLE_SYS]: {
-                        language: languageCode,
-                        user_email: user.email,
-                        timezone: user.timeZone || options.timeZone,
-                        date: format(new Date(), 'yyyy-MM-dd'),
-                        datetime: new Date().toLocaleString(),
-                        [STATE_SYS_VOLUME]: volumeClient.getVolumePath(
-                            getWorkspace(options.projectId, options.conversationId)
-                        ),
-                        [STATE_SYS_WORKSPACE_PATH]: workspacePath,
-                        [STATE_SYS_WORKSPACE_URL]: workspaceUrl
-                    },
+                    [STATE_VARIABLE_SYS]: runtimeSystemState,
                     [STATE_VARIABLE_HUMAN]: {
                         ...state[STATE_VARIABLE_HUMAN]
                     },
@@ -260,7 +351,8 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
             }
         }
 
-        const recursionLimit = team.agentConfig?.recursionLimit ?? AgentRecursionLimit
+        const recursionLimit = getXpertAgentRecursionLimit(team.agentConfig)
+        const rootExecutionId = options.rootExecutionId ?? execution.id
         const contentStream = from(
             graph.streamEvents(graphInput, {
                 version: 'v2',
@@ -271,10 +363,13 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                     language: languageCode,
                     userId,
                     executionId: execution.id,
+                    rootExecutionId,
                     xpertId: xpert.id,
                     agentKey: agent.key, // @todo In swarm mode, it needs to be taken from activeAgent
+                    rootAgentKey: agent.key,
                     sandbox: sandboxContext,
                     copilotModel,
+                    ...(runtimeContext ? { context: runtimeContext } : {}),
                     /**
                      * @deprecated use customEvents instead
                      */
@@ -282,6 +377,11 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                 },
                 recursionLimit,
                 maxConcurrency: team.agentConfig?.maxConcurrency,
+                metadata: {
+                    agentKey: agent.key,
+                    executionId: execution.id,
+                    rootExecutionId
+                },
                 signal: abortController.signal
                 // debug: true
             })
@@ -297,6 +397,7 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                     (async () => {
                         // Record last state when exception
                         await recordLastState()
+                        await this.downgradePendingSteerFollowUpsToQueue(options.conversationId, execution?.id)
                         // Translate recursion limit error
                         if (err instanceof GraphRecursionError) {
                             const recursionLimitReached = await this.i18nService.t(
@@ -315,7 +416,7 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
             )
         )
 
-        return concat(
+        const stream = concat(
             contentStream,
             of(1).pipe(
                 // Then do the final async work after the graph events stream
@@ -325,6 +426,8 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
 
                     // Interrupted event
                     if (state.tasks?.length) {
+                        // Has bugs
+                        console.error(`Interrupting for tool calls:`, state.tasks)
                         const operation = await this.queryBus.execute(
                             new CompleteToolCallsQuery(xpert.id, state.tasks, state.values, options.isDraft)
                         )
@@ -337,6 +440,7 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                         } as MessageEvent)
                         throw new NodeInterrupt(`Confirm tool calls`)
                     }
+                    await this.downgradePendingSteerFollowUpsToQueue(options.conversationId, execution?.id)
                     return null
                 })
             )
@@ -377,6 +481,7 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                                 error: 'Aborted!'
                             })
                         )
+                        await this.downgradePendingSteerFollowUpsToQueue(options.conversationId, execution?.id)
                     } catch (err) {
                         //
                     }
@@ -390,6 +495,15 @@ export class XpertAgentInvokeHandler implements ICommandHandler<XpertAgentInvoke
                 }
             })
         )
+
+        return applicationTracing.traceObservable(stream, 'agent.invoke', {
+            'execution.id': execution.id,
+            'root.execution.id': rootExecutionId,
+            'agent.key': agent.key,
+            'thread.id': thread_id,
+            'xpert.id': xpert.id,
+            'sandbox.enabled': Boolean(sandboxContext)
+        })
     }
 
     /**
@@ -489,4 +603,88 @@ function toInterruptCommand(resume?: TResumeCommand | null): TInterruptCommand |
 
 function shouldRejectResumeWithGraph(resume?: TResumeCommand | null): boolean {
     return resume?.decision.type === 'reject' && resume.decision.payload === undefined
+}
+
+function withHumanInputFileContext(context: Record<string, unknown> | null | undefined, files: unknown) {
+    if (!Array.isArray(files) || !files.length) {
+        return context
+    }
+
+    const base = context ?? {}
+    const humanInput = isRecord(base.humanInput) ? base.humanInput : {}
+    return {
+        ...base,
+        humanInput: {
+            ...humanInput,
+            files
+        }
+    }
+}
+
+function buildRuntimeSystemState(
+    existingSystemState: unknown,
+    options: {
+        language: string
+        userEmail?: string
+        timezone?: string
+        threadId?: string
+        volume?: string
+        workspacePath?: string
+        workspaceUrl?: string
+        workspaceRoot?: string
+        sharedWorkspacePath?: string
+        agentWorkspacePath?: string
+        sessionWorkspacePath?: string
+        memoryWorkspacePath?: string
+    }
+) {
+    const currentSystemState = isRecord(existingSystemState) ? existingSystemState : {}
+    const now = new Date()
+
+    return {
+        ...currentSystemState,
+        language: options.language,
+        user_email: options.userEmail,
+        timezone: options.timezone,
+        date: format(now, 'yyyy-MM-dd'),
+        datetime: now.toLocaleString(),
+        [STATE_SYS_THREAD_ID]: options.threadId,
+        [STATE_SYS_VOLUME]: options.volume,
+        [STATE_SYS_WORKSPACE_PATH]: options.workspacePath,
+        [STATE_SYS_WORKSPACE_URL]: options.workspaceUrl,
+        [STATE_SYS_WORKSPACE_ROOT]: options.workspaceRoot,
+        [STATE_SYS_SHARED_WORKSPACE_PATH]: options.sharedWorkspacePath,
+        [STATE_SYS_AGENT_WORKSPACE_PATH]: options.agentWorkspacePath,
+        [STATE_SYS_SESSION_WORKSPACE_PATH]: options.sessionWorkspacePath,
+        [STATE_SYS_MEMORY_WORKSPACE_PATH]: options.memoryWorkspacePath
+    }
+}
+
+function mergeCommandUpdateWithSystemState(update: unknown, systemState: Record<string, any>) {
+    const currentUpdate = isRecord(update) ? update : {}
+    const currentSystemState = isRecord(currentUpdate[STATE_VARIABLE_SYS]) ? currentUpdate[STATE_VARIABLE_SYS] : {}
+
+    return {
+        ...currentUpdate,
+        [STATE_VARIABLE_SYS]: {
+            ...currentSystemState,
+            ...systemState
+        }
+    }
+}
+
+function resolveWorkspaceXpertId(
+    latestXpert: Partial<IXpert> | null | undefined,
+    xpert: Partial<IXpert> | null | undefined
+) {
+    const candidate = latestXpert?.id ?? xpert?.id
+    if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate
+    }
+
+    throw new Error('Xpert workspace requires xpertId')
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+    return !!value && typeof value === 'object' && !Array.isArray(value)
 }

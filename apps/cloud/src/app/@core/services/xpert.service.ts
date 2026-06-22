@@ -1,7 +1,19 @@
 import { computed, inject, Injectable } from '@angular/core'
 import { SearchItem } from '@langchain/langgraph-checkpoint'
-import { injectXpertPreferences, LanguagesEnum, LongTermMemoryTypeEnum, PaginationParams, TCopilotStore, timeRangeToParams, TMemoryQA, TMemoryUserProfile, toHttpParams, TSandboxProviderMeta, TWorkflowTriggerMeta } from '@metad/cloud/state'
-import { toParams } from '@metad/ocap-angular/core'
+import {
+  injectXpertPreferences,
+  LanguagesEnum,
+  LongTermMemoryTypeEnum,
+  PaginationParams,
+  TCopilotStore,
+  timeRangeToParams,
+  TMemoryQA,
+  TMemoryUserProfile,
+  toHttpParams,
+  TSandboxProviderMeta,
+  TWorkflowTriggerMeta
+} from '@xpert-ai/cloud/state'
+import { toParams } from '@xpert-ai/ocap-angular/core'
 import { HttpErrorResponse, HttpParams } from '@angular/common/http'
 import { derivedFrom } from 'ngxtension/derived-from'
 import { NGXLogger } from 'ngx-logger'
@@ -13,7 +25,7 @@ import {
   IChatMessageFeedback,
   ICopilotStore,
   IIntegration,
-  IUser,
+  IUserGroup,
   IXpert,
   IXpertAgentExecution,
   OrderTypeEnum,
@@ -23,30 +35,47 @@ import {
   TChatOptions,
   TChatRequest,
   TDeleteResult,
+  TXpertExportedTemplate,
+  TXpertCommandProfile,
   TWorkflowVarGroup,
   TXpertTeamDraft,
   XpertTypeEnum
 } from '../types'
 import { injectFetchEventSource } from './fetch-event-source'
+import { appendOrganizationIdQueryParam } from './query-params'
 import { XpertWorkspaceBaseCrudService } from './xpert-workspace.service'
-
+import type { IAiAssistantRuntimeCapabilities } from './ai-assistant.service'
 
 export type TXpertVariablesOptions = {
-  environmentId: string;
-  xpertId: string;
-  workflowKey?: string;
-  agentKey?: string;
-  type?: 'input' | 'output';
-  isDraft?: boolean;
-  connections: string[];
-  inputs?: string[];
+  environmentId: string
+  xpertId: string
+  workflowKey?: string
+  agentKey?: string
+  type?: 'input' | 'output'
+  isDraft?: boolean
+  connections: string[]
+  inputs?: string[]
+  revision?: number
+}
+
+type StatisticsFilters = {
+  model?: string | null
+  userId?: string | null
+}
+
+export type TPublicChatkitSession = {
+  client_secret: string
+  expires_at: string | Date
+  expires_after: number
+  xpertId: string
+  assistantId: string
+  organizationId?: string | null
 }
 
 export type TSandboxProvider = {
   type: string
   meta: TSandboxProviderMeta
 }
-
 
 @Injectable({ providedIn: 'root' })
 export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
@@ -85,9 +114,9 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
   }
 
   getVersions(id: string) {
-    return this.httpClient.get<{ id: string; version: string; latest: boolean; publishAt: Date; releaseNotes: string }[]>(
-      this.apiBaseUrl + `/${id}/version`
-    )
+    return this.httpClient.get<
+      { id: string; version: string; latest: boolean; publishAt: Date; releaseNotes: string }[]
+    >(this.apiBaseUrl + `/${id}/version`)
   }
 
   setAsLatest(id: string) {
@@ -98,11 +127,36 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     return this.httpClient.post<TXpertTeamDraft>(this.apiBaseUrl + `/${id}/draft`, draft)
   }
 
+  getCommandProfile(id: string) {
+    return this.httpClient.get<{
+      profile: TXpertCommandProfile
+      runtime: {
+        hasProfile: boolean
+        xpertCommands: unknown[]
+        workspaceCommands: unknown[]
+        preferredSkillEntries?: unknown[]
+        skillEntries: unknown[]
+      }
+    }>(this.apiBaseUrl + `/${id}/commands`)
+  }
+
+  getRuntimeCapabilities(id: string, options?: { isDraft?: boolean }) {
+    const params = options?.isDraft == null ? undefined : new HttpParams().set('isDraft', String(options.isDraft))
+
+    return this.httpClient.get<IAiAssistantRuntimeCapabilities>(this.apiBaseUrl + `/${id}/runtime-capabilities`, {
+      params
+    })
+  }
+
+  updateCommandProfile(id: string, profile: TXpertCommandProfile) {
+    return this.httpClient.put<TXpertTeamDraft>(this.apiBaseUrl + `/${id}/commands`, profile)
+  }
+
   upadteDraft(id: string, draft: TXpertTeamDraft) {
     return this.httpClient.put<TXpertTeamDraft>(this.apiBaseUrl + `/${id}/draft`, draft)
   }
 
-  publish(id: string, newVersion: boolean, body: {environmentId: string; releaseNotes: string}) {
+  publish(id: string, newVersion: boolean, body: { environmentId?: string | null; releaseNotes: string }) {
     return this.httpClient.post<IXpert>(this.apiBaseUrl + `/${id}/publish`, body, {
       params: new HttpParams().append('newVersion', newVersion)
     })
@@ -132,12 +186,12 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     if (agentKey) {
       params = params.append('agentKey', agentKey)
     }
-    return this.httpClient.get(this.apiBaseUrl + `/${id}/diagram`, {
-      params,
-      responseType: 'blob',
-    }).pipe(
-      catchError((error: HttpErrorResponse) => handleError(error))
-    )
+    return this.httpClient
+      .get(this.apiBaseUrl + `/${id}/diagram`, {
+        params,
+        responseType: 'blob'
+      })
+      .pipe(catchError((error: HttpErrorResponse) => handleError(error)))
   }
 
   getExecutions(id: string, options?: PaginationParams<IXpertAgentExecution>) {
@@ -150,16 +204,16 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     return this.fetchEventSource(this.baseUrl + this.apiBaseUrl + `/${id}/chat`, JSON.stringify({ request, options }))
   }
 
-  getXpertManagers(id: string) {
-    return this.httpClient.get<IUser[]>(this.apiBaseUrl + `/${id}/managers`)
+  getXpertUserGroups(id: string, organizationId?: string) {
+    return this.httpClient.get<IUserGroup[]>(this.apiBaseUrl + `/${id}/user-groups`, {
+      params: appendOrganizationIdQueryParam(null, organizationId)
+    })
   }
 
-  updateXpertManagers(id: string, managers: string[]) {
-    return this.httpClient.put<IUser[]>(this.apiBaseUrl + `/${id}/managers`, managers)
-  }
-
-  removeXpertManager(id: string, userId: string) {
-    return this.httpClient.delete<void>(this.apiBaseUrl + `/${id}/managers/${userId}`)
+  updateXpertUserGroups(id: string, userGroupIds: string[], organizationId?: string) {
+    return this.httpClient.put<IUserGroup[]>(this.apiBaseUrl + `/${id}/user-groups`, userGroupIds, {
+      params: appendOrganizationIdQueryParam(null, organizationId)
+    })
   }
 
   getMyCopilots(relations?: string[]) {
@@ -170,15 +224,25 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     })
   }
 
-  exportDSL(id: string, params: {isDraft: boolean; includeMemory?: boolean}) {
+  exportDSL(id: string, params: { isDraft: boolean; includeMemory?: boolean }) {
     return this.httpClient.get<{ data: string }>(this.apiBaseUrl + `/${id}/export`, { params })
+  }
+
+  exportDSLAsTemplate(id: string, params: { isDraft: boolean; includeMemory?: boolean }) {
+    return this.httpClient
+      .post<TXpertExportedTemplate>(this.apiBaseUrl + `/${id}/export/template`, {}, { params })
+      .pipe(tap(() => this.refresh()))
+  }
+
+  deleteExportedTemplate(id: string) {
+    return this.httpClient.delete<void>(this.apiBaseUrl + `/${id}/export/template`).pipe(tap(() => this.refresh()))
   }
 
   importDSL(dslObject: Record<string, any>) {
     return this.httpClient.post<IXpert>(this.apiBaseUrl + `/import`, dslObject)
   }
 
-  duplicate(id: string, options: {basic: Partial<IXpert>; isDraft: boolean }) {
+  duplicate(id: string, options: { basic: Partial<IXpert>; isDraft: boolean }) {
     return this.httpClient.post<IXpert>(this.apiBaseUrl + `/${id}/duplicate`, options)
   }
 
@@ -190,17 +254,20 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     })
   }
 
-  addMemory(id: string, memory: {type: LongTermMemoryTypeEnum; value: TMemoryQA | TMemoryUserProfile}) {
+  addMemory(id: string, memory: { type: LongTermMemoryTypeEnum; value: TMemoryQA | TMemoryUserProfile }) {
     return this.httpClient.post<TCopilotStore>(this.apiBaseUrl + `/${id}/memory`, memory)
   }
-  bulkCreateMemories(id: string, body: { type: LongTermMemoryTypeEnum; memories: (TMemoryQA | TMemoryUserProfile)[]}) {
+  bulkCreateMemories(id: string, body: { type: LongTermMemoryTypeEnum; memories: (TMemoryQA | TMemoryUserProfile)[] }) {
     return this.httpClient.post(this.apiBaseUrl + `/${id}/memory/bulk`, body)
   }
   uploadAndParseCsv(id: string, type: LongTermMemoryTypeEnum, file: File) {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('type', type)
-    return this.httpClient.post<Array<TMemoryQA | TMemoryUserProfile>>(`${this.apiBaseUrl}/${id}/memory/bulk/upload`, formData)
+    return this.httpClient.post<Array<TMemoryQA | TMemoryUserProfile>>(
+      `${this.apiBaseUrl}/${id}/memory/bulk/upload`,
+      formData
+    )
   }
   searchMemory(id: string, body: { type: LongTermMemoryTypeEnum; text: string; isDraft: boolean }) {
     return this.httpClient.post<SearchItem[]>(this.apiBaseUrl + `/${id}/memory/search`, body)
@@ -209,11 +276,15 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
   clearMemory(id: string) {
     return this.httpClient.delete<TDeleteResult>(this.apiBaseUrl + `/${id}/memory`)
   }
-  
+
   /**
    * Get avaiable variables for agent or global variables
    */
-  getVariables(id: string, type: 'input' | 'output', options: {agentKey?: string; environmentId?: string; isDraft?: boolean; inputs?: string[]}) {
+  getVariables(
+    id: string,
+    type: 'input' | 'output',
+    options: { agentKey?: string; environmentId?: string; isDraft?: boolean; inputs?: string[] }
+  ) {
     const { agentKey, environmentId, isDraft, inputs } = options
     let params = new HttpParams()
     if (environmentId) {
@@ -228,14 +299,21 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     if (inputs?.length) {
       params = params.append('inputs', inputs.join(','))
     }
-    return agentKey ? this.httpClient.get<TWorkflowVarGroup[]>(this.apiBaseUrl + `/${id}/agent/${agentKey}/variables`, {params})
-    : this.httpClient.get<TWorkflowVarGroup[]>(this.apiBaseUrl + `/${id}/variables`, {params})
+    return agentKey
+      ? this.httpClient.get<TWorkflowVarGroup[]>(this.apiBaseUrl + `/${id}/agent/${agentKey}/variables`, { params })
+      : this.httpClient.get<TWorkflowVarGroup[]>(this.apiBaseUrl + `/${id}/variables`, { params })
   }
 
   /**
    * Get avaiable variables for workflow node
    */
-  getWorkflowVariables(id: string, nodeKey: string, type: 'input' | 'output', environmentId?: string, inputs?: string[]) {
+  getWorkflowVariables(
+    id: string,
+    nodeKey: string,
+    type: 'input' | 'output',
+    environmentId?: string,
+    inputs?: string[]
+  ) {
     let params = new HttpParams()
     if (environmentId) {
       params = params.append('environment', environmentId)
@@ -246,12 +324,20 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     if (type) {
       params = params.append('type', type)
     }
-    return this.httpClient.get<TWorkflowVarGroup[]>(this.apiBaseUrl + `/${id}/workflow/${nodeKey}/variables`, {params})
+    return this.httpClient.get<TWorkflowVarGroup[]>(this.apiBaseUrl + `/${id}/workflow/${nodeKey}/variables`, {
+      params
+    })
   }
 
   getNodeVariables(options: TXpertVariablesOptions) {
     if (options.workflowKey) {
-      return this.getWorkflowVariables(options.xpertId, options.workflowKey, options.type, options.environmentId, options.inputs)
+      return this.getWorkflowVariables(
+        options.xpertId,
+        options.workflowKey,
+        options.type,
+        options.environmentId,
+        options.inputs
+      )
     } else {
       return this.getVariables(options.xpertId, options.type, {
         agentKey: options.agentKey,
@@ -263,8 +349,13 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
   }
 
   getChatApp(slug: string) {
-    return this.httpClient.get<IXpert>(
-      this.apiBaseUrl + `/${slug}/app`,
+    return this.httpClient.get<IXpert>(this.apiBaseUrl + `/${slug}/app`, { withCredentials: true })
+  }
+
+  createPublicChatkitSession(identifier: string, currentClientSecret?: string | null) {
+    return this.httpClient.post<TPublicChatkitSession>(
+      this.apiBaseUrl + `/${encodeURIComponent(identifier)}/chatkit-session`,
+      { currentClientSecret },
       { withCredentials: true }
     )
   }
@@ -277,13 +368,24 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
     return this.httpClient.put<void>(this.apiBaseUrl + `/${id}/app`, app)
   }
 
-  // Conversations
-  getConversations(id: string, options: PaginationParams<IChatConversation>, timeRange: string[]) {
-    const params = toHttpParams(options)
+  ensurePrincipalUser(id: string) {
+    return this.httpClient.post<{ userId: string }>(this.apiBaseUrl + `/${id}/principal-user`, {})
+  }
 
-    return this.httpClient.get<{items: TChatConversationLog[]; total: number;}>(this.apiBaseUrl + `/${id}/conversations`, {
-      params: timeRangeToParams(params, timeRange)
-    })
+  // Conversations
+  getConversations(id: string, options: PaginationParams<IChatConversation>, timeRange: string[], search?: string) {
+    let params = toHttpParams(options)
+    const trimmedSearch = search?.trim()
+    if (trimmedSearch) {
+      params = params.set('search', trimmedSearch)
+    }
+
+    return this.httpClient.get<{ items: TChatConversationLog[]; total: number }>(
+      this.apiBaseUrl + `/${id}/conversations`,
+      {
+        params: timeRangeToParams(params, timeRange)
+      }
+    )
   }
 
   // Chat App
@@ -347,83 +449,114 @@ export class XpertAPIService extends XpertWorkspaceBaseCrudService<IXpert> {
   // Statistics
 
   getDailyConversations(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; count: number }[]>(this.apiBaseUrl + `/${id}/statistics/daily-conversations`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
-    })
+    return this.httpClient.get<{ date: string; count: number }[]>(
+      this.apiBaseUrl + `/${id}/statistics/daily-conversations`,
+      {
+        params: timeRangeToParams(new HttpParams(), timeRange)
+      }
+    )
   }
 
   getDailyEndUsers(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; count: number }[]>(this.apiBaseUrl + `/${id}/statistics/daily-end-users`, {
-      params: timeRangeToParams(new HttpParams(),timeRange)
-    })
+    return this.httpClient.get<{ date: string; count: number }[]>(
+      this.apiBaseUrl + `/${id}/statistics/daily-end-users`,
+      {
+        params: timeRangeToParams(new HttpParams(), timeRange)
+      }
+    )
   }
 
   getAverageSessionInteractions(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; count: number }[]>(this.apiBaseUrl + `/${id}/statistics/average-session-interactions`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
-    })
+    return this.httpClient.get<{ date: string; count: number }[]>(
+      this.apiBaseUrl + `/${id}/statistics/average-session-interactions`,
+      {
+        params: timeRangeToParams(new HttpParams(), timeRange)
+      }
+    )
   }
 
-  getDailyMessages(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; count: number }[]>(this.apiBaseUrl + `/${id}/statistics/daily-messages`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
-    })
+  getDailyMessages(id: string, timeRange: string[], options?: { currentUserOnly?: boolean }) {
+    let params = timeRangeToParams(new HttpParams(), timeRange)
+    if (options?.currentUserOnly != null) {
+      params = params.append('currentUserOnly', String(options.currentUserOnly))
+    }
+
+    return this.httpClient.get<{ date: string; count: number }[]>(
+      this.apiBaseUrl + `/${id}/statistics/daily-messages`,
+      {
+        params
+      }
+    )
   }
-  
+
   getStatisticsTokensPerSecond(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; count: number }[]>(this.apiBaseUrl + `/${id}/statistics/tokens-per-second`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
-    })
+    return this.httpClient.get<{ date: string; count: number }[]>(
+      this.apiBaseUrl + `/${id}/statistics/tokens-per-second`,
+      {
+        params: timeRangeToParams(new HttpParams(), timeRange)
+      }
+    )
   }
 
   getStatisticsTokenCost(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; tokens: number; price: number; model: string; currency: string;}[]>(this.apiBaseUrl + `/${id}/statistics/token-costs`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
-    })
+    return this.httpClient.get<{ date: string; tokens: number; price: number; model: string; currency: string }[]>(
+      this.apiBaseUrl + `/${id}/statistics/token-costs`,
+      {
+        params: timeRangeToParams(new HttpParams(), timeRange)
+      }
+    )
   }
-  
+
   getStatisticsUserSatisfactionRate(id: string, timeRange: string[]) {
-    return this.httpClient.get<{ date: string; tokens: number; price: number; model: string; currency: string;}[]>(
-      this.apiBaseUrl + `/${id}/statistics/user-satisfaction-rate`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
-    })
+    return this.httpClient.get<{ date: string; tokens: number; price: number; model: string; currency: string }[]>(
+      this.apiBaseUrl + `/${id}/statistics/user-satisfaction-rate`,
+      {
+        params: timeRangeToParams(new HttpParams(), timeRange)
+      }
+    )
   }
 
   getStatisticsXperts(timeRange: string[]) {
-    return this.httpClient.get<{ count: number;}[]>(
-      this.apiBaseUrl + `/statistics/xperts`, {
+    return this.httpClient.get<{ count: number }[]>(this.apiBaseUrl + `/statistics/xperts`, {
       params: timeRangeToParams(new HttpParams(), timeRange)
     })
   }
 
   getStatisticsXpertConv(timeRange: string[]) {
-    return this.httpClient.get<{ slug: string; count: number;}[]>(
-      this.apiBaseUrl + `/statistics/xpert-conversations`, {
+    return this.httpClient.get<{ slug: string; count: number }[]>(this.apiBaseUrl + `/statistics/xpert-conversations`, {
       params: timeRangeToParams(new HttpParams(), timeRange)
     })
   }
 
-  getStatisticsXpertMessages(timeRange: string[]) {
-    return this.httpClient.get<{ slug: string; count: number;}[]>(
-      this.apiBaseUrl + `/statistics/xpert-messages`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
+  getStatisticsXpertMessages(timeRange: string[], filters?: StatisticsFilters) {
+    return this.httpClient.get<{ slug: string; count: number }[]>(this.apiBaseUrl + `/statistics/xpert-messages`, {
+      params: this.statisticsParams(timeRange, filters)
     })
   }
 
-  getStatisticsXpertTokens(timeRange: string[]) {
-    return this.httpClient.get<{ slug: string; count: number;}[]>(
-      this.apiBaseUrl + `/statistics/xpert-tokens`, {
-      params: timeRangeToParams(new HttpParams(), timeRange)
+  getStatisticsXpertTokens(timeRange: string[], filters?: StatisticsFilters) {
+    return this.httpClient.get<{ slug: string; count: number }[]>(this.apiBaseUrl + `/statistics/xpert-tokens`, {
+      params: this.statisticsParams(timeRange, filters)
     })
   }
-  
+
   getStatisticsXpertIntegrations(timeRange: string[]) {
-    return this.httpClient.get<{ slug: string; count: number;}[]>(
-      this.apiBaseUrl + `/statistics/xpert-integrations`, {
+    return this.httpClient.get<{ slug: string; count: number }[]>(this.apiBaseUrl + `/statistics/xpert-integrations`, {
       params: timeRangeToParams(new HttpParams(), timeRange)
     })
   }
 
+  private statisticsParams(timeRange: string[], filters?: StatisticsFilters) {
+    let params = timeRangeToParams(new HttpParams(), timeRange)
+    if (filters?.model) {
+      params = params.set('model', filters.model)
+    }
+    if (filters?.userId) {
+      params = params.set('userId', filters.userId)
+    }
+
+    return params
+  }
 }
 
 export function injectXpertAPI() {
@@ -432,29 +565,29 @@ export function injectXpertAPI() {
 
 /**
  * Handle blob error response
- * 
- * @param error 
- * @returns 
+ *
+ * @param error
+ * @returns
  */
 function handleError(error: HttpErrorResponse): Observable<never> {
   if (error.error instanceof Blob) {
     return new Observable<never>((observer) => {
-      const reader = new FileReader();
+      const reader = new FileReader()
       reader.onload = () => {
         try {
-          const errorMessage = JSON.parse(reader.result as string);
-          observer.error(errorMessage);
+          const errorMessage = JSON.parse(reader.result as string)
+          observer.error(errorMessage)
         } catch (e) {
-          observer.error({ message: 'Unknown error', details: reader.result });
+          observer.error({ message: 'Unknown error', details: reader.result })
         }
-      };
+      }
       reader.onerror = () => {
-        observer.error({ message: 'Failed to read error response' });
-      };
-      reader.readAsText(error.error);
-    });
+        observer.error({ message: 'Failed to read error response' })
+      }
+      reader.readAsText(error.error)
+    })
   } else {
-    return throwError(() => error);
+    return throwError(() => error)
   }
 }
 
@@ -464,42 +597,42 @@ export function injectXperts() {
   const lang = injectLanguage()
 
   const _xperts = derivedFrom(
-      [
-        xpertService
-          .getMyAll({
-            relations: ['createdBy'],
-            where: { type: XpertTypeEnum.Agent, latest: true },
-            order: { createdAt: OrderTypeEnum.DESC }
-          })
-          .pipe(map(({ items }) => items)),
-        lang
-      ],
-      pipe(
-        map(([roles, lang]) => {
-          if ([LanguagesEnum.SimplifiedChinese, LanguagesEnum.Chinese].includes(lang as LanguagesEnum)) {
-            return roles?.map((role) => ({ ...role, title: role.titleCN || role.title }))
-          } else {
-            return roles
-          }
+    [
+      xpertService
+        .getMyAll({
+          relations: ['createdBy', 'workspace'],
+          where: { type: XpertTypeEnum.Agent, latest: true },
+          order: { createdAt: OrderTypeEnum.DESC }
         })
-      ),
-      { initialValue: null }
-    )
-    const _sortOrder = computed(() => preferences()?.sortOrder)
-  
-    const sortedXperts = computed(() => {
-      const xperts = _xperts()
-      const sortOrder = _sortOrder()
-      if (xperts && sortOrder) {
-        const sortOrderMap = new Map(sortOrder.map((id, index) => [id, index]))
-        return [...xperts].sort(
-          (a, b) =>
-            (sortOrderMap.get(a.id) ?? 0) - (sortOrderMap.get(b.id) ?? 0) ||
-            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-        )
-      }
-  
-      return xperts
-    })
+        .pipe(map(({ items }) => items)),
+      lang
+    ],
+    pipe(
+      map(([roles, lang]) => {
+        if ([LanguagesEnum.SimplifiedChinese, LanguagesEnum.Chinese].includes(lang as LanguagesEnum)) {
+          return roles?.map((role) => ({ ...role, title: role.titleCN || role.title }))
+        } else {
+          return roles
+        }
+      })
+    ),
+    { initialValue: null }
+  )
+  const _sortOrder = computed(() => preferences()?.sortOrder)
+
+  const sortedXperts = computed(() => {
+    const xperts = _xperts()
+    const sortOrder = _sortOrder()
+    if (xperts && sortOrder) {
+      const sortOrderMap = new Map(sortOrder.map((id, index) => [id, index]))
+      return [...xperts].sort(
+        (a, b) =>
+          (sortOrderMap.get(a.id) ?? 0) - (sortOrderMap.get(b.id) ?? 0) ||
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      )
+    }
+
+    return xperts
+  })
   return sortedXperts
 }

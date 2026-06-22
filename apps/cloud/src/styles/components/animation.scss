@@ -1,3 +1,4 @@
+@reference "tailwindcss";
 @layer components {
   .ngm-background-animate {
     background-size: 400%;
@@ -18,16 +19,16 @@
   }
 }
 
-@keyframes twinkling {
+@keyframes thinkingTwinkling {
   50% {
     opacity: 0;
-    transform: scale(.9);
+    transform: scale(0.9);
   }
 }
 
 @layer components {
   .thinking-placeholder {
-    @apply inline-block w-5 h-5 -mb-1 rounded-full bg-black dark:bg-white;
-    animation: twinkling 2000ms infinite linear;
+    @apply inline-block w-5 h-5 -mb-1 rounded-full bg-text-primary;
+    animation: thinkingTwinkling 2000ms infinite linear;
   }
 }

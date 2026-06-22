@@ -10,6 +10,7 @@ import { IXpertTask } from './xpert-task.model'
 import { TToolCall } from '../agent'
 import { TInterrupt } from '../agent/interrupt'
 import { IUser } from '../user.model'
+import type { RuntimeCapabilitiesSelection } from '@xpert-ai/chatkit-types'
 
 export type TChatConversationOptions = {
   parameters?: {
@@ -21,7 +22,13 @@ export type TChatConversationOptions = {
   features?: Array<'timeline' | 'sandbox' | 'files'>
   workspacePath?: string
   workspaceUrl?: string
+  workspaceRoot?: string
+  sharedWorkspacePath?: string
+  agentWorkspacePath?: string
+  sessionWorkspacePath?: string
+  memoryWorkspacePath?: string
   sandboxEnvironmentId?: string
+  runtimeCapabilities?: RuntimeCapabilitiesSelection
 }
 
 export type TChatConversationStatus = 'idle' | 'busy' | 'interrupted' | 'error'
@@ -127,13 +134,38 @@ export interface IChatConversation extends IBasePerTenantAndOrganizationEntityMo
   // One to Many
   executions?: IXpertAgentExecution[]
   /**
-   * Files
+   * @deprecated Conversation-level chat attachments are superseded by
+   * per-message `fileAssets` and `ConversationFileLink`.
    */
   attachments?: IStorageFile[]
 }
 
 export type TChatConversationLog = IChatConversation & {
   messageCount: number
+}
+
+export interface IChatConversationReadState extends IBasePerTenantAndOrganizationEntityModel {
+  conversationId: string
+  userId: string
+  lastReadAt: Date | string
+  lastReadMessageId?: string | null
+}
+
+export interface IChatConversationMarkReadRequest {
+  lastReadMessageId?: string | null
+}
+
+export interface IChatConversationUnreadXpertsRequest {
+  xpertIds: string[]
+}
+
+export interface IChatConversationUnreadXpertSummary {
+  xpertId: string
+  unreadMessages: number
+  unreadConversations: number
+  latestUnreadAt?: Date | string | null
+  latestUnreadConversationId?: string | null
+  latestUnreadThreadId?: string | null
 }
 
 // Types

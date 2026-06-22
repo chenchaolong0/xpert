@@ -2,9 +2,9 @@ import { CdkMenuModule } from '@angular/cdk/menu'
 import { Component, computed, inject, output } from '@angular/core'
 import { toObservable, toSignal } from '@angular/core/rxjs-interop'
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
-import { DynamicGridDirective, nonBlank } from '@metad/core'
-import { injectConfirmDelete, injectConfirmUnique } from '@metad/ocap-angular/common'
-import { AppearanceDirective } from '@metad/ocap-angular/core'
+import { DynamicGridDirective, nonBlank } from '@xpert-ai/core'
+import { injectConfirmDelete, injectConfirmUnique } from '@xpert-ai/ocap-angular/common'
+import { AppearanceDirective } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import { Dialog } from '@angular/cdk/dialog'
 import { BehaviorSubject, filter, map, switchMap } from 'rxjs'
@@ -63,6 +63,7 @@ export class XpertWorkspaceKnowledgesComponent {
   readonly organizationId$ = this.#store.selectOrganizationId()
 
   readonly workspace = this.homeComponent.workspace
+  readonly canWriteWorkspace = this.homeComponent.canWriteWorkspace
   readonly workspaceId = computed(() => this.workspace()?.id)
   readonly searchText = this.homeComponent.searchText
   readonly refresh$ = new BehaviorSubject<boolean>(true)
@@ -102,6 +103,10 @@ export class XpertWorkspaceKnowledgesComponent {
   }
 
   newKnowledgebase() {
+    if (!this.canWriteWorkspace()) {
+      return
+    }
+
     this.#dialog
       .open<IKnowledgebase>(XpertNewKnowledgeComponent, {
         data: {
@@ -118,10 +123,18 @@ export class XpertWorkspaceKnowledgesComponent {
   }
 
   edit(item: IKnowledgebase) {
+    if (!this.canWriteWorkspace()) {
+      return
+    }
+
     this.#router.navigate(['/xpert/knowledges/', item.id, 'configuration'])
   }
 
   remove(item: IKnowledgebase) {
+    if (!this.canWriteWorkspace()) {
+      return
+    }
+
     this.confirmDelete(
       {
         value: item.name,

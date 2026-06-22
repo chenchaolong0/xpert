@@ -1,6 +1,7 @@
 {
-  "name": "@metad/server-config",
-  "version": "3.8.4",
+  "name": "@xpert-ai/server-config",
+  "version": "3.9.0",
+  "private": true,
   "type": "commonjs",
   "license": "AGPL-3.0",
   "dependencies": {

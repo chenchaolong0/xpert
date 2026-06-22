@@ -1,7 +1,7 @@
 import { HttpParams } from '@angular/common/http'
 import { inject, Injectable } from '@angular/core'
 import { DocumentInterface } from '@langchain/core/documents'
-import { IKnowledgeDocumentChunk, OrganizationBaseCrudService } from '@metad/cloud/state'
+import { IKnowledgeDocumentChunk, OrganizationBaseCrudService } from '@xpert-ai/cloud/state'
 import { NGXLogger } from 'ngx-logger'
 import { API_KNOWLEDGE_DOCUMENT } from '../constants/app.constants'
 import {
@@ -12,7 +12,6 @@ import {
   TRagWebOptions,
   TRagWebResult
 } from '../types'
-
 
 @Injectable({ providedIn: 'root' })
 export class KnowledgeDocumentService extends OrganizationBaseCrudService<IKnowledgeDocument> {
@@ -52,6 +51,22 @@ export class KnowledgeDocumentService extends OrganizationBaseCrudService<IKnowl
 
   previewFile(id: string) {
     return this.httpClient.get<DocumentInterface[]>(this.apiBaseUrl + `/preview-file/${id}`)
+  }
+
+  downloadOriginalFile(id: string) {
+    return this.httpClient.get(this.apiBaseUrl + `/${id}/original-file/download`, {
+      responseType: 'blob'
+    })
+  }
+
+  downloadOriginalFiles(ids: string[]) {
+    return this.httpClient.post(
+      this.apiBaseUrl + '/original-files/download',
+      { ids },
+      {
+        responseType: 'blob'
+      }
+    )
   }
 
   estimate(doc: Partial<IKnowledgeDocument>) {

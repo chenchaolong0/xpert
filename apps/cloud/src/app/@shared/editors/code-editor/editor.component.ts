@@ -1,24 +1,36 @@
-import { CommonModule } from '@angular/common'
-import { afterNextRender, booleanAttribute, ChangeDetectorRef, Component, computed, inject, input, signal } from '@angular/core'
+import {
+  afterNextRender,
+  booleanAttribute,
+  ChangeDetectorRef,
+  Component,
+  computed,
+  inject,
+  input,
+  signal
+} from '@angular/core'
 import { ControlValueAccessor, FormsModule } from '@angular/forms'
-import { NgmResizableDirective } from '@metad/ocap-angular/common'
+import { NgmResizableDirective } from '@xpert-ai/ocap-angular/common'
 import { TranslateModule } from '@ngx-translate/core'
 import { MonacoEditorModule } from 'ngx-monaco-editor'
 import { NgxControlValueAccessor } from 'ngxtension/control-value-accessor'
-import { distinctUntilChanged } from 'rxjs'
+import { injectEditorTheme } from '../../../@core'
 
 @Component({
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslateModule, MonacoEditorModule, NgmResizableDirective],
+  imports: [FormsModule, TranslateModule, MonacoEditorModule, NgmResizableDirective],
   selector: 'pac-code-editor',
   templateUrl: './editor.component.html',
   styleUrls: ['./editor.component.scss'],
-  hostDirectives: [NgxControlValueAccessor]
+  hostDirectives: [NgxControlValueAccessor],
+  host: {
+    '[class.pac-code-editor--readonly]': 'isReadonly()'
+  }
 })
 export class CodeEditorComponent implements ControlValueAccessor {
-
   protected cva = inject<NgxControlValueAccessor<string | null>>(NgxControlValueAccessor)
   readonly #cdr = inject(ChangeDetectorRef)
+  private onChange: (value: string | null) => void = () => {}
+  private onTouched: () => void = () => {}
 
   // Inputs
   readonly fileName = input<string>()
@@ -38,7 +50,6 @@ export class CodeEditorComponent implements ControlValueAccessor {
 
   // States
   readonly defaultOptions = {
-    theme: 'vs',
     automaticLayout: true,
     language: 'markdown',
     glyphMargin: 0,
@@ -47,11 +58,16 @@ export class CodeEditorComponent implements ControlValueAccessor {
     }
   }
 
+  readonly editorTheme = injectEditorTheme()
+  readonly isReadonly = computed(() => this.readonly() || !this.editable())
+
   readonly editorOptions = computed(() => {
     return {
       ...this.defaultOptions,
-      language: this.language() || (this.fileName() ? this.mapFileLanguage(this.fileName()) : this.defaultOptions.language),
-      readOnly: this.readonly() || !this.editable(),
+      theme: this.editorTheme(),
+      language:
+        this.language() || (this.fileName() ? this.mapFileLanguage(this.fileName()) : this.defaultOptions.language),
+      readOnly: this.isReadonly(),
       lineNumbers: this.lineNumbers() ? 'on' : 'off',
       wordWrap: this.wordWrap()
     }
@@ -61,45 +77,51 @@ export class CodeEditorComponent implements ControlValueAccessor {
 
   readonly #editor = signal(null)
 
-  onChange: ((value: string | null) => void) | null = null
-  onTouched: (() => void) | null = null
-  private valueChangeSub = this.cva.valueChange.pipe(distinctUntilChanged()).subscribe((value) => {
-    this.onChange?.(value)
-  })
-
   constructor() {
     afterNextRender(() => {
       setTimeout(() => {
         this.#editor()?.layout()
         this.#cdr.detectChanges()
-      }, 600);
+      }, 600)
     })
   }
 
   // Editor
   onInit(editor: any) {
     this.#editor.set(editor)
+    editor.onDidBlurEditorWidget(() => {
+      this.cva.markAsTouched()
+      this.onTouched()
+    })
   }
 
   onEditorChange(event: string) {
-    this.value$.set(event)
+    this.cva.value = event
+    this.onChange(event)
+
+    if (this.cva.ngControl?.control?.pristine) {
+      this.cva.ngControl.control.markAsDirty()
+    }
+  }
+
+  writeValue(value: string | null): void {
+    this.cva.writeValue(value)
+  }
+
+  registerOnChange(fn: (value: string | null) => void): void {
+    this.onChange = fn
+  }
+
+  registerOnTouched(fn: () => void): void {
+    this.onTouched = fn
+  }
+
+  setDisabledState(isDisabled: boolean): void {
+    this.cva.setDisabledState(isDisabled)
   }
 
   onResized() {
     this.#editor()?.layout()
-  }
-
-  writeValue(obj: any): void {
-    this.cva.writeValue(obj)
-  }
-  registerOnChange(fn: any): void {
-    this.onChange = fn
-  }
-  registerOnTouched(fn: any): void {
-    this.onTouched = fn
-  }
-  setDisabledState?(isDisabled: boolean): void {
-    this.cva.setDisabledState(isDisabled)
   }
 
   mapFileLanguage(url: string) {

@@ -1,7 +1,8 @@
+@reference "../../../../styles/tailwind-reference.css";
 :host {
   @apply flex items-start;
 }
 
 .danger {
-  @apply bg-state-destructive-hover;
+  @apply bg-status-error-bg;
 }

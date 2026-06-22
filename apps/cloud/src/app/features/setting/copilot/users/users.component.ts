@@ -1,14 +1,11 @@
 import { CommonModule } from '@angular/common'
 import { Component, inject, LOCALE_ID, model, signal } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { MatButtonModule } from '@angular/material/button'
-import { MatDialog } from '@angular/material/dialog'
-import { MatIconModule } from '@angular/material/icon'
-import { MatTooltipModule } from '@angular/material/tooltip'
+
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
-import { NgmCommonModule } from '@metad/ocap-angular/common'
-import { effectAction } from '@metad/ocap-angular/core'
-import { DisplayBehaviour } from '@metad/ocap-core'
+import { NgmCommonModule } from '@xpert-ai/ocap-angular/common'
+import { effectAction } from '@xpert-ai/ocap-angular/core'
+import { DisplayBehaviour } from '@xpert-ai/ocap-core'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
 import { WaIntersectionObserver } from '@ng-web-apis/intersection-observer'
 import { OrgAvatarComponent } from 'apps/cloud/src/app/@shared/organization'
@@ -17,12 +14,19 @@ import { switchMap, tap } from 'rxjs/operators'
 import {
   CopilotUsageService,
   DateRelativePipe,
-  ICopilotUser,
+  ICopilotUserUsageSummary,
   injectFormatRelative,
   OrderTypeEnum,
   ToastrService
 } from '../../../../@core'
-
+import {
+  ZardButtonComponent,
+  ZardDialogService,
+  ZardIconComponent,
+  ZardInputDirective,
+  ZardTableImports,
+  ZardTooltipImports
+} from '@xpert-ai/headless-ui'
 @Component({
   standalone: true,
   selector: 'pac-settings-copilot-users',
@@ -33,11 +37,13 @@ import {
     RouterModule,
     TranslateModule,
     FormsModule,
-    MatTooltipModule,
-    MatIconModule,
-    MatButtonModule,
+    ...ZardTooltipImports,
+    ZardIconComponent,
+    ZardButtonComponent,
     WaIntersectionObserver,
     NgmCommonModule,
+    ZardInputDirective,
+    ...ZardTableImports,
     OrgAvatarComponent,
     UserProfileInlineComponent,
     DateRelativePipe
@@ -50,16 +56,17 @@ export class CopilotUsersComponent {
   readonly _toastrService = inject(ToastrService)
   readonly router = inject(Router)
   readonly route = inject(ActivatedRoute)
-  readonly dialog = inject(MatDialog)
+  readonly dialog = inject(ZardDialogService)
   readonly translate = inject(TranslateService)
   readonly formatRelative = injectFormatRelative()
   readonly locale = inject(LOCALE_ID)
 
-  readonly usages = signal<ICopilotUser[]>([])
+  readonly usages = signal<ICopilotUserUsageSummary[]>([])
+  readonly expandedIds = signal<Set<string>>(new Set())
+  readonly detailLoadingIds = signal<Set<string>>(new Set())
 
   readonly editId = signal<string | null>(null)
   readonly tokenLimit = model<number>(null)
-  readonly priceLimit = model<number>(null)
 
   readonly loading = signal(false)
   readonly pageSize = 20
@@ -70,17 +77,23 @@ export class CopilotUsersComponent {
     this.loadMore()
   }
 
-  renewToken(id: string) {
-    this.editId.set(id)
+  renewToken(item: ICopilotUserUsageSummary) {
+    this.tokenLimit.set(item.tokenLimit)
+    this.editId.set(this.usageId(item))
   }
 
-  save(id: string) {
+  setTokenLimit(value: string | number | null) {
+    this.tokenLimit.set(value === null || value === '' ? null : Number(value))
+  }
+
+  save(item: ICopilotUserUsageSummary) {
     this.loading.set(true)
-    this.usageService.renewUserLimit(id, this.tokenLimit(), this.priceLimit()).subscribe({
+    this.usageService.renewUserUsageSummary(item, this.tokenLimit()).subscribe({
       next: (result) => {
-        this.usages.update((records) => records.map((item) => (item.id === id ? { ...item, ...result } : item)))
+        this.usages.update((records) =>
+          records.map((record) => (this.usageId(record) === this.usageId(item) ? { ...record, ...result } : record))
+        )
         this.tokenLimit.set(null)
-        this.priceLimit.set(null)
         this.editId.set(null)
         this.loading.set(false)
       },
@@ -95,7 +108,7 @@ export class CopilotUsersComponent {
     return origin$.pipe(
       switchMap(() => {
         this.loading.set(true)
-        return this.usageService.getUserUsages({
+        return this.usageService.getUserUsageSummaries({
           order: { updatedAt: OrderTypeEnum.DESC },
           take: this.pageSize,
           skip: this.currentPage() * this.pageSize
@@ -116,6 +129,65 @@ export class CopilotUsersComponent {
       })
     )
   })
+
+  toggleDetails(item: ICopilotUserUsageSummary) {
+    const id = this.usageId(item)
+    const shouldExpand = !this.expandedIds().has(id)
+    this.expandedIds.update((state) => {
+      const next = new Set(state)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+
+    if (shouldExpand && item.details === undefined) {
+      this.loadDetails(item)
+    }
+  }
+
+  isExpanded(item: ICopilotUserUsageSummary) {
+    return this.expandedIds().has(this.usageId(item))
+  }
+
+  isLoadingDetails(item: ICopilotUserUsageSummary) {
+    return this.detailLoadingIds().has(this.usageId(item))
+  }
+
+  loadDetails(item: ICopilotUserUsageSummary) {
+    const id = this.usageId(item)
+    this.setDetailLoading(id, true)
+    this.usageService.getUserUsageDetails(item).subscribe({
+      next: (details) => {
+        this.usages.update((records) =>
+          records.map((record) => (this.usageId(record) === id ? { ...record, details } : record))
+        )
+        this.setDetailLoading(id, false)
+      },
+      error: (error) => {
+        this.setDetailLoading(id, false)
+        this._toastrService.error(error, 'Error')
+      }
+    })
+  }
+
+  usageId(item: ICopilotUserUsageSummary) {
+    return String(item.id)
+  }
+
+  private setDetailLoading(id: string, loading: boolean) {
+    this.detailLoadingIds.update((state) => {
+      const next = new Set(state)
+      if (loading) {
+        next.add(id)
+      } else {
+        next.delete(id)
+      }
+      return next
+    })
+  }
 
   onIntersection() {
     if (!this.loading() && !this.done()) {

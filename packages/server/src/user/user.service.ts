@@ -1,14 +1,124 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common'
+import { CACHE_MANAGER } from '@nestjs/cache-manager'
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Inject, forwardRef, Optional } from '@nestjs/common'
+import { EventEmitter2 } from '@nestjs/event-emitter'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository, InsertResult, Like, Brackets, WhereExpressionBuilder, In } from 'typeorm'
+import type { Cache } from 'cache-manager'
+import { Repository, InsertResult, Like, Brackets, WhereExpressionBuilder, In, FindOneOptions, DeleteResult, IsNull, FindManyOptions, FindOptionsSelect, FindOptionsWhere } from 'typeorm'
 import bcrypt from 'bcryptjs'
-import { environment as env } from '@metad/server-config'
+import { environment as env } from '@xpert-ai/server-config'
+import { nanoid } from 'nanoid'
 import { User } from './user.entity'
 import { TenantAwareCrudService } from './../core/crud'
-import { ID, IUser, LanguagesEnum, PermissionsEnum, RolesEnum } from '@metad/contracts'
+import { ID, IFeatureOrganization, IUser, LanguagesEnum, PermissionsEnum, RolesEnum, UserType } from '@xpert-ai/contracts'
 import { RequestContext } from '../core/context'
 import { EmailVerification } from './email-verification/email-verification.entity'
 import { UserPublicDTO } from './dto'
+import { UserOrganizationService } from '../user-organization/user-organization.services'
+import { UserOrganization } from '../user-organization/user-organization.entity'
+import { EVENT_USER_ORGANIZATION_DELETED, UserOrganizationDeletedEvent } from './events'
+import { FeatureOrganization } from '../feature/feature-organization.entity'
+import {
+	buildCurrentUserFeatureCacheKey,
+	CURRENT_USER_FEATURE_CACHE_TTL_MS,
+	getCurrentUserFeatureCacheVersion,
+	hashCurrentUserRelations
+} from './current-user-feature-cache'
+
+const REQUEST_CONTEXT_USER_RELATIONS = ['role', 'role.rolePermissions', 'employee'] as const
+const CURRENT_USER_CORE_RELATIONS = ['employee', 'role', 'role.rolePermissions', 'tenant'] as const
+const CURRENT_USER_BOOTSTRAP_RELATIONS = ['organizations', 'organizations.organization'] as const
+const CURRENT_USER_LIMITABLE_ORGANIZATION_RELATIONS: ReadonlySet<string> = new Set(CURRENT_USER_BOOTSTRAP_RELATIONS)
+const CURRENT_USER_FEATURE_RELATIONS = [
+	'tenant.featureOrganizations',
+	'tenant.featureOrganizations.feature',
+	'organizations.organization.featureOrganizations',
+	'organizations.organization.featureOrganizations.feature'
+] as const
+const CURRENT_USER_FEATURE_HYDRATION_ALLOWED_RELATIONS: ReadonlySet<string> = new Set([
+	...CURRENT_USER_CORE_RELATIONS,
+	...CURRENT_USER_BOOTSTRAP_RELATIONS,
+	...CURRENT_USER_FEATURE_RELATIONS
+])
+const AUTHENTICATED_USER_RELATIONS = ['role', 'employee'] as const
+
+type CurrentUserFeatureContext = {
+	tenantFeatureOrganizations: IFeatureOrganization[]
+	organizationFeatureOrganizations: IFeatureOrganization[]
+}
+
+export type CurrentUserRelationSelect = FindOptionsSelect<User>
+export type CurrentUserFindOptions = {
+	select?: CurrentUserRelationSelect
+	currentOrganizationId?: string | null
+	limitOrganizations?: boolean
+}
+
+type CurrentUserOrganizationSelect = FindManyOptions<UserOrganization>['select']
+type CurrentUserOrganizationWhere = FindOptionsWhere<UserOrganization>
+
+function resolveCurrentUserRelations(relations?: string[]) {
+	return Array.from(new Set([...CURRENT_USER_CORE_RELATIONS, ...(relations ?? [])]))
+}
+
+function isCurrentUserOrganizationRelation(relation: string) {
+	return relation === 'organizations' || relation.startsWith('organizations.')
+}
+
+function shouldLimitCurrentUserOrganizations(relations?: string[], options?: CurrentUserFindOptions) {
+	if (!options?.limitOrganizations) {
+		return false
+	}
+
+	const organizationRelations = (relations ?? []).filter(isCurrentUserOrganizationRelation)
+	return (
+		organizationRelations.length > 0 &&
+		organizationRelations.every((relation) => CURRENT_USER_LIMITABLE_ORGANIZATION_RELATIONS.has(relation))
+	)
+}
+
+function resolveBaseCurrentUserRelations(relations?: string[]) {
+	return (relations ?? []).filter((relation) => !isCurrentUserOrganizationRelation(relation))
+}
+
+function splitCurrentUserSelect(select?: CurrentUserRelationSelect) {
+	if (!select) {
+		return {
+			baseSelect: undefined,
+			organizationSelect: undefined
+		}
+	}
+
+	const baseSelect = { ...select }
+	const organizationSelect = baseSelect.organizations
+	delete baseSelect.organizations
+
+	return {
+		baseSelect: Object.keys(baseSelect).length ? baseSelect : undefined,
+		organizationSelect:
+			organizationSelect && typeof organizationSelect === 'object' && !Array.isArray(organizationSelect)
+				? (organizationSelect as CurrentUserOrganizationSelect)
+				: undefined
+	}
+}
+
+function isKnownCurrentUserFeatureHydrationRelations(relations?: string[]) {
+	const requestedRelations = new Set(relations ?? [])
+
+	return (
+		CURRENT_USER_FEATURE_RELATIONS.every((relation) => requestedRelations.has(relation)) &&
+		Array.from(requestedRelations).every((relation) =>
+			CURRENT_USER_FEATURE_HYDRATION_ALLOWED_RELATIONS.has(relation)
+		)
+	)
+}
+
+function normalizeEmail(email?: string | null) {
+	return email?.trim().toLowerCase() || null
+}
+
+function normalizeUsername(username?: string | null) {
+	return username?.trim().toLowerCase() || null
+}
 
 @Injectable()
 export class UserService extends TenantAwareCrudService<User> {
@@ -16,13 +126,214 @@ export class UserService extends TenantAwareCrudService<User> {
 		@InjectRepository(User)
 		userRepository: Repository<User>,
 		@InjectRepository(EmailVerification)
-		public emailVerificationRepository: Repository<EmailVerification>
+		public emailVerificationRepository: Repository<EmailVerification>,
+		@Inject(forwardRef(() => UserOrganizationService))
+		private readonly userOrganizationService: UserOrganizationService,
+		private readonly eventEmitter: EventEmitter2,
+		@Optional()
+		@InjectRepository(FeatureOrganization)
+		private readonly featureOrganizationRepository?: Repository<FeatureOrganization>,
+		@Optional()
+		@Inject(CACHE_MANAGER)
+		private readonly cacheManager?: Cache
 	) {
 		super(userRepository)
 	}
 
+	async findCurrentUser(id: string, relations?: string[], options?: CurrentUserFindOptions): Promise<User> {
+		if (isKnownCurrentUserFeatureHydrationRelations(relations) && this.featureOrganizationRepository) {
+			return this.findCurrentUserFeatureContext(id, relations ?? [])
+		}
+
+		if (shouldLimitCurrentUserOrganizations(relations, options)) {
+			return this.findCurrentUserWithLimitedOrganizations(id, relations, options)
+		}
+
+		return this.findOne(id, {
+			relations: resolveCurrentUserRelations(relations),
+			...(options?.select ? { select: options.select } : {})
+		})
+	}
+
+	private async findCurrentUserWithLimitedOrganizations(
+		id: string,
+		relations?: string[],
+		options?: CurrentUserFindOptions
+	) {
+		const { baseSelect, organizationSelect } = splitCurrentUserSelect(options?.select)
+		const user = await this.findOne(id, {
+			relations: resolveCurrentUserRelations(resolveBaseCurrentUserRelations(relations)),
+			...(baseSelect ? { select: baseSelect } : {})
+		})
+		user.organizations = await this.findCurrentUserBootstrapOrganizations(
+			user,
+			id,
+			options?.currentOrganizationId,
+			organizationSelect
+		)
+		return user
+	}
+
+	private async findCurrentUserBootstrapOrganizations(
+		user: User,
+		userId: string,
+		currentOrganizationId?: string | null,
+		select?: CurrentUserOrganizationSelect
+	) {
+		const tenantId = RequestContext.currentTenantId() ?? user.tenantId ?? user.tenant?.id
+		const baseWhere = {
+			userId,
+			...(tenantId ? { tenantId } : {}),
+			isActive: true
+		}
+		const order: FindManyOptions<UserOrganization>['order'] = { id: 'ASC' }
+		const organizationQuery = async (where: CurrentUserOrganizationWhere) => {
+			const { items } = await this.userOrganizationService.findAll({
+				where: {
+					...where,
+					organization: { isActive: true }
+				},
+				relations: ['organization'],
+				...(select ? { select } : {}),
+				order,
+				take: 1
+			})
+
+			return items[0] ?? null
+		}
+
+		const preferredMembership = currentOrganizationId
+			? await organizationQuery({
+					...baseWhere,
+					organizationId: currentOrganizationId
+			  })
+			: null
+
+		const membership =
+			preferredMembership ??
+			(await organizationQuery({
+				...baseWhere,
+				isDefault: true
+			})) ??
+			(await organizationQuery(baseWhere))
+
+		return membership ? [membership] : []
+	}
+
+	private async findCurrentUserFeatureContext(id: string, relations: string[]) {
+		const user = await this.findOne(id, {
+			relations: resolveCurrentUserRelations([...CURRENT_USER_BOOTSTRAP_RELATIONS])
+		})
+
+		const tenantId = RequestContext.currentTenantId() ?? user.tenantId ?? user.tenant?.id
+		if (!tenantId || !this.featureOrganizationRepository) {
+			return user
+		}
+
+		const cacheKey = await this.buildFeatureContextCacheKey(id, tenantId, relations)
+		const cachedContext = cacheKey ? await this.cacheManager?.get<CurrentUserFeatureContext>(cacheKey) : null
+
+		if (cachedContext) {
+			this.attachFeatureOrganizationsToCurrentUser(
+				user,
+				cachedContext.tenantFeatureOrganizations,
+				cachedContext.organizationFeatureOrganizations
+			)
+			return user
+		}
+
+		const featureContext = await this.loadCurrentUserFeatureContext(user)
+
+		if (featureContext) {
+			await this.cacheManager?.set(cacheKey, featureContext, CURRENT_USER_FEATURE_CACHE_TTL_MS)
+		}
+
+		return user
+	}
+
+	private async buildFeatureContextCacheKey(userId: string, tenantId: string, relations: string[]) {
+		const relationsHash = hashCurrentUserRelations(relations)
+		const version = await getCurrentUserFeatureCacheVersion(this.cacheManager, tenantId, userId)
+
+		return buildCurrentUserFeatureCacheKey({
+			tenantId,
+			userId,
+			relationsHash,
+			version
+		})
+	}
+
+	private async loadCurrentUserFeatureContext(user: User): Promise<CurrentUserFeatureContext | null> {
+		const tenantId = user.tenantId ?? user.tenant?.id ?? RequestContext.currentTenantId()
+		if (!tenantId || !this.featureOrganizationRepository) {
+			return null
+		}
+
+		const organizationIds = (user.organizations ?? [])
+			.map((membership) => membership.organizationId ?? membership.organization?.id)
+			.filter((organizationId): organizationId is string => !!organizationId)
+
+		const tenantFeatureOrganizations = await this.featureOrganizationRepository.find({
+			where: {
+				tenantId,
+				organizationId: IsNull()
+			},
+			relations: ['feature']
+		})
+		const organizationFeatureOrganizations = organizationIds.length
+			? await this.featureOrganizationRepository.find({
+					where: {
+						tenantId,
+						organizationId: In(organizationIds)
+					},
+					relations: ['feature']
+			  })
+			: []
+
+		this.attachFeatureOrganizationsToCurrentUser(user, tenantFeatureOrganizations, organizationFeatureOrganizations)
+		return {
+			tenantFeatureOrganizations,
+			organizationFeatureOrganizations
+		}
+	}
+
+	private attachFeatureOrganizationsToCurrentUser(
+		user: User,
+		tenantFeatureOrganizations: IFeatureOrganization[],
+		organizationFeatureOrganizations: IFeatureOrganization[]
+	) {
+		if (user.tenant) {
+			user.tenant.featureOrganizations = tenantFeatureOrganizations
+		}
+
+		const featureOrganizationsByOrganizationId = new Map<string, IFeatureOrganization[]>()
+		for (const featureOrganization of organizationFeatureOrganizations) {
+			if (!featureOrganization.organizationId) {
+				continue
+			}
+
+			const items = featureOrganizationsByOrganizationId.get(featureOrganization.organizationId) ?? []
+			items.push(featureOrganization)
+			featureOrganizationsByOrganizationId.set(featureOrganization.organizationId, items)
+		}
+
+		for (const membership of user.organizations ?? []) {
+			const organizationId = membership.organizationId ?? membership.organization?.id
+			if (!organizationId || !membership.organization) {
+				continue
+			}
+
+			membership.organization.featureOrganizations =
+				featureOrganizationsByOrganizationId.get(organizationId) ?? []
+		}
+	}
+
 	async getUserByEmail(email: string): Promise<User> {
-		const user = await this.repository.createQueryBuilder('user').where('user.email = :email', { email }).getOne()
+		const normalizedEmail = normalizeEmail(email)
+		const user = await this.repository
+			.createQueryBuilder('user')
+			.where('user.email = :email', { email: normalizedEmail })
+			.getOne()
 		return user
 	}
 
@@ -34,8 +345,11 @@ export class UserService extends TenantAwareCrudService<User> {
 
 	async getIfExistsUser(user: IUser): Promise<IUser> {
 		let _user: IUser = null
-		if (user.email) {
-			const userExists = await this.findOneOrFailByOptions({ where: { email: user.email } })
+		const normalizedEmail = normalizeEmail(user.email)
+		const normalizedUsername = normalizeUsername(user.username)
+
+		if (normalizedEmail) {
+			const userExists = await this.findOneOrFailByOptions({ where: { email: normalizedEmail } })
 			if (userExists.success) {
 				_user = userExists.record
 			}
@@ -53,8 +367,8 @@ export class UserService extends TenantAwareCrudService<User> {
 				_user = userExists.record
 			}
 		}
-		if (!_user && user.username) {
-			const userExists = await this.findOneOrFailByOptions({ where: { username: user.username } })
+		if (!_user && normalizedUsername) {
+			const userExists = await this.findOneOrFailByOptions({ where: { username: normalizedUsername } })
 			if (userExists.success) {
 				_user = userExists.record
 			}
@@ -64,9 +378,10 @@ export class UserService extends TenantAwareCrudService<User> {
 	}
 
 	async checkIfExistsEmail(email: string): Promise<boolean> {
+		const normalizedEmail = normalizeEmail(email)
 		const count = await this.repository
 			.createQueryBuilder('user')
-			.where('user.email = :email', { email })
+			.where('user.email = :email', { email: normalizedEmail })
 			.getCount()
 		return count > 0
 	}
@@ -85,13 +400,83 @@ export class UserService extends TenantAwareCrudService<User> {
 	}
 
 	async getIfExists(id: string): Promise<User> {
-		return await this.repository
-			.createQueryBuilder('user')
-			.where('user.id = :id', { id })
-			.leftJoinAndSelect('user.role', 'role')
-			.leftJoinAndSelect('role.rolePermissions', 'rolePermissions')
-			.leftJoinAndSelect('user.employee', 'employee')
-			.getOne()
+		return this.findOne(id, {
+			relations: [...AUTHENTICATED_USER_RELATIONS]
+		})
+	}
+
+	async findOneByIdWithinTenant(id: string, tenantId: string, options?: Omit<FindOneOptions<User>, 'where'>) {
+		const entity = await this.repository.findOne({
+			...(options ?? {}),
+			where: {
+				id,
+				tenantId
+			}
+		})
+
+		if (!entity) {
+			throw new NotFoundException(`The user '${id}' was not found in current tenant`)
+		}
+
+		return entity
+	}
+
+	async findOneByThirdPartyIdWithinTenant(
+		thirdPartyId: string,
+		tenantId: string,
+		options?: Omit<FindOneOptions<User>, 'where'>
+	) {
+		const entity = await this.repository.findOne({
+			...(options ?? {}),
+			where: {
+				thirdPartyId,
+				tenantId
+			}
+		})
+
+		if (!entity) {
+			throw new NotFoundException(`The user '${thirdPartyId}' was not found in current tenant`)
+		}
+
+		return entity
+	}
+
+	async ensureCommunicationUser(input: {
+		tenantId: string
+		thirdPartyId: string
+		username?: string | null
+		imageUrl?: string | null
+		preferredLanguage?: LanguagesEnum
+	}) {
+		const existing = await this.repository.findOne({
+			where: {
+				tenantId: input.tenantId,
+				thirdPartyId: input.thirdPartyId
+			},
+			relations: [...REQUEST_CONTEXT_USER_RELATIONS]
+		})
+
+		if (existing) {
+			return existing
+		}
+
+		const created = await this.repository.save(
+			this.repository.create({
+				tenant: { id: input.tenantId } as any,
+				tenantId: input.tenantId,
+				thirdPartyId: input.thirdPartyId,
+				username: buildTechnicalUsername(input.username ?? input.thirdPartyId),
+				imageUrl: input.imageUrl ?? undefined,
+				type: UserType.COMMUNICATION,
+				preferredLanguage: input.preferredLanguage ?? LanguagesEnum.English,
+				emailVerified: true,
+				hash: await this.getPasswordHash(nanoid(32))
+			})
+		)
+
+		return this.findOneByIdWithinTenant(created.id, input.tenantId, {
+			relations: [...REQUEST_CONTEXT_USER_RELATIONS]
+		})
 	}
 
 	async getIfExistsThirdParty(thirdPartyId: string): Promise<User> {
@@ -99,7 +484,6 @@ export class UserService extends TenantAwareCrudService<User> {
 			.createQueryBuilder('user')
 			.where('user.thirdPartyId = :thirdPartyId', { thirdPartyId })
 			.leftJoinAndSelect('user.role', 'role')
-			.leftJoinAndSelect('role.rolePermissions', 'rolePermissions')
 			.leftJoinAndSelect('user.employee', 'employee')
 			.getOne()
 	}
@@ -115,22 +499,51 @@ export class UserService extends TenantAwareCrudService<User> {
 	}
 
 	async resetPassword(id: string, hash: string, password: string) {
-		if (RequestContext.currentUserId() !== id) {
-			throw new ForbiddenException()
-		}
-
 		const user = await this.findOne(id, { relations: ['role'] })
 		if (!user) {
 			throw new NotFoundException(`The user was not found`)
 		}
 
-		if (user.hash && !(await bcrypt.compare(hash, user.hash))) {
-			throw new ForbiddenException(`Current password not match`)
+		const isSelf = RequestContext.currentUserId() === id
+		const canManageUsers = RequestContext.hasAnyPermission([
+			PermissionsEnum.ALL_ORG_EDIT,
+			PermissionsEnum.SUPER_ADMIN_EDIT
+		])
+
+		if (!isSelf && !canManageUsers) {
+			throw new ForbiddenException()
+		}
+
+		if (isSelf) {
+			if (!hash || (user.hash && !(await bcrypt.compare(hash, user.hash)))) {
+				throw new ForbiddenException(`Current password not match`)
+			}
 		}
 
 		user.hash = await this.getPasswordHash(password)
 
 		return await this.repository.save(user)
+	}
+
+	async isActiveMemberOfOrganization(userId: string, organizationId: string) {
+		const tenantId = RequestContext.currentTenantId()
+
+		const total = await this.repository
+			.createQueryBuilder('user')
+			.innerJoin(
+				'user.organizations',
+				'userOrganization',
+				'userOrganization.organizationId = :organizationId AND userOrganization.isActive = :isActive',
+				{
+					organizationId,
+					isActive: true
+				}
+			)
+			.where('user.id = :userId', { userId })
+			.andWhere('user.tenantId = :tenantId', { tenantId })
+			.getCount()
+
+		return total > 0
 	}
 
 	/**
@@ -143,67 +556,122 @@ export class UserService extends TenantAwareCrudService<User> {
 	 * @throws ForbiddenException if the user lacks the required permissions or attempts unauthorized updates.
 	 */
 	async updateProfile(id: ID | number, entity: User): Promise<IUser> {
-		// Retrieve the current user's role ID from the RequestContext
 		const currentRoleId = RequestContext.currentRoleId()
 		const currentUserId = RequestContext.currentUserId()
+		const isSelf = currentUserId === id
+		const canManageUsers = RequestContext.hasAnyPermission([
+			PermissionsEnum.ALL_ORG_EDIT,
+			PermissionsEnum.SUPER_ADMIN_EDIT
+		])
 
-		// Ensure the user has the appropriate permissions
-		if (
-			RequestContext.hasPermission(PermissionsEnum.PROFILE_EDIT) &&
-			!RequestContext.hasPermission(PermissionsEnum.ORG_USERS_EDIT)
-		) {
-			// Users can only edit their own profile
-			if (currentUserId !== id) {
+		if (!isSelf && !canManageUsers) {
+			throw new ForbiddenException()
+		}
+
+		let user: IUser | null = null
+
+		if (typeof id == 'string') {
+			user = await this.findOneByIdString(id, { relations: { role: true } })
+		}
+
+		if (!user) {
+			throw new NotFoundException(`The user '${id}' was not found`)
+		}
+
+		if (user.role?.name === RolesEnum.SUPER_ADMIN) {
+			if (!RequestContext.hasPermission(PermissionsEnum.SUPER_ADMIN_EDIT)) {
 				throw new ForbiddenException()
 			}
 		}
 
-		let user: IUser
-
-		try {
-			// Fetch the user by ID if the ID is a string
-			if (typeof id == 'string') {
-				user = await this.findOneByIdString(id, { relations: { role: true } })
-			}
-
-			// Restrict updates to Super Admin role without appropriate permission
-			if (user.role.name === RolesEnum.SUPER_ADMIN) {
-				if (!RequestContext.hasPermission(PermissionsEnum.SUPER_ADMIN_EDIT)) {
-					throw new ForbiddenException()
-				}
-			}
-
-			// Restrict updates to Super Admin role without appropriate permission
-			if (user.role.name === RolesEnum.SUPER_ADMIN) {
-				if (!RequestContext.hasPermission(PermissionsEnum.SUPER_ADMIN_EDIT)) {
-					throw new ForbiddenException()
-				}
-			}
-
-			// Restrict users from updating their own role
-
-			if (currentUserId === id) {
-				if (entity.role && entity.role.id !== currentRoleId) {
-					throw new ForbiddenException()
-				}
-			}
-
-			// Update password hash if provided
-			if (entity['hash']) {
-				entity['hash'] = await this.getPasswordHash(entity['hash'])
-			}
-
-			// Save the updated user entity
-			await this.save(entity)
-
-			// Return the updated user
-			return await this.findOneByWhereOptions({
-				id: id as string,
-				tenantId: RequestContext.currentTenantId()
-			})
-		} catch (error) {
+		if (isSelf && entity.role && entity.role.id !== currentRoleId) {
 			throw new ForbiddenException()
 		}
+
+		if (entity['hash']) {
+			entity['hash'] = await this.getPasswordHash(entity['hash'])
+		}
+
+		await this.save(entity)
+
+		return await this.findOneByWhereOptions({
+			id: id as string,
+			tenantId: RequestContext.currentTenantId()
+		})
+	}
+
+	private async ensureDeleteWithGuards(id: string) {
+		const currentUserId = RequestContext.currentUserId()
+		if (currentUserId === id) {
+			throw new BadRequestException('You cannot delete your own user account.')
+		}
+
+		const tenantId = RequestContext.currentTenantId()
+		const user = await this.findOneByIdWithinTenant(id, tenantId, {
+			relations: ['role']
+		})
+
+		if (!user.role?.name) {
+			throw new BadRequestException('The user role is required before deleting the user.')
+		}
+
+		if (
+			user.role.name === RolesEnum.SUPER_ADMIN &&
+			!RequestContext.hasPermission(PermissionsEnum.SUPER_ADMIN_EDIT)
+		) {
+			throw new ForbiddenException()
+		}
+
+		if ([RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN].includes(user.role.name as RolesEnum)) {
+			const remainingAdministrators = await this.repository
+				.createQueryBuilder('user')
+				.innerJoin('user.role', 'role')
+				.where('user.tenantId = :tenantId', { tenantId })
+				.andWhere('user.id != :userId', { userId: user.id })
+				.andWhere('role.name IN (:...roleNames)', {
+					roleNames: [RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN]
+				})
+				.getCount()
+
+			if (!remainingAdministrators) {
+				throw new BadRequestException('Cannot delete the last tenant administrator.')
+			}
+		}
+
+		return { tenantId, user }
+	}
+
+	private async deleteUserOrganizations(userId: string, tenantId: string) {
+		const { items: memberships } = await this.userOrganizationService.findAll({
+			where: {
+				userId,
+				tenantId
+			}
+		})
+
+		for (const membership of memberships) {
+			await this.userOrganizationService.delete(membership.id, {
+				allowDeletingLastMembership: true
+			})
+
+			this.eventEmitter.emit(
+				EVENT_USER_ORGANIZATION_DELETED,
+				new UserOrganizationDeletedEvent(membership.tenantId, membership.organizationId, membership.userId)
+			)
+		}
+	}
+
+	async deleteWithGuards(id: string) {
+		const { tenantId } = await this.ensureDeleteWithGuards(id)
+		await this.deleteUserOrganizations(id, tenantId)
+
+		return this.softDelete(id)
+	}
+
+	async deleteHardWithGuards(id: string): Promise<DeleteResult> {
+		await this.ensureDeleteWithGuards(id)
+
+		return this.delete(id)
 	}
 
 	async getAdminUsers(tenantId: string): Promise<User[]> {
@@ -257,15 +725,44 @@ export class UserService extends TenantAwareCrudService<User> {
 		this.emailVerificationRepository.delete(id)
 	}
 
-	async search(text: string, organizationId: string) {
+	async search(text: string, organizationId?: string, membership?: string) {
 		const tenantId = RequestContext.currentTenantId()
 		const userId = RequestContext.currentUserId()
-		const condition = Like(`%${text.split('%').join('')}%`)
+		const sanitizedText = text?.trim().split('%').join('') ?? ''
+		const condition = Like(`%${sanitizedText}%`)
 
 		if (RequestContext.hasRole(RolesEnum.TRIAL)) {
 			return this.findAll({ where: { id: userId } }).then((result) => ({
 				...result,
 				items: result.items.map((item) => new UserPublicDTO(item))
+			}))
+		} else if (organizationId && membership === 'non-members') {
+			const query = this.repository
+				.createQueryBuilder('user')
+				.leftJoin(
+					'user.organizations',
+					'organizationMembership',
+					'organizationMembership.organizationId = :organizationId',
+					{
+						organizationId
+					}
+				)
+				.where(
+					new Brackets((qb: WhereExpressionBuilder) => {
+						qb.orWhere('user.email LIKE :searchText')
+						qb.orWhere('user.username LIKE :searchText')
+						qb.orWhere('user.firstName LIKE :searchText')
+						qb.orWhere('user.lastName LIKE :searchText')
+					}),
+					{ searchText: `%${sanitizedText}%` }
+				)
+				.andWhere('user.tenantId = :tenantId', { tenantId })
+				.andWhere('organizationMembership.id IS NULL')
+				.take(20)
+
+			return query.getManyAndCount().then(([items, total]) => ({
+				total,
+				items: items.map((item) => new UserPublicDTO(item))
 			}))
 		} else if (organizationId) {
 			const query = this.repository
@@ -295,6 +792,9 @@ export class UserService extends TenantAwareCrudService<User> {
 				email: condition
 			},
 			{
+				username: condition
+			},
+			{
 				firstName: condition
 			},
 			{
@@ -310,4 +810,17 @@ export class UserService extends TenantAwareCrudService<User> {
 	private async getPasswordHash(password: string): Promise<string> {
 		return bcrypt.hash(password, env.USER_PASSWORD_BCRYPT_SALT_ROUNDS)
 	}
+}
+
+function buildTechnicalUsername(value: string) {
+	const normalized = value
+		.toLowerCase()
+		.replace(/[^a-z0-9_]+/g, '_')
+		.replace(/^_+|_+$/g, '')
+
+	if (normalized.length >= 3) {
+		return normalized.slice(0, 20)
+	}
+
+	return `svc_${nanoid(8)}`.slice(0, 20)
 }

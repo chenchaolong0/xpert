@@ -29,6 +29,7 @@ import {
     ChatMessageEventTypeEnum,
     ChatMessageTypeEnum,
     CopilotChatMessage,
+    createFollowUpConsumedEvent,
     createMessageAppendContextTracker,
     GRAPH_NODE_TITLE_CONVERSATION,
     IChatConversation,
@@ -53,29 +54,27 @@ import {
     TXpertAgentConfig,
     XpertAgentExecutionStatusEnum,
     stringifyMessageContent
-} from '@metad/contracts'
-import { getErrorMessage, pick } from '@metad/server-common'
-import { RequestContext } from '@metad/server-core'
-import { Logger } from '@nestjs/common'
+} from '@xpert-ai/contracts'
+import { getErrorMessage, pick } from '@xpert-ai/server-common'
+import { RequestContext } from '@xpert-ai/server-core'
+import { Inject, Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import { format } from 'date-fns/format'
 import { EnsembleRetriever } from 'langchain/retrievers/ensemble'
 import { isNil } from 'lodash'
-import { Observable, Subscriber, tap } from 'rxjs'
+import { EMPTY, Observable, Subscriber, tap } from 'rxjs'
 import z from 'zod'
 import { ChatConversationUpsertCommand, GetChatConversationQuery } from '../../../chat-conversation'
-import { appendMessageSteps, ChatMessageUpsertCommand } from '../../../chat-message'
+import {
+    appendMessageSteps,
+    ChatMessageUpsertCommand,
+    sanitizeMessageContentForPersistence
+} from '../../../chat-message'
 import { CopilotGetChatQuery } from '../../../copilot'
 import { CopilotCheckpointSaver } from '../../../copilot-checkpoint'
 import { CopilotModelGetChatModelQuery } from '../../../copilot-model'
 import { createKnowledgeRetriever } from '../../../knowledgebase/retriever'
-import {
-    CompileGraphCommand,
-    CompleteToolCallsQuery,
-    createMapStreamEvents,
-    CreateSummarizeTitleAgentCommand,
-    messageEvent
-} from '../../../xpert-agent'
+import { CompileGraphCommand, CompleteToolCallsQuery, createMapStreamEvents, messageEvent } from '../../../xpert-agent'
 import {
     assignExecutionUsage,
     XpertAgentExecutionOneQuery,
@@ -102,6 +101,10 @@ import {
     BaseTool,
     createHumanMessage,
     CreateMemoryStoreCommand,
+    collectPendingFollowUpsByClientMessageId,
+    hydrateHumanInput,
+    hydrateSendRequestHumanInput,
+    normalizeReferences,
     rejectGraph,
     stateToParameters,
     stateVariable,
@@ -109,7 +112,9 @@ import {
     ToolNode,
     translate,
     updateToolCalls,
-    VolumeClient
+    VOLUME_CLIENT,
+    VolumeClient,
+    ConversationTitleService
 } from '../../../shared'
 
 const GeneralAgentRecursionLimit = 99
@@ -122,26 +127,87 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
         private readonly checkpointSaver: CopilotCheckpointSaver,
         private readonly projectService: XpertProjectService,
         private readonly commandBus: CommandBus,
-        private readonly queryBus: QueryBus
+        private readonly queryBus: QueryBus,
+        private readonly conversationTitleService: ConversationTitleService,
+        @Inject(VOLUME_CLIENT)
+        private readonly volumeClient: VolumeClient
     ) {}
 
     public async execute(command: ChatCommonCommand): Promise<Observable<any>> {
         const request = command.request
+        const hydratedRequest = hydrateSendRequestHumanInput<TChatRequest>(request)
         const { tenantId, organizationId, user, from: chatFrom } = command.options
         const userId = RequestContext.currentUserId()
         const languageCode = command.options.language || user.preferredLanguage || 'en-US'
-        let input: TChatRequestHuman | null = request.action === 'send' ? request.message.input : null
+        const rawSendInput = request.action === 'send' ? request.message.input : null
+        let input: TChatRequestHuman | null = hydratedRequest.action === 'send' ? hydratedRequest.message.input : null
         let projectId = request.action === 'send' ? request.projectId : undefined
         let checkpointId: string | undefined
         const interruptCommand = request.action === 'resume' ? toInterruptCommand(request) : null
         const retry = request.action === 'retry'
         const confirm = request.action === 'resume'
 
+        if (request.action === 'follow_up') {
+            const conversation = await this.queryBus.execute(
+                new GetChatConversationQuery({ id: request.conversationId }, ['messages', 'messages.attachments'])
+            )
+            if (!conversation) {
+                throw new Error(`Conversation "${request.conversationId}" not found`)
+            }
+
+            const followUpInput = request.message.input
+            const hydratedFollowUpInput =
+                hydratedRequest.action === 'follow_up' ? hydratedRequest.message.input : followUpInput
+            const targetExecutionId =
+                request.target?.executionId ??
+                [...(conversation.messages ?? [])].reverse().find((message) => message.role === 'ai')?.executionId ??
+                null
+
+            const references = normalizeReferences(followUpInput?.references)
+            if (
+                !hydratedFollowUpInput?.input?.trim() &&
+                references.length === 0 &&
+                (!Array.isArray(followUpInput?.files) || followUpInput.files.length === 0)
+            ) {
+                throw new Error('Follow-up input is required')
+            }
+            await this.commandBus.execute(
+                new ChatMessageUpsertCommand({
+                    parent: conversation.messages?.[conversation.messages.length - 1] ?? null,
+                    role: 'human',
+                    content: followUpInput?.input,
+                    conversationId: conversation.id,
+                    ...(references.length
+                        ? {
+                              references
+                          }
+                        : {}),
+                    ...(followUpInput?.files
+                        ? {
+                              attachments: followUpInput.files as IStorageFile[]
+                          }
+                        : {}),
+                    executionId: targetExecutionId ?? undefined,
+                    followUpMode: request.mode,
+                    followUpStatus: 'pending',
+                    targetExecutionId,
+                    visibleAt: null,
+                    thirdPartyMessage: {
+                        followUpInput,
+                        followUpClientMessageId: request.message.clientMessageId ?? null
+                    }
+                })
+            )
+
+            return EMPTY
+        }
+
         let conversation: IChatConversation = null
         let userMessage: IChatMessage = null
         let aiMessage: IChatMessage = null
         let executionId: string
         let executionInputs: unknown = input
+        let queueFollowUpConsumedEvent: ReturnType<typeof createFollowUpConsumedEvent> | null = null
         // Continue thread when confirm or reject operation
         if (confirm) {
             if (isNil(request.conversationId)) {
@@ -176,8 +242,16 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                 if (retry) {
                     throw new Error('Conversation ID is required for retry operation')
                 }
-                const workspacePath = await VolumeClient.getWorkspacePath(tenantId, projectId, userId)
-                const workspaceUrl = VolumeClient.getWorkspaceUrl(projectId, userId)
+                const volume = await this.volumeClient
+                    .resolve({
+                        tenantId,
+                        catalog: projectId ? 'projects' : 'users',
+                        projectId,
+                        userId
+                    })
+                    .ensureRoot()
+                const workspacePath = volume.serverRoot
+                const workspaceUrl = volume.publicBaseUrl
                 conversation = await this.commandBus.execute(
                     new ChatConversationUpsertCommand({
                         tenantId,
@@ -206,6 +280,11 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                 )
                 projectId ??= conversation.projectId
             }
+
+            const persistedPendingFollowUpGroup =
+                request.action === 'send'
+                    ? collectPendingFollowUpsByClientMessageId(conversation.messages, request.message.clientMessageId)
+                    : null
 
             if (retry) {
                 const retryMessageId = resolveConversationRetrySourceMessageId(request, conversation.messages)
@@ -241,28 +320,72 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                 if (!userMessage) {
                     throw new Error('Retry source human message not found')
                 }
-                const fallbackRetryInput: TChatRequestHuman = {
+                const fallbackRetryInput = {
                     ...(conversation.options?.parameters ?? {}),
                     input: stringifyMessageContent(userMessage.content),
+                    ...(userMessage.references?.length
+                        ? {
+                              references: userMessage.references
+                          }
+                        : {}),
                     ...(userMessage.attachments?.length
                         ? {
                               files: userMessage.attachments
                           }
                         : {})
-                }
+                } as TChatRequestHuman
                 input = resolveRetryHumanInput(sourceExecution.inputs, fallbackRetryInput)
                 executionInputs = input
             }
 
             if (!userMessage) {
-                userMessage = await this.commandBus.execute(
-                    new ChatMessageUpsertCommand({
-                        role: 'human',
-                        content: input.input,
-                        conversationId: conversation.id,
-                        attachments: input.files as IStorageFile[]
+                if (persistedPendingFollowUpGroup?.matched?.id) {
+                    input = hydrateHumanInput(persistedPendingFollowUpGroup.mergedHumanInput)
+                    executionInputs = input
+
+                    const visibleAt = new Date()
+                    const consumedMessages: IChatMessage[] = []
+
+                    for (const pendingFollowUp of persistedPendingFollowUpGroup.items) {
+                        consumedMessages.push(
+                            await this.commandBus.execute(
+                                new ChatMessageUpsertCommand({
+                                    ...pendingFollowUp,
+                                    followUpStatus: 'consumed',
+                                    visibleAt
+                                })
+                            )
+                        )
+                    }
+
+                    userMessage =
+                        consumedMessages[consumedMessages.length - 1] ??
+                        conversation.messages.find((message) => message.id === persistedPendingFollowUpGroup.matched.id)
+
+                    queueFollowUpConsumedEvent = createFollowUpConsumedEvent({
+                        mode: 'queue',
+                        messageIds: persistedPendingFollowUpGroup.messageIds,
+                        clientMessageIds: persistedPendingFollowUpGroup.clientMessageIds,
+                        executionId: persistedPendingFollowUpGroup.targetExecutionId,
+                        visibleAt: visibleAt.toISOString()
                     })
-                )
+                } else {
+                    const persistedInput = rawSendInput ?? input
+                    const references = normalizeReferences(persistedInput?.references)
+                    userMessage = await this.commandBus.execute(
+                        new ChatMessageUpsertCommand({
+                            role: 'human',
+                            content: persistedInput?.input,
+                            conversationId: conversation.id,
+                            ...(references.length
+                                ? {
+                                      references
+                                  }
+                                : {}),
+                            attachments: persistedInput?.files as IStorageFile[]
+                        })
+                    )
+                }
             }
         }
 
@@ -303,6 +426,16 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                     }
                 }
             } as MessageEvent)
+
+            if (queueFollowUpConsumedEvent) {
+                subscriber.next({
+                    data: {
+                        type: ChatMessageTypeEnum.EVENT,
+                        event: ChatMessageEventTypeEnum.ON_CHAT_EVENT,
+                        data: queueFollowUpConsumedEvent
+                    }
+                } as MessageEvent)
+            }
 
             const reflect = RunnableLambda.from(async (input: TChatRequestHuman) => {
                 if (!aiMessage) {
@@ -384,6 +517,7 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                                     timezone: user.timeZone || command.options.timeZone,
                                     date: format(new Date(), 'yyyy-MM-dd'),
                                     datetime: new Date().toLocaleString(),
+                                    thread_id: conversation.threadId,
                                     workspace_path: conversation.options?.workspacePath,
                                     workspace_url: conversation.options?.workspaceUrl
                                 }
@@ -618,7 +752,11 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                             fallbackStreamId: aiMessage?.id ?? executionId
                         })
 
-                        appendMessageContent(aiMessage as CopilotChatMessage, event.data.data, messageContext)
+                        appendMessageContent(
+                            aiMessage as CopilotChatMessage,
+                            sanitizeMessageContentForPersistence(event.data.data),
+                            messageContext
+                        )
                         result = appendMessagePlainText(result, event.data.data, messageContext)
                     } else if (event.data.type === ChatMessageTypeEnum.EVENT) {
                         switch (event.data.event) {
@@ -717,6 +855,7 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                     project.toolsets.map(({ id }) => id),
                     {
                         projectId: project.id,
+                        workspaceId: project.workspaceId,
                         conversationId,
                         xpertId: null,
                         signal: abortController.signal,
@@ -939,14 +1078,14 @@ export class ChatCommonHandler implements ICommandHandler<ChatCommonCommand> {
                 return END
             })
 
-        const titleAgent = await this.commandBus.execute(
-            new CreateSummarizeTitleAgentCommand({
-                threadId: thread_id,
-                copilot,
-                rootController: abortController,
-                rootExecutionId: execution.id,
-                channel: null
-            })
+        const titleAgent = RunnableLambda.from(
+            async (state: typeof AgentStateAnnotation.State, config?: RunnableConfig) =>
+                await this.conversationTitleService.generateStatePatch({
+                    channel: null,
+                    config,
+                    copilot,
+                    state
+                })
         )
 
         builder.addNode(GRAPH_NODE_TITLE_CONVERSATION, titleAgent).addEdge(GRAPH_NODE_TITLE_CONVERSATION, END)

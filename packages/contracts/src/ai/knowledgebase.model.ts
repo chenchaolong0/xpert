@@ -6,17 +6,25 @@ import { IXpert } from './xpert.model'
 import { IIntegration } from '../integration.model'
 import { channelName } from '../agent/graph'
 import { IDocChunkMetadata } from './knowledge-doc-chunk.model'
+import type { GraphRagConfig, KnowledgeGraphStatus } from './knowledge-graph.model'
 
 /**
  * Non-internal types should remain the same as IntegrationEnum.
  */
 export enum KnowledgeProviderEnum {
-  Internal = 'internal',
+  Internal = 'internal'
 }
 
 export enum KnowledgebaseTypeEnum {
   Standard = 'standard',
   External = 'external'
+}
+
+export enum KnowledgebaseStatusEnum {
+  READY = 'ready',
+  REBUILD_REQUIRED = 'rebuild_required',
+  REBUILDING = 'rebuilding',
+  REBUILD_FAILED = 'rebuild_failed'
 }
 
 export enum KnowledgeStructureEnum {
@@ -71,6 +79,32 @@ export type TKnowledgebase = {
   copilotModel?: ICopilotModel
   copilotModelId?: string
 
+  /**
+   * Chat model for knowledgebase LLM tasks.
+   */
+  chatModel?: ICopilotModel | null
+  chatModelId?: string | null
+
+  embeddingCollectionName?: string | null
+  embeddingModelFingerprint?: string | null
+  embeddingDimensions?: number | null
+  embeddingRevision?: number | null
+
+  pendingCopilotModel?: ICopilotModel | null
+  pendingCopilotModelId?: string | null
+  pendingEmbeddingCollectionName?: string | null
+  pendingEmbeddingModelFingerprint?: string | null
+  pendingEmbeddingDimensions?: number | null
+  pendingEmbeddingRevision?: number | null
+
+  rebuildTaskId?: string | null
+  embeddingRebuildError?: string | null
+
+  graphRag?: GraphRagConfig | null
+  graphStatus?: KnowledgeGraphStatus | null
+  graphRevision?: number | null
+  graphIndexError?: string | null
+
   // Rerank model for re-ranking retrieved chunks
   rerankModel?: ICopilotModel
   rerankModelId?: string
@@ -106,12 +140,12 @@ export type TKnowledgebase = {
    */
   recall?: TKBRecallParams
 
-  status?: string
-  
+  status?: KnowledgebaseStatusEnum
+
   /**
    * Metadata custom field definition array
    */
-	metadataSchema?: KBMetadataFieldDef[]
+  metadataSchema?: KBMetadataFieldDef[]
 
   /**
    * API service enabled
@@ -173,19 +207,26 @@ export type TKBRecallParams = {
 }
 
 export type DocumentMetadata = IDocChunkMetadata & {
-    score?: number; 
-    relevanceScore?: number
-} & Record<string, any>;
+  score?: number
+  relevanceScore?: number
+} & Record<string, any>
 
 export type MetadataFieldType =
-  | 'string' | 'number' | 'boolean' | 'enum' | 'datetime' | 'string[]' | 'number[]' | 'object';
+  | 'string'
+  | 'number'
+  | 'boolean'
+  | 'enum'
+  | 'datetime'
+  | 'string[]'
+  | 'number[]'
+  | 'object'
 
 export type KBMetadataFieldDef = {
-  key: string;                // Unique key, e.g. "department"
-  label?: I18nObject;             // Display label
-  type: MetadataFieldType;
-  enumValues?: string[];
-  description?: string;
+  key: string // Unique key, e.g. "department"
+  label?: I18nObject // Display label
+  type: MetadataFieldType
+  enumValues?: string[]
+  description?: string
 }
 
 /**

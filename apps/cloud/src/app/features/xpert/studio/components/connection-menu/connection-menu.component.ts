@@ -1,6 +1,6 @@
 import { CdkListboxModule } from '@angular/cdk/listbox'
 import { CdkMenuModule } from '@angular/cdk/menu'
-import { CommonModule } from '@angular/common'
+
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { FConnectionComponent } from '@foblex/flow'
@@ -12,7 +12,7 @@ import { XpertStudioApiService } from '../../domain'
 
 @Component({
   standalone: true,
-  imports: [CommonModule, TranslateModule, FormsModule, CdkMenuModule, CdkListboxModule],
+  imports: [TranslateModule, FormsModule, CdkMenuModule, CdkListboxModule],
   selector: 'xpert-studio-connection-menu',
   templateUrl: './connection-menu.component.html',
   styleUrls: ['./connection-menu.component.scss'],
@@ -31,6 +31,8 @@ export class XpertStudioConnectionMenuComponent {
   // States
   readonly agentKey = computed(() => (this.connection().type === 'toolset' ? this.connection().from : null))
   readonly toolsetId = computed(() => (this.connection().type === 'toolset' ? this.connection().to : null))
+  readonly isSubAgentConnection = computed(() => ['agent', 'xpert'].includes(this.connection()?.type))
+  readonly requiredSubAgent = computed(() => !!this.connection()?.required)
 
   readonly agentNode = computed(
     () =>
@@ -93,8 +95,18 @@ export class XpertStudioConnectionMenuComponent {
     })
   }
 
+  updateSubAgentRequired(required: boolean) {
+    const connection = this.connection()
+    if (!connection || connection.readonly) return
+
+    this.studioService.updateConnection(connection.key, (item) => ({
+      ...item,
+      required
+    }))
+  }
+
   removeConnection() {
     const connection: FConnectionComponent = this.connectionComponent()
-    this.studioService.removeConnection(connection.fOutputId, connection.fInputId)
+    this.studioService.removeConnection(connection.fOutputId(), connection.fInputId())
   }
 }

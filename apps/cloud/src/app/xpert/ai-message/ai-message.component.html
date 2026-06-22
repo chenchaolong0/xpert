@@ -1,22 +1,23 @@
-<div class="flex items-center py-1 -mx-[1px] sticky top-14 z-10 bg-surface-container">
+<div class="flex items-center py-1 -mx-[1px] sticky top-12 z-10 bg-background-body">
   <emoji-avatar class="shrink-0 rounded-full overflow-hidden shadow-sm mr-2" [avatar]="avatar()" />
-  <div class="truncate text-text-secondary">{{title()}}</div>
+  <div class="truncate text-text-secondary">{{ title() }}</div>
 </div>
 
 <div class="group/message flex-1 flex flex-col pt-2 pb-10">
-
   <!-- executions -->
   @if (showExecution()) {
-    <div class="relative rounded-xl border border-solid border-teal-800 p-2 bg-gray-50">
-      <div class="flex items-center leading-[18px] text-sm text-gray-500 uppercase">
-        <div class="flex items-center cursor-pointer pressable rounded-md hover:bg-hover-bg"
-          (click)="expandExecutions.set(!expandExecutions())">
+    <div class="relative rounded-xl border border-solid border-divider-regular p-2 bg-components-panel-bg">
+      <div class="flex items-center leading-[18px] text-sm text-text-tertiary uppercase">
+        <div
+          class="flex items-center cursor-pointer pressable rounded-md hover:bg-hover-bg"
+          (click)="expandExecutions.set(!expandExecutions())"
+        >
           @if (expandExecutions()) {
             <i class="ri-arrow-down-s-line"></i>
           } @else {
             <i class="ri-arrow-right-s-line"></i>
           }
-          <div class="mr-3 font-semibold">{{'PAC.Xpert.Executions' | translate: {Default: 'Executions'} }}</div>
+          <div class="mr-3 font-semibold">{{ 'PAC.Xpert.Executions' | translate: { Default: 'Executions' } }}</div>
         </div>
       </div>
 
@@ -25,38 +26,63 @@
           <ngm-spin class="absolute left-0 top-0 w-full h-full" />
         }
         @for (execution of executions$ | async; track execution.id) {
-          <chat-message-execution [execution]="execution" class="p-1 bg-components-card-bg border border-solid border-divider-regular rounded-xl mb-1" />
+          <chat-message-execution
+            [execution]="execution"
+            class="p-1 bg-components-card-bg border border-solid border-divider-regular rounded-xl mb-1"
+          />
         }
       } @else {
         @for (execution of executings(); track execution.id) {
-          <chat-message-execution [execution]="execution" class="p-1 bg-components-card-bg border border-solid border-divider-regular rounded-xl mb-1" />
+          <chat-message-execution
+            [execution]="execution"
+            class="p-1 bg-components-card-bg border border-solid border-divider-regular rounded-xl mb-1"
+          />
         }
       }
     </div>
   }
 
   @if (reasoning()) {
-    <chat-thought [message]="message()"
-      class="border-2 border-gray-200 rounded-3xl mb-4 overflow-clip bg-surface-container"
+    <chat-thought
+      [message]="message()"
+      class="border-2 border-divider-subtle rounded-3xl mb-4 overflow-clip bg-background-body"
       [class.reasoning]="status() === 'reasoning'"
     />
   }
 
-  @for (submessage of contents(); track submessage.id; let i = $index; let last = $last) {
-    <chat-message-avatar #avatar class="group sticky top-14 z-10 bg-surface-container"
-      [prevContent]="contents()[i - 1]"
-      [message]="message()"
-      [content]="submessage"
-      [collapse]="submessage.id && collapseMessages()[submessage.id]"
-      (collapseChange)="updateCollapse(submessage.id, $event)"
+  @if (renderTree().hasAgentRuns) {
+    <ng-container
+      [ngTemplateOutlet]="agentRunUnitsTemplate"
+      [ngTemplateOutletContext]="{ units: renderTree().units, depth: 0 }"
     />
-    <chat-message-content class="px-2 z-0" [message]="message()" [content]="submessage" [last]="last"
-      [collapse]="submessage.id && collapseMessages()[submessage.id]"
-    />
+  } @else {
+    @for (submessage of contents(); track submessage.id; let i = $index; let last = $last) {
+      @if (!isContextCompressionContent(submessage)) {
+        <chat-message-avatar
+          #avatar
+          class="group sticky top-14 z-10 bg-background-body"
+          [prevContent]="contents()[i - 1]"
+          [message]="message()"
+          [content]="submessage"
+          [collapse]="submessage.id && collapseMessages()[submessage.id]"
+          (collapseChange)="updateCollapse(submessage.id, $event)"
+        />
+      }
+      <chat-message-content
+        class="z-0"
+        [class.px-2]="!isContextCompressionContent(submessage)"
+        [message]="message()"
+        [content]="submessage"
+        [last]="last"
+        [collapse]="submessage.id && collapseMessages()[submessage.id]"
+      />
+    }
   }
 
-  @if (contentStr()) {
-    <markdown clipboard class="ngm-copilot-markdown flex-1"
+  @if (!renderTree().hasAgentRuns && contentStr()) {
+    <markdown
+      clipboard
+      class="ngm-copilot-markdown flex-1"
       [clipboardButtonTemplate]="buttonTemplate"
       [disableSanitizer]="true"
       lineNumbers
@@ -65,44 +91,178 @@
     />
   }
 
+  <ng-template #agentRunUnitsTemplate let-units="units" let-depth="depth">
+    @for (unit of units; track trackAgentRenderUnit($index, unit); let i = $index; let last = $last) {
+      @if (unit.type === 'entry') {
+        @let entry = $any(unit).entry;
+        @if (entry.source === 'content') {
+          @let contentValue = entryContent(entry);
+          @let entryId = entryContentId(entry);
+          @if (depth === 0 && !isContextCompressionContent(contentValue)) {
+            <chat-message-avatar
+              #avatar
+              class="group sticky top-14 z-10 bg-background-body"
+              [prevContent]="previousEntryContent(units, i)"
+              [message]="message()"
+              [content]="contentValue"
+              [collapse]="entryId && collapseMessages()[entryId]"
+              (collapseChange)="entryId && updateCollapse(entryId, $event)"
+            />
+          }
+          <chat-message-content
+            class="z-0"
+            [class.px-2]="depth === 0 && !isContextCompressionContent(contentValue)"
+            [message]="message()"
+            [content]="contentValue"
+            [last]="last"
+            [collapse]="entryId && collapseMessages()[entryId]"
+            [agentOutput]="depth > 0"
+          />
+        } @else if (entry.source === 'reasoning') {
+          <chat-thought
+            [message]="message()"
+            [content]="reasoningEntry(entry)"
+            class="block overflow-clip rounded-2xl border border-divider-subtle bg-background-body"
+          />
+        } @else {
+          @let event = agentEvent(entry);
+          <div
+            class="flex items-start gap-2 rounded-md px-2 py-1.5 text-xs leading-5"
+            [class.bg-status-error-bg]="isAgentEventError(event)"
+            [class.text-text-destructive]="isAgentEventError(event)"
+            [class.bg-components-card-bg]="!isAgentEventError(event)"
+            [class.text-text-secondary]="!isAgentEventError(event)"
+          >
+            <i class="ri-information-line mt-0.5 shrink-0"></i>
+            <div class="min-w-0 flex-1">
+              <div class="truncate font-medium">{{ agentEventLabel(event) }}</div>
+              @if (agentEventDetail(event); as detail) {
+                <div class="break-words">{{ detail }}</div>
+              }
+              @if (event.error) {
+                <pre class="mt-1 whitespace-pre-wrap break-words">{{ event.error }}</pre>
+              }
+            </div>
+          </div>
+        }
+      } @else {
+        @let node = $any(unit).node;
+        @let expanded = isAgentRunExpanded(node, !last);
+        <div class="border-l border-divider-subtle pl-2" [class.ml-1]="depth > 0">
+          <button
+            type="button"
+            class="group/agent group-agent flex w-full items-start justify-between gap-2 rounded-md px-0 py-1.5 text-left"
+            [attr.aria-expanded]="expanded"
+            (click)="toggleAgentRun(node, !last)"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                <i
+                  class="ri-robot-2-line shrink-0 text-base text-text-tertiary transition-colors group-hover/agent:text-text-secondary"
+                ></i>
+                <span
+                  class="min-w-0 max-w-64 truncate text-sm font-medium text-text-secondary transition-colors group-hover/agent:text-text-primary"
+                >
+                  {{ agentRunTitle(node) }}
+                </span>
+                <span
+                  class="inline-flex shrink-0 items-center gap-1 text-xs text-text-tertiary transition-colors group-hover/agent:text-text-secondary"
+                >
+                  <i [class]="agentRunStatusIcon(node)"></i>
+                  {{ agentRunStatusLabel(node) }}
+                </span>
+                @if (agentRunDuration(node); as duration) {
+                  <span
+                    class="inline-flex shrink-0 items-center gap-1 text-xs tabular-nums text-text-tertiary transition-colors group-hover/agent:text-text-secondary"
+                  >
+                    <i class="ri-time-line"></i>
+                    {{ duration }}
+                  </span>
+                }
+                @if (agentRunInputTooltip(node); as inputTooltip) {
+                  <span
+                    class="inline-flex shrink-0 items-center gap-1 text-xs text-text-tertiary transition-colors group-hover/agent:text-text-secondary"
+                    [zTooltip]="inputTooltip"
+                    zPosition="top"
+                  >
+                    <i class="ri-braces-line"></i>
+                  </span>
+                }
+                @for (item of agentRunCountItems(node); track item.key) {
+                  <span
+                    class="inline-flex shrink-0 items-center gap-1 text-xs text-text-tertiary transition-colors group-hover/agent:text-text-secondary"
+                    [zTooltip]="item.label"
+                    zPosition="top"
+                  >
+                    <i [class]="item.icon"></i>
+                    {{ item.count }}
+                  </span>
+                }
+              </div>
+            </div>
+            <i
+              class="ri-arrow-right-s-line mt-0.5 shrink-0 text-base text-text-tertiary transition-all group-hover/agent:text-text-secondary"
+              [class.rotate-90]="expanded"
+            ></i>
+          </button>
+
+          @if (expanded) {
+            <div class="mt-2 space-y-3">
+              @if (agentRunError(node); as error) {
+                <pre
+                  class="rounded-md bg-status-error-bg px-2 py-2 text-xs text-text-destructive whitespace-pre-wrap break-words"
+                  >{{ error }}</pre
+                >
+              }
+              <ng-container
+                [ngTemplateOutlet]="agentRunUnitsTemplate"
+                [ngTemplateOutletContext]="{ units: agentNodeUnits(node), depth: depth + 1 }"
+              />
+            </div>
+          }
+        </div>
+      }
+    }
+  </ng-template>
+
   <div class="flex justify-start items-center gap-2">
     @if (answering()) {
       <span class="thinking-placeholder shrink-0 !m-0"></span>
     }
     @if (lastStep(); as event) {
-      <div class="px-2 py-1 flex items-center gap-1 rounded-lg cursor-pointer text-sm text-token-text-secondary truncate bg-gray-50 hover:bg-gray-100"
-        [matTooltip]="message().error"
-        matTooltipPosition="above"
-        matTooltipPositionAtOrigin
+      <div
+        class="px-2 py-1 flex items-center gap-1 rounded-lg cursor-pointer text-sm text-text-secondary truncate bg-components-card-bg hover:bg-hover-bg"
+        [zTooltip]="message().error"
+        zPosition="top"
       >
-        {{event.title}}
+        {{ event.title }}
         @if (event.message) {
-          : {{event.message}}
+          : {{ event.message }}
         }
       </div>
     }
   </div>
 
-<!--
+  <!--
   @if (lastStep(); as step) {
     <div class="relative group flex-1 min-w-0 mt-2 cursor-pointer" (click)="toggleSteps()">
       <div [@listHeightStagger]="steps()"
-        class="rounded-xl flex flex-col gap-1 p-1 border border-[var(--border-light)] bg-[var(--fill-tsp-gray-main)] max-w-full clickable hover:bg-[var(--fill-tsp-gray-dark)] dark:hover:bg-white/[0.02]"
+        class="rounded-xl flex flex-col gap-1 p-1 border border-divider-subtle bg-components-card-bg max-w-full clickable hover:bg-hover-bg dark:hover:bg-hover-bg"
       >
         @for (step of steps(); track $index) {
-          <div class="group/item relative flex items-center p-1 py-1 rounded-lg hover:bg-white" >
+          <div class="group/item relative flex items-center p-1 py-1 rounded-lg hover:bg-hover-bg" >
             <chat-message-step-icon class="w-[16px] inline-flex items-center text-text-secondary"
               [step]="{category: step.category}"
             />
             <div class="flex-1 h-full min-w-0 flex">
-              <div class="inline-flex items-center h-full rounded-full font-body text-[14px] text-[var(--text-secondary)] max-w-[100%]">
+              <div class="inline-flex items-center h-full rounded-full font-body text-[14px] text-text-secondary max-w-[100%]">
                 <div
                   class="max-w-[100%] text-ellipsis overflow-hidden whitespace-nowrap text-[13px] group-hover/item:text-text-primary"
                   [title]="step.message || step.title"
                 >
                   <div class="flex items-center">
                     <span
-                      class="flex-1 min-w-0 rounded-[6px] px-1 ml-1 relative top-[0px] text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-[var(--text-tertiary)]"
+                      class="flex-1 min-w-0 rounded-[6px] px-1 ml-1 relative top-[0px] text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-text-tertiary"
                       >
                       {{ step.message || step.title }}
                     </span>
@@ -120,8 +280,8 @@
 
       <a class="absolute top-1 right-2 w-8 h-8 cursor-pointer flex justify-center items-center rounded-lg
         hover:bg-hover-bg opacity-70 group-hover:opacity-100 bg-black/5 backdrop-blur-3xl"
-        [matTooltip]="'PAC.Chat.OpenInCanvas' | translate: {Default: 'Open in canvas'}"
-        matTooltipPosition="above"
+        [zTooltip]="'PAC.Chat.OpenInCanvas' | translate: {Default: 'Open in canvas'}"
+        zPosition="top"
         (click)="openCanvas()">
         <svg class="shrink-0 w-5 h-5" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M13 3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3"/>
@@ -135,29 +295,35 @@
   } -->
 
   <div class="absolute left-0 bottom-2 flex justify-end items-center gap-1">
-    <div class="hidden group-hover/message:flex gap-1 p-0.5 rounded-lg bg-white border-[0.5px] border-gray-100 shadow-sm shrink-0">
+    <div
+      class="hidden group-hover/message:flex gap-1 p-0.5 rounded-lg bg-components-card-bg border-[0.5px] border-divider-subtle shadow-sm shrink-0"
+    >
       <!-- Retry button for this message -->
-      <div class="shrink-0 w-6 h-6 p-1 flex items-center justify-center rounded-md font-medium pressable
-        bg-components-card-bg text-gray-500 hover:bg-gray-50 cursor-pointer hover:text-gray-700"
-        [matTooltip]="'PAC.KEY_WORDS.Retry' | translate: {Default: 'Retry'}"
-        matTooltipPosition="above"
+      <div
+        class="shrink-0 w-6 h-6 p-1 flex items-center justify-center rounded-md font-medium pressable bg-components-card-bg text-text-secondary hover:bg-hover-bg cursor-pointer hover:text-text-primary"
+        [zTooltip]="'PAC.KEY_WORDS.Retry' | translate: { Default: 'Retry' }"
+        zPosition="top"
         [class.opacity-40]="!canRetry()"
         (click)="onRetryMessage()"
       >
         <i class="ri-repeat-2-line"></i>
       </div>
-      <div class="shrink-0 w-6 h-6 p-1 flex items-center justify-center rounded-md font-medium pressable
-        bg-components-card-bg text-gray-500 hover:bg-gray-50 cursor-pointer hover:text-gray-700"
-        [matTooltip]="'PAC.Xpert.Logs' | translate: {Default: 'Logs'}"
-        matTooltipPosition="above"
+      <div
+        class="shrink-0 w-6 h-6 p-1 flex items-center justify-center rounded-md font-medium pressable bg-components-card-bg text-text-secondary hover:bg-hover-bg cursor-pointer hover:text-text-primary"
+        [zTooltip]="'PAC.Xpert.Logs' | translate: { Default: 'Logs' }"
+        zPosition="top"
         (click)="openLogs()"
       >
         <i class="ri-chat-thread-line"></i>
       </div>
-      <div class="shrink-0 w-6 h-6 p-1 flex items-center justify-center rounded-md font-medium pressable
-        bg-components-card-bg text-gray-500 hover:bg-gray-50 cursor-pointer hover:text-gray-700"
-        [matTooltip]="copy.copied() ? ('PAC.Xpert.Copied' | translate: {Default: 'Copied'}) : ('PAC.Xpert.Copy' | translate: {Default: 'Copy'})"
-        matTooltipPosition="above"
+      <div
+        class="shrink-0 w-6 h-6 p-1 flex items-center justify-center rounded-md font-medium pressable bg-components-card-bg text-text-secondary hover:bg-hover-bg cursor-pointer hover:text-text-primary"
+        [zTooltip]="
+          copy.copied()
+            ? ('PAC.Xpert.Copied' | translate: { Default: 'Copied' })
+            : ('PAC.Xpert.Copy' | translate: { Default: 'Copy' })
+        "
+        zPosition="top"
       >
         <copy #copy [content]="contentString()" />
       </div>
@@ -166,34 +332,40 @@
     @if (feedbackReady()) {
       @if (getFeedback(message().id); as feedback) {
         @if (feedback.rating === eFeedbackRatingEnum.LIKE) {
-          <div class="flex items-center justify-center mx-1 w-6 h-6 rounded-md cursor-pointer bg-primary-100 text-primary-500 hover:bg-primary-100 hover:text-primary-600"
-            [matTooltip]="'PAC.KEY_WORDS.CancelLike' | translate: {Default: 'Cancel like'}"
-            matTooltipPosition="above"
+          <div
+            class="flex items-center justify-center mx-1 w-6 h-6 rounded-md cursor-pointer bg-primary-100 text-primary-500 hover:bg-primary-100 hover:text-primary-600"
+            [zTooltip]="'PAC.KEY_WORDS.CancelLike' | translate: { Default: 'Cancel like' }"
+            zPosition="top"
             (click)="cancelFeedback(message(), feedback.id)"
           >
             <i class="ri-thumb-up-line"></i>
           </div>
         } @else if (feedback.rating === eFeedbackRatingEnum.DISLIKE) {
-          <div class="flex items-center justify-center mx-1 w-6 h-6 rounded-md cursor-pointer bg-red-100 text-red-500 hover:bg-red-200 hover:text-red-600"
-            [matTooltip]="'PAC.KEY_WORDS.CancelDislike' | translate: {Default: 'Cancel dislike'}"
-            matTooltipPosition="above"
+          <div
+            class="flex items-center justify-center mx-1 w-6 h-6 rounded-md cursor-pointer bg-red-100 text-red-500 hover:bg-red-200 hover:text-red-600"
+            [zTooltip]="'PAC.KEY_WORDS.CancelDislike' | translate: { Default: 'Cancel dislike' }"
+            zPosition="top"
             (click)="cancelFeedback(message(), feedback.id)"
           >
             <i class="ri-thumb-down-line"></i>
           </div>
         }
       } @else {
-        <div class="hidden group-hover/message:flex shrink-0 items-center p-0.5 bg-white border-[0.5px] border-gray-100 shadow-sm text-gray-500 rounded-lg">
-          <div class="flex items-center justify-center mr-0.5 w-6 h-6 rounded-md hover:bg-black/5 hover:text-gray-800 cursor-pointer"
-            [matTooltip]="'PAC.KEY_WORDS.Like' | translate: {Default: 'Like'}"
-            matTooltipPosition="above"
+        <div
+          class="hidden group-hover/message:flex shrink-0 items-center p-0.5 bg-components-card-bg border-[0.5px] border-divider-subtle shadow-sm text-text-secondary rounded-lg"
+        >
+          <div
+            class="flex items-center justify-center mr-0.5 w-6 h-6 rounded-md hover:bg-hover-bg hover:text-text-primary cursor-pointer"
+            [zTooltip]="'PAC.KEY_WORDS.Like' | translate: { Default: 'Like' }"
+            zPosition="top"
             (click)="feedback(message(), eFeedbackRatingEnum.LIKE)"
           >
             <i class="ri-thumb-up-line"></i>
           </div>
-          <div class="flex items-center justify-center w-6 h-6 rounded-md hover:bg-black/5 hover:text-gray-800 cursor-pointer"
-            [matTooltip]="'PAC.KEY_WORDS.Dislike' | translate: {Default: 'Dislike'}"
-            matTooltipPosition="above"
+          <div
+            class="flex items-center justify-center w-6 h-6 rounded-md hover:bg-hover-bg hover:text-text-primary cursor-pointer"
+            [zTooltip]="'PAC.KEY_WORDS.Dislike' | translate: { Default: 'Dislike' }"
+            zPosition="top"
             (click)="feedback(message(), eFeedbackRatingEnum.DISLIKE)"
           >
             <i class="ri-thumb-down-line"></i>
@@ -203,13 +375,13 @@
     }
 
     @if (textToSpeech_enabled()) {
-      <div class="shrink-0 hidden group-hover/message:flex w-7 h-7 items-center justify-center rounded-[6px] font-medium
-        bg-components-card-bg text-gray-500 hover:bg-gray-50 cursor-pointer hover:text-gray-700"
+      <div
+        class="shrink-0 hidden group-hover/message:flex w-7 h-7 items-center justify-center rounded-[6px] font-medium bg-components-card-bg text-text-secondary hover:bg-hover-bg cursor-pointer hover:text-text-primary"
         [ngClass]="{
-            '!flex': synthesizeLoading() || isPlaying()
-          }"
-        [matTooltip]="'PAC.Xpert.ReadAloud' | translate: {Default: 'Read aloud'} "
-        matTooltipPosition="above"
+          '!flex': synthesizeLoading() || isPlaying()
+        }"
+        [zTooltip]="'PAC.Xpert.ReadAloud' | translate: { Default: 'Read aloud' }"
+        zPosition="top"
         (click)="readAloud(message())"
       >
         @if (synthesizeLoading() || isPlaying()) {
@@ -220,19 +392,27 @@
       </div>
     }
   </div>
-
 </div>
 
 <ng-template #buttonTemplate>
   <button #copyButton class="btn btn-small rounded-xl" (click)="onCopy(copyButton)">
     @if ($any(copyButton).copied) {
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" >
-        <path fill-rule="evenodd" clip-rule="evenodd" d="M18.0633 5.67375C18.5196 5.98487 18.6374 6.607 18.3262 7.06331L10.8262 18.0633C10.6585 18.3093 10.3898 18.4678 10.0934 18.4956C9.79688 18.5234 9.50345 18.4176 9.29289 18.2071L4.79289 13.7071C4.40237 13.3166 4.40237 12.6834 4.79289 12.2929C5.18342 11.9023 5.81658 11.9023 6.20711 12.2929L9.85368 15.9394L16.6738 5.93664C16.9849 5.48033 17.607 5.36263 18.0633 5.67375Z" fill="currentColor">
-          </path>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path
+          fill-rule="evenodd"
+          clip-rule="evenodd"
+          d="M18.0633 5.67375C18.5196 5.98487 18.6374 6.607 18.3262 7.06331L10.8262 18.0633C10.6585 18.3093 10.3898 18.4678 10.0934 18.4956C9.79688 18.5234 9.50345 18.4176 9.29289 18.2071L4.79289 13.7071C4.40237 13.3166 4.40237 12.6834 4.79289 12.2929C5.18342 11.9023 5.81658 11.9023 6.20711 12.2929L9.85368 15.9394L16.6738 5.93664C16.9849 5.48033 17.607 5.36263 18.0633 5.67375Z"
+          fill="currentColor"
+        ></path>
       </svg>
     } @else {
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" >
-        <path fill-rule="evenodd" clip-rule="evenodd" d="M12 4C10.8954 4 10 4.89543 10 6H14C14 4.89543 13.1046 4 12 4ZM8.53513 4C9.22675 2.8044 10.5194 2 12 2C13.4806 2 14.7733 2.8044 15.4649 4H17C18.6569 4 20 5.34315 20 7V19C20 20.6569 18.6569 22 17 22H7C5.34315 22 4 20.6569 4 19V7C4 5.34315 5.34315 4 7 4H8.53513ZM8 6H7C6.44772 6 6 6.44772 6 7V19C6 19.5523 6.44772 20 7 20H17C17.5523 20 18 19.5523 18 19V7C18 6.44772 17.5523 6 17 6H16C16 7.10457 15.1046 8 14 8H10C8.89543 8 8 7.10457 8 6Z" fill="currentColor"></path>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path
+          fill-rule="evenodd"
+          clip-rule="evenodd"
+          d="M12 4C10.8954 4 10 4.89543 10 6H14C14 4.89543 13.1046 4 12 4ZM8.53513 4C9.22675 2.8044 10.5194 2 12 2C13.4806 2 14.7733 2.8044 15.4649 4H17C18.6569 4 20 5.34315 20 7V19C20 20.6569 18.6569 22 17 22H7C5.34315 22 4 20.6569 4 19V7C4 5.34315 5.34315 4 7 4H8.53513ZM8 6H7C6.44772 6 6 6.44772 6 7V19C6 19.5523 6.44772 20 7 20H17C17.5523 20 18 19.5523 18 19V7C18 6.44772 17.5523 6 17 6H16C16 7.10457 15.1046 8 14 8H10C8.89543 8 8 7.10457 8 6Z"
+          fill="currentColor"
+        ></path>
       </svg>
     }
   </button>
@@ -242,11 +422,7 @@
   <div class="ngm-cdk-menu max-h-96 max-w-lg text-sm overflow-x-hidden overflow-y-auto" cdkMenu>
     @for (item of data; track $index) {
       <p class="px-2 rounded-md hover:bg-black/5 dark:hover:bg-white/10">
-        <markdown class="ngm-copilot-markdown"
-          lineNumbers
-          [start]="5"
-          [data]="item.doc.pageContent"
-        />
+        <markdown class="ngm-copilot-markdown" lineNumbers [start]="5" [data]="item.doc.pageContent" />
       </p>
     }
   </div>
@@ -257,11 +433,7 @@
     <div class="flex flex-col text-sm">
       @for (item of messages; track $index) {
         <p class="px-2 rounded-md hover:bg-black/5 dark:hover:bg-white/10">
-          <markdown class="ngm-copilot-markdown"
-            lineNumbers
-            [start]="5"
-            [data]="item.content"
-          />
+          <markdown class="ngm-copilot-markdown" lineNumbers [start]="5" [data]="item.content" />
         </p>
       }
     </div>

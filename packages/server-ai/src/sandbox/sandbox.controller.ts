@@ -1,194 +1,614 @@
-import { keepAlive, takeUntilClose } from '@metad/server-common'
-import { environment } from '@metad/server-config'
+import { keepAlive, takeUntilClose } from '@xpert-ai/server-common'
+import { environment } from '@xpert-ai/server-config'
 import {
-	GetDefaultTenantQuery,
-	Public,
-	RequestContext,
-	TransformInterceptor,
-	UploadFileCommand,
-	getFileAssetDestination
-} from '@metad/server-core'
+    GetDefaultTenantQuery,
+    Public,
+    RequestContext,
+    TransformInterceptor,
+    UploadFileCommand,
+    getFileAssetDestination
+} from '@xpert-ai/server-core'
 import {
-	Body,
-	Controller,
-	ForbiddenException,
-	Get,
-	Header,
-	Logger,
-	Param,
-	Post,
-	Query,
-	Res,
-	Sse,
-	UploadedFile,
-	UseInterceptors
+    ISandboxManagedService,
+    SandboxManagedServiceErrorCode,
+    TSandboxManagedServiceLogs,
+    TSandboxManagedServicePreviewSession,
+    TSandboxManagedServiceStartInput
+} from '@xpert-ai/contracts'
+import {
+    All,
+    BadRequestException,
+    ConflictException,
+    Body,
+    Controller,
+    ForbiddenException,
+    Get,
+    Header,
+    Inject,
+    Logger,
+    NotFoundException,
+    Param,
+    Post,
+    Query,
+    Req,
+    Res,
+    Sse,
+    UploadedFile,
+    UseGuards,
+    UseInterceptors
 } from '@nestjs/common'
 import { CommandBus, QueryBus } from '@nestjs/cqrs'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger'
-import { Response } from 'express'
+import { Request, Response } from 'express'
 import fs from 'fs'
 import { I18nService } from 'nestjs-i18n'
-import { join } from 'path'
-import { ChatConversationService } from '../chat-conversation'
-import { VolumeClient, getMediaTypeWithCharset, getWorkspace } from '../shared'
-import { Sandbox } from './client'
-import { SandboxLoadCommand } from './commands'
+import { isAbsolute, join, relative } from 'path'
+import { Observable } from 'rxjs'
+import {
+    VOLUME_CLIENT,
+    VolumeClient,
+    VolumeHandle,
+    getMediaTypeWithCharset,
+    getWorkspacePathMapperForProvider
+} from '../shared'
+import { SuperAdminOrganizationScopeService } from '../shared/super-admin-organization-scope.service'
+import { normalizeSandboxPublicVolumeSubpath } from '../shared/volume/volume-layout'
+import { SandboxConversationContextService } from './sandbox-conversation-context.service'
+import { SandboxPreviewAuthGuard } from './sandbox-preview-auth.guard'
+import { SandboxPreviewSessionService } from './sandbox-preview-session.service'
+import { SandboxManagedServiceError } from './sandbox-managed-service.error'
+import { SandboxManagedServiceService } from './sandbox-managed-service.service'
 
 @ApiTags('Sandbox')
 @ApiBearerAuth()
 @UseInterceptors(TransformInterceptor)
 @Controller()
 export class SandboxController {
-	readonly #logger = new Logger(SandboxController.name)
-	constructor(
-		private readonly i18n: I18nService,
-		private readonly commandBus: CommandBus,
-		private readonly queryBus: QueryBus,
-		private readonly conversationService: ChatConversationService
-	) {}
+    readonly #logger = new Logger(SandboxController.name)
+    constructor(
+        private readonly i18n: I18nService,
+        private readonly commandBus: CommandBus,
+        private readonly queryBus: QueryBus,
+        private readonly sandboxConversationContextService: SandboxConversationContextService,
+        private readonly sandboxManagedServiceService: SandboxManagedServiceService,
+        private readonly sandboxPreviewSessionService: SandboxPreviewSessionService,
+        private readonly organizationScopeService: SuperAdminOrganizationScopeService,
+        @Inject(VOLUME_CLIENT)
+        private readonly volumeClient: VolumeClient
+    ) {}
 
-	@Public()
-	@Get('volume/*path')
-	async getVolumeFile(@Param('path') paths: string[], @Query('tenant') tenant: string, @Res() res: Response) {
-		let subpath = paths.join('/')
-		if (!tenant) {
-			tenant = RequestContext.currentTenantId()
-		}
-		if (!tenant) {
-			const _tenant = await this.queryBus.execute(new GetDefaultTenantQuery())
-			tenant = _tenant?.id
-		}
-		const volume = VolumeClient.getSandboxVolumeRoot(tenant)
+    @Public()
+    @Get('volume/*path')
+    async getVolumeFile(
+        @Param('path') paths: string[],
+        @Query('tenant') tenant: string,
+        @Query('download') download: string,
+        @Res() res: Response
+    ) {
+        let subpath = paths.join('/')
+        if (!tenant) {
+            tenant = RequestContext.currentTenantId()
+        }
+        if (!tenant) {
+            const _tenant = await this.queryBus.execute(new GetDefaultTenantQuery())
+            tenant = _tenant?.id
+        }
+        const volume = VolumeClient.getApiContainerSandboxVolumeRoot(tenant)
 
-		if (environment.envName === 'dev') {
-			// Remove leading "/user/{uuid}/" or "/project/{uuid}/" from path if present
-			const leadingPathRegex = /^(user|project|knowledges)\/[0-9a-fA-F-]{36}\//
-			if (leadingPathRegex.test(subpath)) {
-				subpath = subpath.replace(leadingPathRegex, '')
-			}
-		}
+        if (environment.envName === 'dev') {
+            subpath = normalizeSandboxPublicVolumeSubpath(subpath)
+        }
 
-		const filePath = join(volume, subpath)
-		// Extract the file extension
-		const fileName = subpath.split('?')[0].split('/').pop() || ''
-		const mediaType = getMediaTypeWithCharset(filePath) || 'text/plain; charset=utf-8'
+        const filePath = join(volume, subpath)
+        // Extract the file extension
+        const fileName = subpath.split('?')[0].split('/').pop() || ''
+        const mediaType = getMediaTypeWithCharset(filePath) || 'text/plain; charset=utf-8'
+        const shouldForceDownload = ['1', 'true', 'yes'].includes((download ?? '').trim().toLowerCase())
 
-		// Set the Content-Type header
-		res.setHeader('Content-Type', mediaType)
+        // Set the Content-Type header
+        res.setHeader('Content-Type', mediaType)
 
-		// Only set Content-Disposition for non-plain-text files (force download)
-		const isPlainText =
-			mediaType.startsWith('text/') ||
-			mediaType === 'application/json' ||
-			mediaType === 'application/xml' ||
-			mediaType === 'application/javascript' ||
-			mediaType === 'application/x-www-form-urlencoded' ||
-			mediaType === 'application/markdown' ||
-			mediaType === 'application/pdf'
-		if (!isPlainText) {
-			const encodedFilename = encodeURIComponent(fileName)
-			res.setHeader(
-				'Content-Disposition',
-				`inline; attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
-			)
-		}
+        // Only set Content-Disposition for non-plain-text files (force download)
+        const isPlainText =
+            mediaType.startsWith('text/') ||
+            mediaType === 'application/json' ||
+            mediaType === 'application/xml' ||
+            mediaType === 'application/javascript' ||
+            mediaType === 'application/x-www-form-urlencoded' ||
+            mediaType === 'application/markdown' ||
+            mediaType === 'application/pdf'
+        if (shouldForceDownload || !isPlainText) {
+            const encodedFilename = encodeURIComponent(fileName)
+            const disposition = shouldForceDownload ? 'attachment' : 'inline; attachment'
+            res.setHeader(
+                'Content-Disposition',
+                `${disposition}; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
+            )
+        }
 
-		const fileStream = fs.createReadStream(filePath)
-		fileStream.on('error', (err) => {
-			this.#logger.error(`Error reading file ${filePath}:`, err)
-			res.status(404).send('File not found')
-		})
-		fileStream.pipe(res)
-		res.on('error', (err) => {
-			this.#logger.error(`Error sending file ${filePath}:`, err)
-			res.status(500).send('Internal server error')
-		})
-	}
+        const fileStream = fs.createReadStream(filePath)
+        fileStream.on('error', (err) => {
+            this.#logger.error(`Error reading file ${filePath}:`, err)
+            res.status(404).send('File not found')
+        })
+        fileStream.pipe(res)
+        res.on('error', (err) => {
+            this.#logger.error(`Error sending file ${filePath}:`, err)
+            res.status(500).send('Internal server error')
+        })
+    }
 
-	/**
-	 * Upload a file to the volume.
-	 *
-	 * @param id
-	 * @param file
-	 * @returns File url and the file path relative to the workspace
-	 */
-	@Post('file')
-	@UseInterceptors(FileInterceptor('file'))
-	async uploadFile(
-		@Body('workspace') workspace: string,
-		@Body('conversationId') conversationId: string,
-		@Body('path') path: string,
-		@UploadedFile() file: Express.Multer.File
-	) {
-		const conversation = await this.conversationService.findOne({ where: { id: conversationId } })
-		const client = new VolumeClient({
-			tenantId: RequestContext.currentTenantId(),
-			userId: RequestContext.currentUserId(),
-			catalog: 'projects',
-			projectId: conversation.projectId
-		})
+    /**
+     * Upload a file to the volume.
+     *
+     * @param id
+     * @param file
+     * @returns File url and the file path relative to the workspace
+     */
+    @Post('file')
+    @UseInterceptors(FileInterceptor('file'))
+    async uploadFile(
+        @Body('workspace') workspace: string,
+        @Body('conversationId') conversationId: string,
+        @Body('path') folderPath: string,
+        @UploadedFile() file: Express.Multer.File,
+        @Query('organizationId') organizationId?: string
+    ) {
+        return this.organizationScopeService.run(organizationId, async () => {
+            const resolved = await this.sandboxConversationContextService.resolveConversationSandbox({
+                conversationId
+            })
+            const volume = this.volumeClient.resolve(resolved.volumeScope)
+            const workspacePath = this.resolveUploadWorkspacePath(resolved, volume, workspace)
+            const workspaceUrl = this.resolveWorkspacePublicUrl(volume, workspacePath)
 
-		const asset = await this.commandBus.execute(
-			new UploadFileCommand({
-				source: {
-					kind: 'multipart',
-					file
-				},
-				targets: [
-					{
-						kind: 'sandbox',
-						mode: 'mounted_workspace',
-						workspacePath: client.getVolumePath(workspace),
-						workspaceUrl: client.getPublicUrl(workspace),
-						folder: path || ''
-					}
-				]
-			})
-		)
-		const destination = getFileAssetDestination(asset, 'sandbox')
-		if (!destination || destination.status !== 'success') {
-			throw new ForbiddenException(destination?.error || 'Failed to upload sandbox file')
-		}
-		return { url: destination.url, filePath: destination.path }
-	}
+            const asset = await this.commandBus.execute(
+                new UploadFileCommand({
+                    source: {
+                        kind: 'multipart',
+                        file
+                    },
+                    targets: [
+                        {
+                            kind: 'sandbox',
+                            mode: 'mounted_workspace',
+                            workspacePath,
+                            workspaceUrl,
+                            folder: folderPath || ''
+                        }
+                    ]
+                })
+            )
+            const destination = getFileAssetDestination(asset, 'sandbox')
+            if (!destination || destination.status !== 'success') {
+                throw new ForbiddenException(destination?.error || 'Failed to upload sandbox file')
+            }
+            return { url: destination.url, filePath: destination.path }
+        })
+    }
 
-	@Header('content-type', 'text/event-stream')
-	@Header('Connection', 'keep-alive')
-	@Post('terminal')
-	@Sse()
-	async terminal(
-		@Body() body: { cmd: string },
-		@Query('projectId') projectId: string,
-		@Query('conversationId') conversationId: string,
-		@Res() res: Response
-	) {
-		const userId = RequestContext.currentUserId()
-		const { sandboxUrl } = await this.commandBus.execute<SandboxLoadCommand, { sandboxUrl: string }>(
-			new SandboxLoadCommand({ userId, projectId, isReadonly: true })
-		)
-		if (!sandboxUrl) {
-			throw new ForbiddenException('Sandbox is not available')
-		}
-		const sandbox = new Sandbox({
-			sandboxUrl,
-			commandBus: this.commandBus,
-			volume: Sandbox.sandboxVolume(projectId, userId),
-			tenantId: RequestContext.currentTenantId(),
-			userId,
-			projectId,
-			conversationId
-		})
+    private resolveUploadWorkspacePath(
+        resolved: Awaited<ReturnType<SandboxConversationContextService['resolveConversationSandbox']>>,
+        volume: VolumeHandle,
+        workspace?: string | null
+    ) {
+        const requestedWorkspace = workspace?.trim()
+        const mapper = getWorkspacePathMapperForProvider(resolved.provider)
+        if (!requestedWorkspace) {
+            return mapper.mapWorkspaceToVolume(resolved.workspaceBinding, resolved.workingDirectory)
+        }
+        if (
+            requestedWorkspace === resolved.workspaceBinding.workspaceRoot ||
+            requestedWorkspace.startsWith(`${resolved.workspaceBinding.workspaceRoot}/`)
+        ) {
+            return mapper.mapWorkspaceToVolume(resolved.workspaceBinding, requestedWorkspace)
+        }
+        if (requestedWorkspace === volume.serverRoot || requestedWorkspace.startsWith(`${volume.serverRoot}/`)) {
+            return requestedWorkspace
+        }
+        if (isAbsolute(requestedWorkspace)) {
+            throw new BadRequestException('Invalid sandbox workspace path')
+        }
+        return volume.path(requestedWorkspace)
+    }
 
-		return sandbox.shell
-			.stream({
-				command: body.cmd,
-				workspace_id: getWorkspace(projectId, conversationId)
-			})
-			.pipe(
-				// Add an operator to send a comment event periodically (30s) to keep the connection alive
-				keepAlive(30000),
-				takeUntilClose(res)
-			)
-	}
+    private resolveWorkspacePublicUrl(volume: VolumeHandle, workspacePath: string) {
+        const relativePath = relative(volume.serverRoot, workspacePath).replace(/\\/g, '/')
+        if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+            throw new BadRequestException('Invalid sandbox workspace path')
+        }
+        return volume.publicUrl(relativePath === '.' ? '' : relativePath)
+    }
+
+    @Header('content-type', 'text/event-stream')
+    @Header('Connection', 'keep-alive')
+    @Post('terminal')
+    @Sse()
+    async terminal(
+        @Body() body: { cmd: string },
+        @Query('projectId') projectId: string,
+        @Query('conversationId') conversationId: string,
+        @Res() res: Response,
+        @Query('organizationId') organizationId?: string
+    ) {
+        const resolved = await this.organizationScopeService.run(organizationId, () =>
+            this.sandboxConversationContextService.resolveConversationSandbox({
+                conversationId,
+                projectId
+            })
+        )
+        const backend = resolved.backend
+        const effectiveProjectId = resolved.effectiveProjectId
+
+        return new Observable<string>((subscriber) => {
+            let active = true
+
+            void (async () => {
+                try {
+                    const streamExecute =
+                        typeof backend.streamExecute === 'function' ? backend.streamExecute.bind(backend) : null
+                    const result = streamExecute
+                        ? await streamExecute(body.cmd, (line) => {
+                              if (active) {
+                                  subscriber.next(line)
+                              }
+                          })
+                        : await backend.execute(body.cmd)
+
+                    if (!active) {
+                        return
+                    }
+
+                    if (!streamExecute && result.output) {
+                        subscriber.next(result.output)
+                    }
+
+                    if (result.exitCode === 0) {
+                        subscriber.complete()
+                        return
+                    }
+
+                    const fallbackMessage = effectiveProjectId
+                        ? 'Command failed in the project workspace.'
+                        : 'Command failed in the xpert workspace.'
+                    subscriber.error(result.output || fallbackMessage)
+                } catch (error) {
+                    if (active) {
+                        subscriber.error(error instanceof Error ? error.message : String(error))
+                    }
+                }
+            })()
+
+            return () => {
+                active = false
+            }
+        }).pipe(
+            // Add an operator to send a comment event periodically (30s) to keep the connection alive
+            keepAlive(30000),
+            takeUntilClose(res)
+        )
+    }
+
+    @Get('conversations/:conversationId/services')
+    async listManagedServices(
+        @Param('conversationId') conversationId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService[]> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.listByConversationId(conversationId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Get('conversations/:conversationId/services/:serviceId')
+    async getManagedService(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.getByConversationId(conversationId, serviceId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Get('threads/:threadId/services')
+    async listManagedServicesByThread(
+        @Param('threadId') threadId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService[]> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.listByThreadId(threadId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Get('threads/:threadId/services/:serviceId')
+    async getManagedServiceByThread(
+        @Param('threadId') threadId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.getByThreadId(threadId, serviceId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('conversations/:conversationId/services/start')
+    async startManagedService(
+        @Param('conversationId') conversationId: string,
+        @Body() input: TSandboxManagedServiceStartInput,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.startByConversationId(conversationId, input)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('threads/:threadId/services/start')
+    async startManagedServiceByThread(
+        @Param('threadId') threadId: string,
+        @Body() input: TSandboxManagedServiceStartInput,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.startByThreadId(threadId, input)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Get('conversations/:conversationId/services/:serviceId/logs')
+    async getManagedServiceLogs(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('tail') tail?: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<TSandboxManagedServiceLogs> {
+        try {
+            const parsedTail = tail ? Number.parseInt(tail, 10) : undefined
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.getLogsByConversationId(conversationId, serviceId, parsedTail)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Get('threads/:threadId/services/:serviceId/logs')
+    async getManagedServiceLogsByThread(
+        @Param('threadId') threadId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('tail') tail?: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<TSandboxManagedServiceLogs> {
+        try {
+            const parsedTail = tail ? Number.parseInt(tail, 10) : undefined
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.getLogsByThreadId(threadId, serviceId, parsedTail)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('conversations/:conversationId/services/:serviceId/stop')
+    async stopManagedService(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.stopByConversationId(conversationId, serviceId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('threads/:threadId/services/:serviceId/stop')
+    async stopManagedServiceByThread(
+        @Param('threadId') threadId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.stopByThreadId(threadId, serviceId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('conversations/:conversationId/services/:serviceId/restart')
+    async restartManagedService(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.restartByConversationId(conversationId, serviceId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('threads/:threadId/services/:serviceId/restart')
+    async restartManagedServiceByThread(
+        @Param('threadId') threadId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId?: string
+    ): Promise<ISandboxManagedService> {
+        try {
+            return await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.restartByThreadId(threadId, serviceId)
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('conversations/:conversationId/services/:serviceId/preview-session')
+    async createManagedServicePreviewSession(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId: string,
+        @Req() request: Request,
+        @Res({ passthrough: true }) response: Response
+    ): Promise<TSandboxManagedServicePreviewSession> {
+        try {
+            const service = await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.getByConversationId(conversationId, serviceId)
+            )
+            const session = this.sandboxPreviewSessionService.createSession(service, {
+                secure: request.secure || request.headers['x-forwarded-proto'] === 'https'
+            })
+            response.cookie(session.cookie.name, session.cookie.value, session.cookie.options)
+            return {
+                expiresAt: session.expiresAt,
+                previewUrl: session.previewUrl
+            }
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Post('threads/:threadId/services/:serviceId/preview-session')
+    async createManagedServicePreviewSessionByThread(
+        @Param('threadId') threadId: string,
+        @Param('serviceId') serviceId: string,
+        @Query('organizationId') organizationId: string,
+        @Req() request: Request,
+        @Res({ passthrough: true }) response: Response
+    ): Promise<TSandboxManagedServicePreviewSession> {
+        try {
+            const service = await this.organizationScopeService.run(organizationId, () =>
+                this.sandboxManagedServiceService.getByThreadId(threadId, serviceId)
+            )
+            const session = this.sandboxPreviewSessionService.createSession(service, {
+                secure: request.secure || request.headers['x-forwarded-proto'] === 'https'
+            })
+            response.cookie(session.cookie.name, session.cookie.value, session.cookie.options)
+            return {
+                expiresAt: session.expiresAt,
+                previewUrl: session.previewUrl
+            }
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    @Public()
+    @UseGuards(SandboxPreviewAuthGuard)
+    @All('conversations/:conversationId/services/:serviceId/proxy')
+    async proxyManagedServiceRoot(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Req() request: Request,
+        @Res() response: Response
+    ) {
+        return this.proxyManagedService(conversationId, serviceId, '/', request, response)
+    }
+
+    @Public()
+    @UseGuards(SandboxPreviewAuthGuard)
+    @All('conversations/:conversationId/services/:serviceId/proxy/')
+    async proxyManagedServiceRootWithSlash(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Req() request: Request,
+        @Res() response: Response
+    ) {
+        return this.proxyManagedService(conversationId, serviceId, '/', request, response)
+    }
+
+    @Public()
+    @UseGuards(SandboxPreviewAuthGuard)
+    @All('conversations/:conversationId/services/:serviceId/proxy/*path')
+    async proxyManagedServicePath(
+        @Param('conversationId') conversationId: string,
+        @Param('serviceId') serviceId: string,
+        @Param('path') paths: string[],
+        @Req() request: Request,
+        @Res() response: Response
+    ) {
+        const pathname = `/${(paths ?? []).join('/')}`
+        return this.proxyManagedService(conversationId, serviceId, pathname, request, response)
+    }
+
+    private async proxyManagedService(
+        conversationId: string,
+        serviceId: string,
+        pathname: string,
+        request: Request,
+        response: Response
+    ) {
+        const queryIndex = request.originalUrl.indexOf('?')
+        const query = queryIndex >= 0 ? request.originalUrl.slice(queryIndex) : ''
+        const requestPath = `${pathname || '/'}${query}`
+
+        try {
+            await this.sandboxManagedServiceService.proxyByConversationId(
+                conversationId,
+                serviceId,
+                requestPath,
+                request,
+                response
+            )
+        } catch (error) {
+            this.throwManagedServiceHttpError(error)
+        }
+    }
+
+    private throwManagedServiceHttpError(error: unknown): never {
+        if (error instanceof SandboxManagedServiceError) {
+            const payload = {
+                code: error.code,
+                message: error.message
+            }
+
+            if (error.statusCode === 404 || error.code === SandboxManagedServiceErrorCode.ServiceNotFound) {
+                throw new NotFoundException(payload)
+            }
+
+            if (error.statusCode === 409 || error.code === SandboxManagedServiceErrorCode.ServiceNameConflict) {
+                throw new ConflictException(payload)
+            }
+
+            throw new BadRequestException(payload)
+        }
+
+        if (error instanceof ForbiddenException || error instanceof BadRequestException) {
+            throw error
+        }
+
+        throw new BadRequestException({
+            code: SandboxManagedServiceErrorCode.ProviderUnavailable,
+            message: error instanceof Error ? error.message : String(error)
+        })
+    }
 }

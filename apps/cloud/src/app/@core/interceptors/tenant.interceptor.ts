@@ -1,50 +1,62 @@
 import { HttpEvent, HttpHandler, HttpInterceptor, HttpRequest } from '@angular/common/http'
-import { DestroyRef, Injectable, inject } from '@angular/core'
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop'
-import { IUser, IOrganization } from '@metad/contracts'
+import { Injectable } from '@angular/core'
+import { RequestScopeLevel } from '@xpert-ai/contracts'
 import { Observable } from 'rxjs'
-import { combineLatestWith, filter } from 'rxjs/operators'
 import { RequestMethodEnum } from '../types'
+import { isPublicXpertRequest } from '../utils/public-xpert-request'
 import { Store } from './../services/store.service'
+
+const ANONYMOUS_AUTH_PATHS = new Set([
+  '/api/auth/sso/providers',
+  '/api/auth/sso/bind/challenge',
+  '/api/auth/sso/bind/complete',
+  '/api/auth/sso/bind/register',
+  '/api/tenant/onboard'
+])
 
 @Injectable()
 export class TenantInterceptor implements HttpInterceptor {
-  readonly destroyRef = inject(DestroyRef)
-  
   constructor(private store: Store) {}
 
   intercept(request: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    this.store.user$
-      .pipe(
-        takeUntilDestroyed(this.destroyRef),
-        filter((user) => !!user),
-        combineLatestWith(this.store.selectedOrganization$)
-      )
-      .subscribe(([user, organization]: [IUser, IOrganization]) => {
-        //bind tenantId for DELETE http method
-        const tenantId = user.tenantId
-        if (request.method === RequestMethodEnum.DELETE) {
-          const params = { tenantId }
-          request = request.clone({
-            setParams: params
-          })
-        }
+    if (isAnonymousAuthRequest(request.url) || isPublicXpertRequest(request.method, request.url)) {
+      return next.handle(request)
+    }
 
-        request = request.clone({
-          setHeaders: {
-            'Tenant-Id': `${tenantId}`
-          }
-        })
+    const tenantId = this.store.user?.tenantId
+    const activeScope = this.store.activeScope
 
-        if (organization?.id) {
-          request = request.clone({
-            setHeaders: {
-              'Organization-Id': `${organization.id}`
-            }
-          })
+    if (tenantId && request.method === RequestMethodEnum.DELETE) {
+      request = request.clone({
+        setParams: {
+          tenantId
         }
       })
-    
+    }
+
+    request = request.clone({
+      setHeaders: {
+        ...(tenantId ? { 'Tenant-Id': `${tenantId}` } : {}),
+        'X-Scope-Level': activeScope.level
+      }
+    })
+
+    if (activeScope.level === RequestScopeLevel.ORGANIZATION) {
+      request = request.clone({
+        setHeaders: {
+          'Organization-Id': `${activeScope.organizationId}`
+        }
+      })
+    }
+
     return next.handle(request)
+  }
+}
+
+function isAnonymousAuthRequest(url: string): boolean {
+  try {
+    return ANONYMOUS_AUTH_PATHS.has(new URL(url, 'http://localhost').pathname)
+  } catch {
+    return false
   }
 }

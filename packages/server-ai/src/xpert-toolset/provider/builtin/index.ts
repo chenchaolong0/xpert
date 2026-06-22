@@ -1,4 +1,4 @@
-import { IXpertToolset } from '@metad/contracts'
+import { IXpertToolset } from '@xpert-ai/contracts'
 import { Type } from '@nestjs/common'
 import { TBuiltinToolsetParams } from '@xpert-ai/plugin-sdk'
 import { ToolProviderNotFoundError } from '../../errors'
@@ -6,12 +6,10 @@ import { ToolsetFolderPath } from '../../types'
 import { BingToolset } from './bing/bing'
 import { DingTalkToolset } from './dingtalk/dingtalk'
 import { DiscordToolset } from './discord/discord'
-import { DuckDuckGoToolset } from './duckduckgo/duckduckgo'
 import { EmailToolset } from './email/email'
 import { SearchAPIToolset } from './searchapi/searchapi'
 import { SerperToolset } from './serper/serper'
 import { SlackToolset } from './slack/slack'
-import { TaskToolset } from './task/task'
 import { TavilyToolset } from './tavily/tavily'
 import { PlanningToolset } from './planning/planning'
 import { CreateToolsetCommand } from '../../commands'
@@ -25,12 +23,10 @@ export const BUILTIN_TOOLSET_REPOSITORY: {
     {
         baseUrl: ToolsetFolderPath,
         providers: [
-            TaskToolset,
             PlanningToolset,
             TavilyToolset,
             SearchAPIToolset,
             EmailToolset,
-            DuckDuckGoToolset,
             BingToolset,
             DingTalkToolset,
             SlackToolset,

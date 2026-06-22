@@ -6,7 +6,7 @@ set -ex
 
 # ---------------------------------------
 # Fix ownership of the mounted volume
-folders="/srv/pangolin/public /sandbox /ms-playwright /srv/pangolin/plugins /var/lib/xpert/data"
+folders="/srv/xpert/public /sandbox /ms-playwright /srv/xpert/plugins /var/lib/xpert/data"
 
 for folder in $folders; do
   if [ -d "$folder" ]; then
@@ -17,13 +17,6 @@ for folder in $folders; do
   fi
 done
 # ---------------------------------------
-
-# if [ -n "$PLUGINS" ]; then
-#   echo "Installing plugins: $PLUGINS"
-#   # Replace commas with spaces to separate plugin names
-#   PLUGINS_LIST=$(echo "$PLUGINS" | tr ',' ' ')
-#   npm install $PLUGINS_LIST --legacy-peer-deps
-# fi
 
 # Then execute the main command
 exec "$@"

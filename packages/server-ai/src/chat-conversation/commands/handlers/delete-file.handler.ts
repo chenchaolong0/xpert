@@ -1,4 +1,4 @@
-import { StorageFileService } from '@metad/server-core'
+import { StorageFileService } from '@xpert-ai/server-core'
 import { Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import { ChatConversationService } from '../../conversation.service'
@@ -18,7 +18,9 @@ export class ConvFileDeleteHandler implements ICommandHandler<ConvFileDeleteComm
 	public async execute(command: ConvFileDeleteCommand) {
 		const { id, filePath } = command
 
-		const conv = await this.conversationService.findOne(id, { relations: ['attachments'] })
+		const conv = await this.conversationService.findOne(id, {
+			relations: ['attachments']
+		})
 		const index = conv.attachments.findIndex((_) => _.originalName === filePath)
 		if (index > -1) {
 			await this.fileService.delete(conv.attachments[index].id)

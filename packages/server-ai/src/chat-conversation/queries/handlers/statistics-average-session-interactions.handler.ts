@@ -3,8 +3,9 @@ import { Repository } from 'typeorm'
 import { ChatConversation } from '../../conversation.entity'
 import { ChatConversationService } from '../../conversation.service'
 import { StatisticsAverageSessionInteractionsQuery } from '../statistics-average-session-interactions.query'
-import { RequestContext } from '@metad/server-core'
+import { RequestContext } from '@xpert-ai/server-core'
 import { InjectRepository } from '@nestjs/typeorm'
+import { applyStatisticsFilters } from '../statistics-filters'
 
 @QueryHandler(StatisticsAverageSessionInteractionsQuery)
 export class StatisticsAverageSessionInteractionsHandler
@@ -16,7 +17,7 @@ export class StatisticsAverageSessionInteractionsHandler
 		private readonly service: ChatConversationService) {}
 
 	public async execute(command: StatisticsAverageSessionInteractionsQuery) {
-		const { xpertId, start, end } = command
+		const { xpertId, start, end, filters } = command
 		const tenantId = RequestContext.currentTenantId()
 		const organizationId = RequestContext.getOrganizationId()
 
@@ -34,7 +35,11 @@ export class StatisticsAverageSessionInteractionsHandler
 			.andWhere('chat_message.role = :role', { role: 'human' })
 
 		if (!xpertId) {
-			query.andWhere('conversation.organizationId = :organizationId', {organizationId})
+			if (organizationId) {
+				query.andWhere('conversation.organizationId = :organizationId', { organizationId })
+			} else {
+				query.andWhere('conversation.organizationId IS NULL')
+			}
 		}
 		if (xpertId) {
 			query.andWhere('conversation.xpertId = :xpertId', { xpertId })
@@ -45,6 +50,7 @@ export class StatisticsAverageSessionInteractionsHandler
 		if (end) {
 			query.andWhere('conversation.createdAt <= :end', { end })
 		}
+		applyStatisticsFilters(query, 'conversation', filters)
 		query.addGroupBy('date').orderBy('date')
 
 		return await query.getRawMany()

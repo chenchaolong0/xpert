@@ -1,12 +1,16 @@
-import { CreationTable, File } from '@metad/adapter'
-import { AuthenticationEnum } from '@metad/contracts'
-import { UploadSheetType, getErrorMessage, readExcelWorkSheets } from '@metad/server-common'
-import { RequestContext } from '@metad/server-core'
+import { CreationTable, File } from '@xpert-ai/adapter'
+import { AuthenticationEnum } from '@xpert-ai/contracts'
+import { UploadSheetType, getErrorMessage, readExcelWorkSheets } from '@xpert-ai/server-common'
+import { RequestContext } from '@xpert-ai/server-core'
 import { BadRequestException, NotFoundException } from '@nestjs/common'
 import { DataSource } from './data-source.entity'
 import { QueryBus } from '@nestjs/cqrs'
 import { DataSourceStrategyQuery } from './queries'
 import { DBQueryRunner } from '@xpert-ai/plugin-sdk'
+
+type CsvImportRunner = DBQueryRunner & {
+	importCsv(params: CreationTable, options?: { catalog?: string }): Promise<void>
+}
 
 export function prepareDataSource(dataSource: DataSource, userId?: string) {
 	userId ||= RequestContext.currentUserId()
@@ -43,6 +47,19 @@ export async function importSheetTables(runner: DBQueryRunner, sheets: CreationT
 
 	let data = null
 	if (file.mimetype === 'text/csv') {
+		if (isCsvImportRunner(runner)) {
+			return await runner.importCsv(
+				{
+					...config,
+					file,
+					format: 'csv'
+				},
+				{
+					catalog: config.catalog
+				}
+			)
+		}
+
 		const _sheets: UploadSheetType[] = await readExcelWorkSheets(file.originalname, file)
 		data = _sheets[0].data
 	}
@@ -63,10 +80,16 @@ export async function importSheetTables(runner: DBQueryRunner, sheets: CreationT
 	}
 }
 
+function isCsvImportRunner(runner: DBQueryRunner): runner is CsvImportRunner {
+	return runner.type === 'pg' && typeof (runner as Partial<CsvImportRunner>).importCsv === 'function'
+}
+
 export async function dataLoad(queryBus: QueryBus, dataSource: DataSource, sheets: CreationTable[], file: File) {
 	const isDev = process.env.NODE_ENV === 'development'
 
-	const runner = await queryBus.execute(new DataSourceStrategyQuery(dataSource.type.type, { ...dataSource.options, debug: isDev, trace: isDev }))
+	const runner = await queryBus.execute(
+		new DataSourceStrategyQuery(dataSource.type.type, { ...dataSource.options, debug: isDev, trace: isDev })
+	)
 
 	try {
 		return await importSheetTables(runner, sheets, file)

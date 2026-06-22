@@ -1,14 +1,18 @@
-import { Runnable } from '@langchain/core/runnables'
+import { Runnable, RunnableToolLike } from '@langchain/core/runnables'
+import { DynamicStructuredTool, StructuredToolInterface } from '@langchain/core/tools'
+import { ToolInputSchemaBase } from '@langchain/core/dist/tools/types'
+import { InteropZodType } from '@langchain/core/utils/types'
 import { BaseChannel } from '@langchain/langgraph'
 import {
   IEnvironment,
   IWorkflowNode,
   TWorkflowNodeMeta,
+  TVariableAssigner,
   TXpertGraph,
   TWorkflowVarGroup,
   TXpertParameter,
   TXpertTeamNode
-} from '@metad/contracts'
+} from '@xpert-ai/contracts'
 import { PromiseOrValue } from '../../types'
 
 export type TWorkflowNodeParams<TConfig = any> = {
@@ -27,6 +31,17 @@ export type TWorkflowNodeResult = {
     annotation: BaseChannel
   }
   navigator?: (state, config) => Promise<any>
+  caller?: string
+  toolset?: {
+    provider: string
+    title: string
+    id?: string
+  }
+  tool?:
+    | DynamicStructuredTool<ToolInputSchemaBase, any, any>
+    | StructuredToolInterface<ToolInputSchemaBase, any, any>
+    | RunnableToolLike<InteropZodType, unknown>
+  variables?: TVariableAssigner[]
 }
 
 /**
@@ -47,6 +62,8 @@ export interface IWorkflowNodeStrategy<TConfig = any, TResult = any> {
     xpertId: string
     environment: IEnvironment
     isDraft: boolean
+    leaderKey?: string
+    conversationId?: string
   }): PromiseOrValue<TWorkflowNodeResult>
 
   inputVariables?(entity: IWorkflowNode, variables?: TWorkflowVarGroup[]): TXpertParameter[]

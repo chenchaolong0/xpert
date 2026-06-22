@@ -3,6 +3,7 @@ import { IconDefinition, TAvatar } from '../types'
 import { TCopilotModel } from './copilot-model.model'
 import { MCPServerType, TMCPServer } from './xpert-tool-mcp.model'
 import { XpertTypeEnum } from './xpert.model'
+import { PluginTargetApp, PluginTargetAppMeta, XpertTemplatePluginDependencies } from '../plugin'
 
 export interface IXpertTemplate extends IBasePerTenantEntityModel {
   key: string
@@ -11,8 +12,81 @@ export interface IXpertTemplate extends IBasePerTenantEntityModel {
   lastVisitedAt?: Date
 }
 
+export type TemplateSkillSyncMode = 'incremental' | 'full'
+
+export type TemplateSkillSyncStatus = 'created' | 'updated' | 'unchanged' | 'missing' | 'failed'
+
+export interface ITemplateSkillSyncItemSummary {
+  created: number
+  updated: number
+  unchanged: number
+  missing: number
+  failed: number
+}
+
+export interface ITemplateSkillSyncRepositoryResult {
+  name: string
+  provider: string
+  repositoryId?: string
+  status: TemplateSkillSyncStatus
+  message?: string
+}
+
+export interface ITemplateSkillSyncIndexResult {
+  repositoryId?: string
+  repositoryName: string
+  provider: string
+  mode: TemplateSkillSyncMode
+  status: TemplateSkillSyncStatus
+  syncedCount?: number
+  message?: string
+}
+
+export interface ITemplateSkillSyncBundleResult {
+  sharedSkillId: string
+  provider: string
+  repositoryName: string
+  skillId: string
+  status: TemplateSkillSyncStatus
+  hash?: string
+  repositoryId?: string
+  indexId?: string
+  message?: string
+}
+
+export interface ITemplateSkillSyncRefResult {
+  provider: string
+  repositoryName: string
+  skillId: string
+  status: TemplateSkillSyncStatus
+  repositoryId?: string
+  indexId?: string
+  message?: string
+}
+
+export interface ITemplateSkillSyncSummary {
+  repositories: ITemplateSkillSyncItemSummary
+  indexes: ITemplateSkillSyncItemSummary
+  bundles: ITemplateSkillSyncItemSummary
+  featuredRefs: ITemplateSkillSyncItemSummary
+  workspaceDefaults: ITemplateSkillSyncItemSummary
+}
+
+export interface ITemplateSkillSyncResult {
+  mode: TemplateSkillSyncMode
+  validateOnly: boolean
+  fingerprint: string
+  repositories: ITemplateSkillSyncRepositoryResult[]
+  indexes: ITemplateSkillSyncIndexResult[]
+  bundles: ITemplateSkillSyncBundleResult[]
+  featuredRefs: ITemplateSkillSyncRefResult[]
+  workspaceDefaults: ITemplateSkillSyncRefResult[]
+  summary: ITemplateSkillSyncSummary
+}
+
 export type TTemplate = {
   id: string
+  key?: string
   name: string
   title: string
   description: string
@@ -20,6 +94,17 @@ export type TTemplate = {
   copyright: string
   privacyPolicy?: string
   export_data: string
+  targetApps?: PluginTargetApp[]
+  targetAppMeta?: PluginTargetAppMeta | null
+  source?: 'builtin' | 'plugin' | string
+  pluginName?: string
+  pluginDisplayName?: string
+  order?: number
+  default?: boolean
+  startPrompts?: string[]
+  releaseNotes?: string
+  xpertName?: string
+  dependencies?: XpertTemplatePluginDependencies
 }
 
 export type TXpertTemplate = TTemplate & {

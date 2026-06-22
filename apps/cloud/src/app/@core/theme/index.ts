@@ -1,4 +1,6 @@
 export * from './theme.service'
+export * from './theme-signal'
 export * from './icons'
 export * from './translate'
+export * from './echarts'
 export { default as screenfull } from './screenfull'

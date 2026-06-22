@@ -4,21 +4,19 @@ import {
 	AiProviderRole,
 	IAiProviderEntity,
 	ICopilot,
-	ICopilotModel,
-	RolesEnum
-} from '@metad/contracts'
-import { getErrorMessage } from '@metad/server-common'
-import { ConfigService } from '@metad/server-config'
+	ICopilotModel
+} from '@xpert-ai/contracts'
+import { getErrorMessage } from '@xpert-ai/server-common'
+import { ConfigService } from '@xpert-ai/server-config'
 import {
 	CrudController,
 	PaginationParams,
 	ParseJsonPipe,
 	PermissionGuard,
 	Permissions,
-	RoleGuard,
-	Roles,
+	RequestContext,
 	TransformInterceptor
-} from '@metad/server-core'
+} from '@xpert-ai/server-core'
 import {
 	Body,
 	Controller,
@@ -44,6 +42,7 @@ import {
 	StatisticsDailyConvQuery,
 	StatisticsDailyEndUsersQuery,
 	StatisticsDailyMessagesQuery,
+	StatisticsModelsQuery,
 	StatisticsTokenCostQuery,
 	StatisticsTokensPerSecondQuery,
 	StatisticsUserSatisfactionRateQuery
@@ -51,7 +50,7 @@ import {
 import { Copilot } from './copilot.entity'
 import { CopilotService } from './copilot.service'
 import { CopilotDto, CopilotWithProviderDto } from './dto'
-import { FindCopilotModelsQuery, ModelParameterRulesQuery } from './queries'
+import { CopilotOneByRoleQuery, FindCopilotModelsQuery, ModelParameterRulesQuery } from './queries'
 import { GeneratePromptCommand } from './commands/'
 
 @ApiTags('Copilot')
@@ -93,6 +92,15 @@ export class CopilotController extends CrudController<Copilot> {
 	async findAllAvalibles(): Promise<CopilotDto[]> {
 		const items = await this.service.findAvailables()
 		return items.map((item) => new CopilotDto(item, this.baseUrl))
+	}
+
+	@Get('availables/:role')
+	async findAvailableByRole(@Param('role') role: AiProviderRole): Promise<CopilotDto | null> {
+		const copilot = await this.queryBus.execute<CopilotOneByRoleQuery, ICopilot>(
+			new CopilotOneByRoleQuery(RequestContext.currentTenantId(), RequestContext.getOrganizationId(), role)
+		)
+
+		return copilot ? new CopilotDto(copilot, this.baseUrl) : null
 	}
 
 	@Get('model-select-options')
@@ -223,52 +231,59 @@ export class CopilotController extends CrudController<Copilot> {
 
 	// Statistics
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/daily-conversations')
-	async getStatisticsDailyConversations(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsDailyConvQuery(start, end))
+	async getStatisticsDailyConversations(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsDailyConvQuery(start, end, undefined, { model, userId }))
 	}
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/daily-end-users')
-	async getStatisticsDailyEndUsers(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsDailyEndUsersQuery(start, end))
+	async getStatisticsDailyEndUsers(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsDailyEndUsersQuery(start, end, undefined, { model, userId }))
 	}
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/average-session-interactions')
-	async getStatisticsAverageSessionInteractions(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsAverageSessionInteractionsQuery(start, end))
+	async getStatisticsAverageSessionInteractions(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsAverageSessionInteractionsQuery(start, end, undefined, { model, userId }))
 	}
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/daily-messages')
-	async getStatisticsDailyMessages(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsDailyMessagesQuery(start, end))
+	async getStatisticsDailyMessages(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsDailyMessagesQuery(start, end, undefined, undefined, { model, userId }))
 	}
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/tokens-per-second')
-	async getStatisticsTokensPerSecond(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsTokensPerSecondQuery(start, end))
+	async getStatisticsTokensPerSecond(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsTokensPerSecondQuery(start, end, undefined, { model, userId }))
 	}
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/user-satisfaction-rate')
-	async getStatisticsUserSatisfactionRate(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsUserSatisfactionRateQuery(start, end))
+	async getStatisticsUserSatisfactionRate(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsUserSatisfactionRateQuery(start, end, undefined, { model, userId }))
 	}
 
-	@UseGuards(RoleGuard)
-	@Roles(RolesEnum.ADMIN, RolesEnum.SUPER_ADMIN, RolesEnum.TRIAL)
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
 	@Get('statistics/token-costs')
-	async getStatisticsTokenCost(@Query('start') start: string, @Query('end') end: string) {
-		return await this.queryBus.execute(new StatisticsTokenCostQuery(start, end))
+	async getStatisticsTokenCost(@Query('start') start: string, @Query('end') end: string, @Query('model') model: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsTokenCostQuery(start, end, undefined, { model, userId }))
+	}
+
+	@UseGuards(PermissionGuard)
+	@Permissions(AIPermissionsEnum.COPILOT_EDIT)
+	@Get('statistics/models')
+	async getStatisticsModels(@Query('start') start: string, @Query('end') end: string, @Query('userId') userId: string) {
+		return await this.queryBus.execute(new StatisticsModelsQuery(start, end, { userId }))
 	}
 }

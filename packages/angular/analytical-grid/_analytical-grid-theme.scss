@@ -1,8 +1,8 @@
 @use 'sass:map';
-@use '@angular/material' as mat;
+@use 'packages/angular/core/style/runtime-theme' as themeCompat;
 
 @mixin color($config-or-theme) {
-  $config: mat.get-color-config($config-or-theme);
+  $config: themeCompat.m2-get-color-config($config-or-theme);
   $background: map.get($config, background);
   $foreground: map.get($config, foreground);
   $primary: map.get($config, primary);
@@ -11,18 +11,14 @@
 
   .ngm-analytical-grid {
     /* For analytical grid in dashboard styles */
-    .mat-mdc-table {
-      --mat-table-background-color: transparent;
-      thead, tfoot {
-        background: lighten(mat.get-color-from-palette($background, hover), 50%);
+    table[z-table] {
+      thead,
+      tfoot {
+        background: themeCompat.m2-get-color-from-palette($background, 'hover-soft');
       }
-
-      // tbody, mat-header-row, mat-row, mat-footer-row, [mat-header-row], [mat-row], [mat-footer-row] {
-      //   background: unset;
-      // }
     }
-    .mat-paginator {
-      background: lighten(mat.get-color-from-palette($background, hover), 50%);
+    z-paginator {
+      background: themeCompat.m2-get-color-from-palette($background, 'hover-soft');
     }
 
     .ngm-analytical-grid__want-order {
@@ -32,44 +28,44 @@
         opacity: 1;
       }
     }
-  
+
     .ngm-analytical-grid__cell-bar {
       height: 100%;
       position: absolute;
       left: 1px;
       top: 1px;
-      background-color: mat.get-color-from-palette($primary);
+      background-color: themeCompat.m2-get-color-from-palette($primary);
 
       &.bar-negative {
-        background-color: mat.get-color-from-palette($warn);
+        background-color: themeCompat.m2-get-color-from-palette($warn);
       }
     }
 
-    .cdk-cell.ngm-analytical-grid__measure {
+    [z-table-cell].ngm-analytical-grid__measure {
       &:hover {
-        background-color: mat.get-color-from-palette($background, hover);
+        background-color: themeCompat.m2-get-color-from-palette($background, hover);
       }
     }
-    
-    .cdk-cell, .cdk-header-cell {
+
+    [z-table-cell], [z-table-head] {
       padding: 0 5px;
       cursor: pointer;
     }
 
-    .cdk-cell.ngm-semantic--negative--background {
-      background-color: #ff000038;
+    [z-table-cell].ngm-semantic--negative--background {
+      background-color: var(--color-status-error-bg);
     }
 
-    .cdk-cell.ngm-semantic--negative--color {
-      color: #ff000038;
+    [z-table-cell].ngm-semantic--negative--color {
+      color: var(--color-text-destructive);
     }
 
-    .mat-mdc-row.selected {
-      .cdk-cell.ngm-semantic--negative--background.selected {
-        background-color: #ff000080;
+    tr[z-table-row].selected {
+      [z-table-cell].ngm-semantic--negative--background.selected {
+        background-color: color-mix(in oklab, var(--color-text-destructive) 20%, transparent);
       }
-      .cdk-cell.ngm-semantic--negative--color.selected {
-        color: #ff000080;
+      [z-table-cell].ngm-semantic--negative--color.selected {
+        color: var(--color-text-destructive);
       }
     }
 
@@ -83,21 +79,12 @@
 }
 
 @mixin density($config-or-theme) {
-  // sticky 除了只能 41px 高度外还有 border right 漏光问题
-  // .ngm-analytical-grid {
-  //   .cdk-table.ngm-table-grid.ngm-density__compact {
-  //     tr.mat-header-row, tr.mat-footer-row {
-  //       height: 41px;
-  //     }
-  //   }
-  // }
-
   .ngm-analytical-grid__filtering-card {
     &.ngm-density__cosy {
-      @include mat.list-density(-1);
+      @include themeCompat.list-density(-1);
     }
     &.ngm-density__compact {
-      @include mat.list-density(-2);
+      @include themeCompat.list-density(-2);
     }
   }
 
@@ -131,10 +118,6 @@
     &.ngm-density__cosy {
       --padding-size: 15px;
 
-      .mat-card-title {
-        font-size: 16px;
-      }
-
       .ngm-analytical-grid__filtering-actions {
         padding-top: var(--padding-size);
       }
@@ -153,9 +136,9 @@
 }
 
 @mixin theme($theme) {
-  $color: mat.get-color-config($theme);
-  $density: mat.get-density-config($theme);
-  $typography: mat.get-typography-config($theme);
+  $color: themeCompat.m2-get-color-config($theme);
+  $density: themeCompat.m2-get-density-config($theme);
+  $typography: themeCompat.m2-get-typography-config($theme);
 
   @if $color != null {
     @include color($color);

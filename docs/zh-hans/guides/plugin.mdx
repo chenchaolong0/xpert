@@ -14,6 +14,151 @@
 
 - 多个插件使用英文逗号分隔
 
+## 独立仓库本地联调
+
+如果插件代码位于 Xpert 主仓库之外，可以直接调用宿主已有的 `POST /api/plugin` 安装接口，不需要发布 npm 包，也不需要把代码拷回主仓库。
+
+启动 API 前，显式设置允许的本地工作区根目录：
+
+```bash
+export PLUGIN_WORKSPACE_ROOTS="/abs/path/to/xpert:/abs/path/to/xpert-plugins"
+```
+
+推荐流程：
+
+1. 在独立插件仓库执行 `pnpm install`
+2. 先用 `plugin-dev-harness` 做一次生命周期预检
+3. 构建插件，或启动对应的 watch 任务
+4. 启动 Xpert API
+5. 调用安装接口挂载本地插件
+6. 代码变更后重新构建，再重复安装请求完成 reload
+
+本地源码安装请求示例：
+
+```bash
+curl -X POST http://localhost:3333/api/plugin \
+  -H 'Content-Type: application/json' \
+  -H 'Organization-Id: <your-org-id>' \
+  --data '{
+    "pluginName": "@xpert-ai/plugin-lark",
+    "source": "code",
+    "sourceConfig": {
+      "workspacePath": "/abs/path/to/xpert-plugins/xpertai/integrations/lark"
+    }
+  }'
+```
+
+也可以使用仓库内置脚本发起同一请求：
+
+```bash
+pnpm plugin:install:local \
+  --workspace-path /abs/path/to/xpert-plugins/xpertai/integrations/lark \
+  --org-id <your-org-id> \
+  --token <your-token>
+```
+
+如果你希望把“重建插件 + 重新安装”串成一步，可以使用：
+
+```bash
+pnpm plugin:reinstall:local \
+  --workspace-path /abs/path/to/xpert-plugins/xpertai/integrations/lark \
+  --org-id <your-org-id> \
+  --token <your-token>
+```
+
+字段说明：
+
+- `source: "code"` 表示从本地源码工作区安装
+- `sourceConfig` 用于存放不同来源的安装元数据
+- 对于本地源码安装，`sourceConfig.workspacePath` 必须是绝对路径，且位于 `PLUGIN_WORKSPACE_ROOTS` 允许范围内
+- 本地源码安装会先把工作区复制到宿主插件目录，再执行加载
+
+注意事项：
+
+- Xpert 不再支持本地源码安装使用 `symlink` 模式
+- 原因是 symlink 加载后会解析到独立仓库真实路径，继续使用独立仓库自己的依赖树，容易与宿主形成两份运行时单例，例如两份 `@nestjs/core`
+- 代码变更后的推荐动作仍然是“重新构建插件，再重新发一次安装请求”
+- 宿主会继续校验 `package.json.name`、SDK 兼容性，以及 `dist/` 或 `src/index.ts` 入口是否存在
+- `plugin-dev-harness` 只负责插件自身生命周期验证，不替代 Xpert 平台内的真实安装测试
+
+## SDK 版本约束
+
+- `@xpert-ai/plugin-sdk` 只能声明在 `peerDependencies`，不要放到 `dependencies`
+- 使用明确的单 major 兼容范围，例如 `^3.8.0`
+- 宿主会在激活插件前校验 SDK 兼容性，并拒绝自带 SDK 副本的插件包
+
+## Plugin Webhook Auth Guard
+
+当插件需要暴露给外部系统调用的入站 webhook 路由时，使用 `PluginWebhookAuthGuard`。webhook credential 只绑定到一个 Integration，不等同于完整平台 API Key，插件不应自行查找或把平台 API Key 拼进 callback URL。
+
+credential 生命周期由宿主通过 integration permission service 管理：
+
+- `ensureWebhookCredential(id, { provider })` 创建或返回当前有效 credential，并只在这次调用中返回明文 token
+- `rotateWebhookCredential(id, { provider })` 轮换 credential，并返回新的明文 token
+- `revokeWebhookCredential(id, { provider })` 吊销 credential
+- Integration option 中保存的字段是 `webhookCredential`，类型为 `PluginWebhookCredentialRecord`
+- 持久化记录只包含元数据和 `tokenHash`，不会保存明文 token
+
+webhook URL 中只放 opaque secret，例如：
+
+```text
+https://api.example.com/api/my-provider/webhook/<integration-id>?secret=<webhook-secret>
+```
+
+对于不能设置自定义 header 的外部系统，这种方式可以让 URL 自包含，同时不暴露平台 API Key。guard 会从路由参数读取 Integration id，从 query 参数读取 secret，校验 token hash，并检查可选的 provider。校验通过后，guard 会把解析出的 Integration principal 以及 tenant/organization headers 写入 request。插件后续调用宿主 permission service 前，应在该 principal context 下执行 webhook 处理逻辑。
+
+Controller 示例：
+
+```ts
+import { Body, Controller, Param, Post, Request, UseGuards } from '@nestjs/common'
+import { PluginWebhookAuth, PluginWebhookAuthGuard, runWithRequestContext } from '@xpert-ai/plugin-sdk'
+
+@Controller('my-provider')
+export class MyWebhookController {
+  // 当宿主启用了全局平台鉴权时，这里使用宿主的 public-route decorator。
+  @Public()
+  @PluginWebhookAuth({
+    provider: 'my-provider',
+    integrationParam: 'integrationId',
+    secretQueryParam: 'secret'
+  })
+  @UseGuards(PluginWebhookAuthGuard)
+  @Post('webhook/:integrationId')
+  async webhook(
+    @Param('integrationId') integrationId: string,
+    @Request() req: { user?: unknown; headers?: Record<string, string> },
+    @Body() body: unknown
+  ) {
+    await new Promise<void>((resolve, reject) => {
+      runWithRequestContext({ user: req.user, headers: req.headers ?? {} }, {}, () => {
+        this.handleWebhook(integrationId, body).then(resolve).catch(reject)
+      })
+    })
+    return 'success'
+  }
+}
+```
+
+当 webhook route 本来就是给外部系统调用、会被普通平台 AuthGuard 拦截时，仍需要使用 `@Public()` 或宿主等价的 public decorator 跳过普通登录鉴权。随后由 `PluginWebhookAuthGuard` 作为该 webhook route 的专用鉴权边界。
+
+在拥有 webhook route 的插件模块中注册 guard：
+
+```ts
+@XpertServerPlugin({
+  providers: [MyWebhookService, PluginWebhookAuthGuard],
+  controllers: [MyWebhookController]
+})
+export class MyProviderPlugin {}
+```
+
+运维约定：
+
+- callback URL 必须来自 `ensureWebhookCredential()` 或 `rotateWebhookCredential()` 返回的 token，不要让用户粘贴平台 API Key
+- 在 `@PluginWebhookAuth()` 中声明 `provider`，避免某个 Integration provider 的 credential 被重放到另一个 provider route
+- URL 泄露后应轮换 credential；外部集成断开后应吊销 credential
+- 不要把 `PluginWebhookAuthGuard` 加成全局 bootstrap guard，应通过 `@UseGuards()` 只挂到 webhook route 上
+- 如果外部系统支持签名 header，插件可以在该 guard 之后再做 provider-specific 签名校验，但 Xpert principal 仍应来自 scoped webhook credential
+
 ## 插件配置支持
 
 如果插件需要用户可管理配置：
@@ -28,6 +173,132 @@
 - 前端会通过 `JSONSchemaFormComponent` 自动渲染表单
 - 宿主会把配置保存到 `PluginInstance.config`
 - 配置会在持久化前按整段对象加密存储
+
+推荐前端在展示配置入口时同时确认 `config.formSchema.type === "object"` 且 `config.formSchema.properties` 至少包含一个实际字段。没有实际配置字段的插件不应展示“配置”按钮，避免用户打开空表单。
+
+## 上层应用元数据
+
+插件可以通过 `meta.targetApps` 和 `meta.targetAppMeta` 声明自己面向哪些上层应用，以及每个上层应用需要的业务元数据。`category` 仍只表示 xpert-pro 的技术类别，不应用来推断插件是否属于某个业务系统。
+
+```ts
+export const plugin: XpertPlugin = {
+  meta: {
+    name: '@xpert-ai/plugin-bom-document-intake',
+    version: '0.0.1',
+    level: 'system',
+    category: 'middleware',
+    displayName: 'BOM Document Intake',
+    description: 'Parse BOM change documents and expose review views.',
+    author: 'Xpert AI',
+    targetApps: ['data-xpert'],
+    targetAppMeta: {
+      'data-xpert': {
+        types: ['workbench-view', 'assistant-tool', 'business-app'],
+        minAppVersion: '0.1.0',
+        capabilities: ['bom-document-intake', 'bom-review-workbench', 'bom-change-governance']
+      }
+    }
+  },
+  register(ctx) {
+    // ...
+  }
+}
+```
+
+字段约定：
+
+| 字段                               | 含义                                                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `targetApps`                       | 插件希望出现在哪些上层应用中。省略时表示普通 xpert-pro 插件，不会自动进入上层应用的业务插件中心。                    |
+| `targetAppMeta`                    | 按上层应用 key 保存业务元数据，例如 `targetAppMeta["data-xpert"]`。每个上层应用拥有自己的 `types` 词表和兼容性规则。 |
+| `targetAppMeta[app].types`         | 该上层应用下的业务类型。xpert-pro 不解释这些值，只负责透传。                                                         |
+| `targetAppMeta[app].minAppVersion` | 该插件兼容的最低上层应用版本。                                                                                       |
+| `targetAppMeta[app].capabilities`  | 该插件向上层应用暴露的业务能力标识，用于搜索、筛选、详情展示或治理策略。                                             |
+
+data-xpert 当前使用以下类型值：
+
+- `resource-adapter`
+- `workbench-view`
+- `assistant-tool`
+- `governance-extension`
+- `business-app`
+
+data-xpert 插件中心只展示同时满足以下条件的插件：
+
+1. `targetApps` 包含 `data-xpert`
+2. `targetAppMeta["data-xpert"].types` 非空
+
+不要把 data-xpert 业务属性写成顶层 `dataXpert` 字段。旧字段仅作为过渡兼容读取，新插件应统一使用 `targetAppMeta["data-xpert"]`。
+
+## Codex-style 插件资源
+
+插件可以把 Codex-style bundle 资源随包声明出来，例如 `.xpertai-plugin/plugin.json`、`skills/`、`.mcp.json`、`.app.json`、`hooks/` 和 `assets/`。插件安装本身只保存 `PluginInstance` 并加载插件代码；资源定义不会写入独立组件实例表，而是由宿主通过 `readPluginBundleManifest()` / `collectPluginBundleComponents()` 从真实 bundle 实时计算。
+
+资源初始化分两类目标：
+
+| Target    | 可安装资源          | 运行态                                                                                    |
+| --------- | ------------------- | ----------------------------------------------------------------------------------------- |
+| workspace | Skills / MCP / Apps | `SkillPackage`、workspace-scoped plugin-managed `XpertToolset`、app connector requirement |
+| Xpert     | Hooks               | 目标 agent 的 `PluginHooksMiddleware`                                                     |
+
+Assistant template 也可以声明 `dependencies`。通过 template 安装 Xpert 时，服务端会先创建 Xpert，再把模板声明的 Skills / MCP / Apps / Hooks 绑定到目标 agent。Role-specific XpertAI 插件主要使用这种方式把全部 skills 预绑定到单 agent template。
+
+资源安装状态统一记录在 `PluginResourceInstallation`：
+
+- `workspaceId` 表示资源所属 workspace
+- `xpertId` / `agentKey` 表示资源绑定到的 Xpert 和 agent；workspace target 下二者为 `null`
+- `runtimeType` / `runtimeId` 指向 `SkillPackage`、`XpertToolset`、hook profile 或 app connector requirement
+- `runtimeNodeKey` 记录 Xpert draft 中创建或复用的 graph node key；app requirement 通常为 `null`
+- `definitionHash` 用于和实时 bundle definition 对比，判断 `staleDefinition`
+- `status` 使用 `ready`、`pending_auth`、`blocked`、`failed`
+
+`PluginResourceAttachment` 不再使用。新系统不需要兼容旧数据，installation 已经能够表达实例化和绑定状态，避免两张表之间的状态不同步。
+
+`.app.json` 支持上游常见的 map 形状：
+
+```json
+{
+  "apps": {
+    "salesforce": {
+      "name": "REPLACE_WITH_SALESFORCE_CONNECTOR_ID"
+    }
+  }
+}
+```
+
+宿主会把 map key 展开为独立 `APP` component。`REPLACE_WITH_*` 这类 placeholder 不会被视为可用 connector；安装时状态为 `blocked`，需要 workspace 在 `PluginInstance.config` 中提供明确的 connector 覆盖配置后再使用。
+
+## 插件管理能力字段
+
+插件列表接口会返回 `IPluginDescriptor`，其中下面几个字段用于控制前端是否展示“配置 / 卸载 / 更新”按钮，以及是否显示“可更新”状态：
+
+| 字段           | 含义                       | 判定逻辑                                                                                                                                                                                                                                            |
+| -------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `canConfigure` | 当前用户是否可以配置该插件 | 只有“当前组织作用域下安装的插件”且插件暴露了 `configSchema` 时才为 `true`。`global` 插件不会因为在当前组织中可见就自动可配置；加载失败的插件固定为 `false`。                                                                                        |
+| `canUninstall` | 当前用户是否可以卸载该插件 | `system` 级插件始终为 `false`。组织级插件在“插件所属组织 = 当前组织”时为 `true`。`global` 插件只有 `SUPER_ADMIN` 可以卸载。                                                                                                                         |
+| `canUpdate`    | 当前用户是否可以更新该插件 | 需要同时满足：1. 插件源支持从 npm registry 更新；2. 插件源不是 `code`；3. 插件作用域允许当前用户更新。组织级插件要求“插件所属组织 = 当前组织”；`global` 插件要求当前作用域就是 `global`，且当前用户是 `SUPER_ADMIN`。加载失败的插件固定为 `false`。 |
+| `hasUpdate`    | 当前插件是否存在可升级版本 | 只有在 `canUpdate = true` 时才会继续检查。宿主会解析 registry 最新版本，并在 `latestVersion > currentVersion` 时返回 `true`，否则为 `false`。                                                                                                       |
+
+### 作用域说明
+
+- `organization` 插件：安装在某个组织下，只能由该组织上下文进行配置、更新、卸载。
+- `global` 插件：对所有组织可见，但不是所有操作都开放。
+- `system` 插件：平台内建 / 系统治理级插件，不允许通过组织插件 API 进行卸载。
+
+### 当前行为约定
+
+- `canConfigure` 关注的是“当前组织是否拥有该插件实例并且插件提供配置 schema”，不是“当前用户是否能看见该插件”。
+- `canUninstall` 比 `canUpdate` 更宽一点：`SUPER_ADMIN` 即使当前人在普通组织上下文，也可以对 `global` 插件执行卸载。
+- `canUpdate` 对 `global` 插件更严格：只有在 `global` 作用域下的 `SUPER_ADMIN` 才允许更新。
+- `hasUpdate` 只是“有无新版本”的最终展示位，不代表前端应该绕过 `canUpdate` 单独显示更新按钮。
+
+### 前端使用建议
+
+- “配置”按钮只看 `canConfigure`
+- “卸载”按钮只看 `canUninstall`
+- “更新”按钮只看 `canUpdate`
+- “可升级”标记需要同时结合 `canUpdate` 和 `hasUpdate`
+- 对加载失败插件，不要推导这些能力字段，直接以后端返回值为准
 
 ## 相关文档
 

@@ -7,6 +7,7 @@ import {
 	User,
 	EmailVerification,
 	UserOrganization,
+	UserGroup,
 	Contact,
 	OrganizationContact,
 	Tag,
@@ -28,7 +29,10 @@ import {
 	SecretToken,
 	Integration,
 	PluginInstance,
-} from './internal';
+	PluginMarketplaceRegistryItem,
+	PluginMarketplaceSource,
+	ExternalIdentityBinding
+} from './internal'
 
 export const coreEntities = [
 	ApiKey,
@@ -37,6 +41,7 @@ export const coreEntities = [
 	User,
 	EmailVerification,
 	UserOrganization,
+	UserGroup,
 	Tenant,
 	TenantSetting,
 	Contact,
@@ -59,5 +64,8 @@ export const coreEntities = [
 	StorageFile,
 	SecretToken,
 	Integration,
-	PluginInstance
-];
+	PluginInstance,
+	PluginMarketplaceRegistryItem,
+	PluginMarketplaceSource,
+	ExternalIdentityBinding
+]

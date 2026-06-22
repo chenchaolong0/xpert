@@ -10,7 +10,12 @@ export * from './general'
 export * from './analytics'
 export * from './operation'
 export * from './handoff'
+export * from './account-binding'
+export * from './auth-login'
+export * from './bound-identity-login'
+export * from './sso-binding'
 export * from './user'
+export * from './speech-to-text'
 
 import type {
   FileSystemPermission,
@@ -20,7 +25,11 @@ import type {
   VectorStorePermission
 } from './general'
 import type { AnalyticsPermission } from './analytics'
+import type { AccountBindingPermission } from './account-binding'
+import type { BoundIdentityLoginPermission } from './bound-identity-login'
 import type { HandoffPermission } from './handoff'
+import type { SpeechToTextPermission } from './speech-to-text'
+import type { SsoBindingPermission } from './sso-binding'
 import type { UserPermission } from './user'
 
 /**
@@ -33,8 +42,12 @@ export type Permission =
   | FileSystemPermission
   | IntegrationPermission
   | AnalyticsPermission
+  | AccountBindingPermission
+  | BoundIdentityLoginPermission
+  | SsoBindingPermission
   | UserPermission
   | HandoffPermission
+  | SpeechToTextPermission
 
 /**
  * Permissions array type

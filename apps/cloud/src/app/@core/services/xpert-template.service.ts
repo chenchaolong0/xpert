@@ -1,8 +1,9 @@
 import { HttpClient } from '@angular/common/http'
 import { inject, Injectable } from '@angular/core'
-import { API_PREFIX, PaginationParams, TKnowledgePipelineTemplate, toHttpParams } from '@metad/cloud/state'
+import { ICopilotModel, ITemplateSkillSyncResult, IXpert, TAvatar, TemplateSkillSyncMode } from '@xpert-ai/contracts'
+import { API_PREFIX, PaginationParams, TKnowledgePipelineTemplate, toHttpParams } from '@xpert-ai/cloud/state'
 import { NGXLogger } from 'ngx-logger'
-import { IXpertMCPTemplate, IXpertTemplate, TXpertTemplate } from '../types'
+import { ISkillMarketConfig, IXpertMCPTemplate, IXpertTemplate, TXpertTemplate } from '../types'
 
 @Injectable({ providedIn: 'root' })
 export class XpertTemplateService {
@@ -10,30 +11,67 @@ export class XpertTemplateService {
   readonly #httpClient = inject(HttpClient)
 
   getAll() {
-    return this.#httpClient.get<{categories: string[]; recommendedApps: TXpertTemplate[]}>(API_PREFIX + `/xpert-template`)
+    return this.#httpClient.get<{ categories: string[]; recommendedApps: TXpertTemplate[] }>(
+      API_PREFIX + `/xpert-template`
+    )
   }
 
   getTemplate(id: string) {
-    return this.#httpClient.get<TXpertTemplate>(API_PREFIX + `/xpert-template/${id}`)
+    return this.#httpClient.get<TXpertTemplate>(API_PREFIX + `/xpert-template/${encodeURIComponent(id)}`)
+  }
+
+  installTemplate(
+    id: string,
+    body: {
+      workspaceId: string
+      basic?: {
+        name?: string
+        title?: string
+        description?: string
+        avatar?: TAvatar
+        copilotModel?: ICopilotModel
+      }
+    }
+  ) {
+    return this.#httpClient.post<{ xpert?: IXpert }>(
+      API_PREFIX + `/xpert-template/${encodeURIComponent(id)}/install`,
+      body
+    )
   }
 
   getAllMCP(paginationParams: PaginationParams<IXpertTemplate>) {
-    return this.#httpClient.get<{categories: string[]; templates: IXpertMCPTemplate[]}>(API_PREFIX + `/xpert-template/mcps`, {
-      params: toHttpParams(paginationParams)
-    })
+    return this.#httpClient.get<{ categories: string[]; templates: IXpertMCPTemplate[] }>(
+      API_PREFIX + `/xpert-template/mcps`,
+      {
+        params: toHttpParams(paginationParams)
+      }
+    )
   }
 
   getMCPTemplate(id: string) {
-    return this.#httpClient.get<IXpertMCPTemplate>(API_PREFIX + `/xpert-template/mcps/${id}`)
+    return this.#httpClient.get<IXpertMCPTemplate>(API_PREFIX + `/xpert-template/mcps/${encodeURIComponent(id)}`)
   }
 
   getAllKnowledgePipelines(paginationParams: PaginationParams<IXpertTemplate>) {
-    return this.#httpClient.get<{categories: string[]; templates: TKnowledgePipelineTemplate[]}>(API_PREFIX + `/xpert-template/pipelines`, {
-      params: toHttpParams(paginationParams)
-    })
+    return this.#httpClient.get<{ categories: string[]; templates: TKnowledgePipelineTemplate[] }>(
+      API_PREFIX + `/xpert-template/pipelines`,
+      {
+        params: toHttpParams(paginationParams)
+      }
+    )
   }
 
   getKnowledgePipelineTemplate(id: string) {
-    return this.#httpClient.get<TKnowledgePipelineTemplate>(API_PREFIX + `/xpert-template/pipelines/${id}`)
+    return this.#httpClient.get<TKnowledgePipelineTemplate>(
+      API_PREFIX + `/xpert-template/pipelines/${encodeURIComponent(id)}`
+    )
+  }
+
+  getSkillsMarket() {
+    return this.#httpClient.get<ISkillMarketConfig>(API_PREFIX + `/xpert-template/skills-market`)
+  }
+
+  syncSkillAssets(body?: { mode?: TemplateSkillSyncMode; validateOnly?: boolean }) {
+    return this.#httpClient.post<ITemplateSkillSyncResult>(API_PREFIX + `/xpert-template/sync-skill-assets`, body ?? {})
   }
 }

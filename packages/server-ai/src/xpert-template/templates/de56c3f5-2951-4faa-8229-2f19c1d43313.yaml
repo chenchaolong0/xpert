@@ -550,14 +550,17 @@ connections:
     key: Agent_46eWziRHx8/Agent_XoAUvUVEDQ
     from: Agent_46eWziRHx8
     to: Agent_XoAUvUVEDQ
+    required: true
   - type: agent
     key: Agent_46eWziRHx8/Agent_H0RcThTx4L
     from: Agent_46eWziRHx8
     to: Agent_H0RcThTx4L
+    required: true
   - type: agent
     key: Agent_46eWziRHx8/Agent_qE438kVTMn
     from: Agent_46eWziRHx8
     to: Agent_qE438kVTMn
+    required: true
   - type: toolset
     key: Agent_H0RcThTx4L/a3b07769-7438-4244-9691-29e2fc4c65e6
     from: Agent_H0RcThTx4L
@@ -566,6 +569,7 @@ connections:
     key: Agent_46eWziRHx8/Agent_qiq2uya3DM
     from: Agent_46eWziRHx8
     to: Agent_qiq2uya3DM
+    required: true
   - type: toolset
     key: Agent_qiq2uya3DM/73b13ae2-1a14-4341-97fe-c7a596288d1e
     from: Agent_qiq2uya3DM

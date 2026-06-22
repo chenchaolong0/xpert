@@ -1,103 +1,18 @@
-@use '@angular/material/core/tokens/token-utils';
-@use '@angular/material/core/style/sass-utils';
+@use '../input/_input.component.scss';
 
-/* The prefix used to generate the fully qualified name for tokens in this file. */
-$prefix: (ngm, color);
-
-@function get-unthemable-tokens() {
-  @return (
-  );
-}
-
-@function get-color-tokens() {
-  @return (
-    surface-container-low: null,
-    surface-container: null,
-    surface-container-high: null,
-    surface: null,
-  );
-}
-
-@function get-token-slots() {
-  @return sass-utils.deep-merge-all(
-    get-unthemable-tokens(),
-    get-color-tokens(),
-  );
-}
-
-@include token-utils.use-tokens($prefix, get-token-slots()) {
-  .ngm-select-element {
-    background-color: var(#{token-utils.get-token-variable(surface-container-high)});
-    &:hover {
-      --tw-ring-offset-color: var(#{token-utils.get-token-variable(surface)});
-      --tw-ring-offset-color: var(#{token-utils.get-token-variable(surface)});
-    }
-    &:enabled:focus {
-      --tw-ring-offset-color: var(#{token-utils.get-token-variable(surface)});
-      background-color: var(#{token-utils.get-token-variable(surface)});
-    }
-    &:disabled {
-      background-color: var(#{token-utils.get-token-variable(surface-container-low)});
-    }
-  }
-}
+@reference "../../../tailwind-workspace-reference.css";
 
 .ngm-select-element {
-  @apply p-2 rounded-lg border border-solid border-transparent
-  text-gray-700 ring-offset-1 ring-offset-transparent ring-2 ring-transparent
-  focus:z-10 focus:outline-none enabled:hover:ring-yellow-500/50 enabled:focus:ring-yellow-500
-  dark:bg-opacity-50 dark:border-transparent dark:placeholder-gray-400 dark:text-white
-  dark:hover:ring-yellow-500/50 dark:focus:ring-yellow-500
-  disabled:text-slate-500 disabled:border-slate-200 disabled:shadow-none disabled:ring-0 disabled:cursor-not-allowed
-  dark:disabled:border-neutral-800;
-
-  .mat-mdc-select-arrow-wrapper {
-    height: 14px;
+  @apply relative inline-block w-full rounded-md;
   }
-}
 
 .ngm-select-label {
   @apply p-1 text-ellipsis whitespace-nowrap overflow-hidden disabled:opacity-50;
 }
 
-.cdk-overlay-pane:not(.mat-mdc-select-panel-above) {
-  .ngm-select-panel.mat-mdc-select-panel {
-    @apply mt-4;
-  }
-}
-.cdk-overlay-pane.mat-mdc-select-panel-above {
-  .ngm-select-panel.mat-mdc-select-panel {
-    @apply mb-4;
-  }
-}
-
-.ngm-select-panel.mat-mdc-select-panel {
-  margin-left: -9px;
-  .mat-mdc-option {
-    min-height: 38px;
-    .ngm-display-behaviour {
-      min-height: 38px;
-    }
-  }
-  .mdc-list-item__primary-text {
-    @apply w-full flex items-center justify-start;
-  }
-}
-
 .ngm-density__cosy {
-  .ngm-select-element {
-    @apply px-2 py-1 text-sm rounded;
-  }
-
-  &.ngm-select-panel {
-    .mat-mdc-option {
-      min-height: 32px;
-      @apply text-sm;
-
-      .ngm-display-behaviour {
-        min-height: 32px;
-      }
-    }
+  .ngm-select-element [role='combobox'] {
+    @apply min-h-8 rounded-md px-2 py-1 text-sm;
   }
 }
 
@@ -105,37 +20,15 @@ $prefix: (ngm, color);
   .ngm-select-label {
     @apply text-sm;
   }
-  .ngm-select-element {
-    @apply px-2 py-1 text-xs rounded;
-  }
-  &.ngm-select-panel {
-    .mat-mdc-option {
-      min-height: 28px;
-      @apply text-xs;
-
-      .ngm-display-behaviour {
-        min-height: 28px;
-      }
-    }
+  .ngm-select-element [role='combobox'] {
+    @apply min-h-8 rounded-md px-2 py-1 text-xs;
   }
 
   .ngm-input-element__clear {
     @apply w-5 h-5;
-    .material-icons {
+    .z-icon,
+    i {
       font-size: 16px;
-    }
-  }
-}
-
-.mat-mdc-autocomplete-panel.ngm-select__autocomplete-panel {
-  .cdk-virtual-scroll-content-wrapper {
-    @apply max-w-full;
-  }
-
-  .mat-mdc-option {
-    min-height: 38px;
-    .ngm-display-behaviour {
-      min-height: 38px;
     }
   }
 }

@@ -1,7 +1,7 @@
-<div class="flex justify-between items-center">
-  <div class="flex items-center">
-    @if (meta().title || name(); as title) {
-      <div class="py-1">
+<div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+  <div class="flex min-w-0 flex-1 items-start">
+    @if (label(); as title) {
+      <div class="min-w-0 break-all py-1 leading-5">
         @if (required()) {
           <span class="text-text-destructive">*</span>
         }
@@ -12,8 +12,8 @@
       @if (meta().description; as desc) {
         <i
           class="ri-information-line ml-2 text-text-tertiary hover:text-text-primary opacity-80"
-          [matTooltip]="desc | i18n"
-          matTooltipPosition="above"
+          [zTooltip]="desc | i18n"
+          zPosition="top"
         ></i>
       }
     }
@@ -32,6 +32,23 @@
   @if (type() === 'array' && !enum() && !hasCustomWidget()) {
     <button class="btn btn-small justify-center w-6 h-6" [disabled]="readonly()" (click)="addArray()">
       <i class="ri-add-line"></i>
+    </button>
+  }
+  @if (collapsibleObject()) {
+    @let collapseLabel =
+      objectCollapsed()
+        ? ('PAC.KEY_WORDS.Expand' | translate: { Default: 'Expand' })
+        : ('PAC.KEY_WORDS.Collapse' | translate: { Default: 'Collapse' });
+    <button
+      type="button"
+      class="btn btn-ghost btn-small flex h-6 w-6 shrink-0 items-center justify-center"
+      [attr.aria-label]="collapseLabel"
+      [attr.aria-expanded]="!objectCollapsed()"
+      [zTooltip]="collapseLabel"
+      zPosition="top"
+      (click)="toggleObjectCollapsed()"
+    >
+      <i [class]="objectCollapsed() ? 'ri-arrow-down-s-line' : 'ri-arrow-up-s-line'"></i>
     </button>
   }
 </div>
@@ -84,14 +101,32 @@
         @switch (type()) {
           @case ('string') {
             @switch (xUiComponent()) {
-              @case ('textarea') {
+              @case ('jsonValue') {
                 <textarea
-                  class="w-full px-3 py-1 text-sm whitespace-nowrap text-gray-900 border-0 rounded-lg h-10 min-h-[36px] bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+                  z-input
+                  class="min-h-[160px] resize-y font-mono text-sm"
                   [placeholder]="
                     (meta().description || meta().title || '' | i18n) +
                     (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
                   "
                   type="text"
+                  [rows]="textareaRows()"
+                  [disabled]="readonly()"
+                  [ngModel]="value$()"
+                  [ngModelOptions]="{ standalone: true }"
+                  (ngModelChange)="update($event)"
+                ></textarea>
+              }
+              @case ('textarea') {
+                <textarea
+                  z-input
+                  class="min-h-9 resize-y text-sm"
+                  [placeholder]="
+                    (meta().description || meta().title || '' | i18n) +
+                    (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
+                  "
+                  type="text"
+                  [rows]="textareaRows()"
                   [disabled]="readonly()"
                   [ngModel]="value$()"
                   [ngModelOptions]="{ standalone: true }"
@@ -101,7 +136,7 @@
               @default {
                 @if (variables()) {
                   <xpert-variable-input
-                    class="w-full px-2 py-1 text-gray-900 border-0 rounded-lg bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+                    class="w-full px-2 py-1 text-text-primary border-0 rounded-lg bg-components-input-bg-normal focus:outline-none focus:ring-1 focus:ring-inset focus:ring-components-input-border-active"
                     [placeholder]="
                       (meta().description || meta().title || '' | i18n) +
                       (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
@@ -114,7 +149,7 @@
                   />
                 } @else {
                   <input
-                    class="w-full px-3 text-sm leading-9 text-gray-900 border-0 rounded-lg h-9 bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+                    z-input
                     [placeholder]="
                       (meta().description || meta().title || '' | i18n) +
                       (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
@@ -131,12 +166,14 @@
           }
           @case ('textarea') {
             <textarea
-              class="w-full px-3 py-1 text-sm whitespace-nowrap text-gray-900 border-0 rounded-lg h-10 bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+              z-input
+              class="min-h-9 resize-y text-sm"
               [placeholder]="
                 (meta().description || meta().title || '' | i18n) +
                 (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
               "
               type="text"
+              [rows]="textareaRows()"
               [disabled]="readonly()"
               [ngModel]="value$()"
               [ngModelOptions]="{ standalone: true }"
@@ -145,7 +182,7 @@
           }
           @case ('number') {
             <input
-              class="w-full px-3 text-sm leading-9 text-gray-900 border-0 rounded-lg h-9 bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+              z-input
               [placeholder]="
                 (meta().description || meta().title || '' | i18n) +
                 (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
@@ -154,12 +191,12 @@
               [disabled]="readonly()"
               [ngModel]="value$()"
               [ngModelOptions]="{ standalone: true }"
-              (ngModelChange)="update($event)"
+              (ngModelChange)="updateNumber($event)"
             />
           }
           @case ('integer') {
             <input
-              class="w-full px-3 text-sm leading-9 text-gray-900 border-0 rounded-lg h-9 bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+              z-input
               [placeholder]="
                 (meta().description || meta().title || '' | i18n) +
                 (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
@@ -168,7 +205,7 @@
               [disabled]="readonly()"
               [ngModel]="value$()"
               [ngModelOptions]="{ standalone: true }"
-              (ngModelChange)="update($event)"
+              (ngModelChange)="updateNumber($event)"
             />
           }
           @case ('array') {
@@ -178,9 +215,11 @@
                   class="relative flex group/item border border-solid border-transparent rounded-lg"
                   [class.!border-text-destructive]="item?.__hover__"
                 >
+                  <!-- Preserve inherited context so nested item fields can still resolve outer depends metadata. -->
                   <json-schema-property
                     class="flex-1 overflow-hidden"
                     [schema]="arraySchema().items"
+                    [context]="context()"
                     [ngModel]="item"
                     [ngModelOptions]="{ standalone: true }"
                     (ngModelChange)="updateArray(i, $event)"
@@ -197,14 +236,16 @@
                   </div>
                 </div>
               } @empty {
-                <div class="flex justify-center text-sm rounded-lg p-2 text-text-secondary bg-neutral-50">
+                <div
+                  class="flex justify-center text-sm rounded-lg p-2 text-text-secondary bg-background-default-subtle"
+                >
                   {{ 'PAC.KEY_WORDS.AddItem' | translate: { Default: 'Add Item' } }}
                 </div>
               }
             </div>
           }
           @case ('boolean') {
-            <ngm-slide-toggle
+            <z-switch
               [disabled]="readonly()"
               [ngModel]="value$()"
               [ngModelOptions]="{ standalone: true }"
@@ -213,25 +254,32 @@
               @if (meta().description) {
                 <i
                   class="ri-information-line ml-2 text-text-tertiary hover:text-text-primary opacity-80"
-                  [matTooltip]="meta().description | i18n"
+                  [zTooltip]="meta().description | i18n"
                 ></i>
               }
-            </ngm-slide-toggle>
+            </z-switch>
           }
           @case ('object') {
-            <div class="rounded-lg border border-divider-regular px-2">
-              @for (param of properties(); track param.name) {
-                <json-schema-property
-                  class="mb-1"
-                  [schema]="param"
-                  [name]="param.name"
-                  [required]="isRequired(param.name)"
-                  [variables]="variables()"
-                  [ngModel]="value$()?.[param.name]"
-                  [ngModelOptions]="{ standalone: true }"
-                  (ngModelChange)="updateValue(param.name, $event)"
-                />
-              }
+            <div [class]="collapsibleObject() && objectCollapsed() ? 'hidden' : ''">
+              <div
+                class="rounded-lg border border-divider-regular px-2"
+                [ngClass]="xUiCols() ? 'grid gap-2 grid-cols-' + xUiCols() : 'flex flex-col gap-2'"
+              >
+                @for (param of properties(); track param.name) {
+                  <!-- Nested object children need the current object as context.model for sibling-based depends. -->
+                  <json-schema-property
+                    class="mb-1"
+                    [schema]="param"
+                    [name]="param.name"
+                    [required]="isRequired(param.name)"
+                    [variables]="variables()"
+                    [context]="{ ...(context() ?? {}), model: value$() }"
+                    [ngModel]="value$()?.[param.name]"
+                    [ngModelOptions]="{ standalone: true }"
+                    (ngModelChange)="updateValue(param.name, $event)"
+                  />
+                }
+              </div>
             </div>
           }
           @default {
@@ -240,7 +288,7 @@
             } @else {
               @if (variables()) {
                 <xpert-variable-input
-                  class="w-full px-2 py-1 text-gray-900 border-0 rounded-lg bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+                  class="w-full px-2 py-1 text-text-primary border-0 rounded-lg bg-components-input-bg-normal focus:outline-none focus:ring-1 focus:ring-inset focus:ring-components-input-border-active"
                   [placeholder]="
                     (meta().description || meta().title || '' | i18n) +
                     (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')
@@ -253,7 +301,7 @@
                 />
               } @else {
                 <input
-                  class="w-full px-3 text-sm leading-9 text-gray-900 border-0 rounded-lg h-9 bg-gray-100 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-200"
+                  z-input
                   [placeholder]="
                     (meta().description || meta().title || '' | i18n) +
                     (required() ? '' : '(' + ('PAC.KEY_WORDS.Optional' | translate: { Default: 'Optional' }) + ')')

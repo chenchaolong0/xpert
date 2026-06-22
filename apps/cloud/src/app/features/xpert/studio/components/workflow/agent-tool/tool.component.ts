@@ -1,10 +1,9 @@
 import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input } from '@angular/core'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { FFlowModule } from '@foblex/flow'
 import { TranslateModule } from '@ngx-translate/core'
 import {
   AiModelTypeEnum,
-  IWFNAgentTool,
+  IWFNAgentWorkflow,
   IWorkflowNode,
   TXpertTeamNode,
   WorkflowNodeTypeEnum,
@@ -12,7 +11,8 @@ import {
 } from 'apps/cloud/src/app/@core'
 import { XpertStudioApiService } from '../../../domain'
 import { XpertExecutionService } from '../../../services/execution.service'
-import { NgmSpinComponent } from '@metad/ocap-angular/common'
+import { NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
 
 @Component({
   selector: 'xpert-workflow-node-agent-tool',
@@ -20,7 +20,7 @@ import { NgmSpinComponent } from '@metad/ocap-angular/common'
   styleUrls: ['./tool.component.scss'],
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FFlowModule, MatTooltipModule, TranslateModule, NgmSpinComponent]
+  imports: [FFlowModule, ...ZardTooltipImports, TranslateModule, NgmSpinComponent]
 })
 export class XpertWorkflowNodeAgentToolComponent {
   eXpertAgentExecutionEnum = XpertAgentExecutionStatusEnum
@@ -36,14 +36,17 @@ export class XpertWorkflowNodeAgentToolComponent {
   readonly entity = input<IWorkflowNode>()
 
   // States
-  readonly toolEntity = computed(() => this.entity() as IWFNAgentTool)
+  readonly toolEntity = computed(() => this.entity() as IWFNAgentWorkflow)
 
   readonly toolName = computed(() => this.toolEntity().toolName)
   readonly toolDescription = computed(() => this.toolEntity().toolDescription)
   readonly isEnd = computed(() => this.toolEntity().isEnd)
 
   readonly executions = computed(() => {
-    return this.executionService.toolMessages()?.map((_) => _.data).filter((e) => e.tool === this.toolName())
+    return this.executionService
+      .toolMessages()
+      ?.map((_) => _.data)
+      .filter((e) => e.tool === this.toolName())
   })
 
   // constructor() {

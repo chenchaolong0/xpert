@@ -1,7 +1,8 @@
-import { UserModule } from '@metad/server-core'
+import { UserModule } from '@xpert-ai/server-core'
 import { Module, forwardRef } from '@nestjs/common'
 import { CqrsModule } from '@nestjs/cqrs'
 import { AIModule } from './ai'
+import { AssistantBindingModule } from './assistant-binding'
 import { ChatModule } from './chat'
 import { ChatConversationModule } from './chat-conversation'
 import { ChatMessageModule } from './chat-message'
@@ -23,23 +24,37 @@ import { SandboxModule } from './sandbox/sandbox.module'
 import { XpertModule } from './xpert'
 import { XpertAgentExecutionModule } from './xpert-agent-execution'
 import { XpertAgentModule } from './xpert-agent/index'
+import { XpertMiddlewareModule } from './xpert-middleware'
 import { XpertProjectModule } from './xpert-project/project.module'
 import { XpertTaskModule } from './xpert-task'
 import { XpertTemplateModule } from './xpert-template/xpert-template.module'
 import { XpertToolModule } from './xpert-tool/index'
 import { XpertToolsetModule } from './xpert-toolset/index'
 import { XpertWorkspaceModule } from './xpert-workspace'
-import { CommandHandlers } from './shared'
+import { AgentMiddlewareRuntimeModule, CommandHandlers } from './shared'
 import { RagVStoreModule } from './rag-vstore'
 import { EnvironmentModule } from './environment'
 import { XpertTableModule } from './xpert-table'
 import { HandoffQueueModule } from './handoff/message-queue.module'
+import { SkillRepositoryIndexModule, SkillRepositoryModule } from './skill-repository'
+import { SkillPackageModule } from './skill-package'
+import { PromptWorkflowModule } from './prompt-workflow'
+import { PluginResourceModule } from './plugin-resource'
 import { FileUploadTargetsModule } from './shared'
+import { InitializationModule } from './initialization/initialization.module'
+import { ViewHostCacheSubscriber } from './view-extension/view-host-cache.subscriber'
+import { VolumeModule } from './shared/volume'
+import { FileMemoryModule } from './file-memory'
+import { FileUnderstandingModule } from './file-understanding'
+import { MetricsModule } from './metrics'
+import { MobileModule } from './mobile'
 
 @Module({
     imports: [
         forwardRef(() => CqrsModule),
         forwardRef(() => UserModule),
+        AgentMiddlewareRuntimeModule,
+        AssistantBindingModule,
         ChatModule,
         ChatConversationModule,
         ChatMessageModule,
@@ -57,8 +72,14 @@ import { FileUploadTargetsModule } from './shared'
         GraphragModule,
         HandoffQueueModule,
         FileUploadTargetsModule,
+        MetricsModule,
+        VolumeModule,
+        FileMemoryModule,
+        FileUnderstandingModule,
+        MobileModule,
         XpertModule,
         XpertAgentModule,
+        XpertMiddlewareModule,
         XpertAgentExecutionModule,
         XpertToolModule,
         XpertToolsetModule,
@@ -67,6 +88,12 @@ import { FileUploadTargetsModule } from './shared'
         XpertTemplateModule,
         XpertTaskModule,
         XpertTableModule,
+        SkillRepositoryModule,
+        SkillRepositoryIndexModule,
+        SkillPackageModule,
+        PluginResourceModule,
+        PromptWorkflowModule,
+        InitializationModule,
         KnowledgebaseModule,
         KnowledgeDocumentModule,
         RagVStoreModule,
@@ -74,6 +101,6 @@ import { FileUploadTargetsModule } from './shared'
         SandboxModule
     ],
     controllers: [],
-    providers: [...EventHandlers, ...CommandHandlers]
+    providers: [...EventHandlers, ...CommandHandlers, ViewHostCacheSubscriber]
 })
 export class ServerAIModule {}

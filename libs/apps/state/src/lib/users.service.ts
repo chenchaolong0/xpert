@@ -1,8 +1,112 @@
 import { HttpClient } from '@angular/common/http'
 import { Injectable } from '@angular/core'
-import { IUser, IUserFindInput, IUserPasswordInput, IUserUpdateInput } from '@metad/contracts'
+import { IUser, IUserFindInput, IUserPasswordInput, IUserUpdateInput } from '@xpert-ai/contracts'
 import { firstValueFrom, map } from 'rxjs'
 import { API_PREFIX } from './constants'
+
+// Backend already includes employee/role/rolePermissions/tenant for /user/me by default.
+export const CURRENT_USER_BOOTSTRAP_RELATIONS = [
+  'organizations',
+  'organizations.organization'
+] as const
+
+export const CURRENT_USER_FEATURE_RELATIONS = [
+  'tenant.featureOrganizations',
+  'tenant.featureOrganizations.feature',
+  'organizations.organization.featureOrganizations',
+  'organizations.organization.featureOrganizations.feature'
+] as const
+
+export const CURRENT_USER_FULL_RELATIONS = [
+  ...CURRENT_USER_BOOTSTRAP_RELATIONS,
+  ...CURRENT_USER_FEATURE_RELATIONS
+] as const
+
+export type UserMeSelect = {
+  [field: string]: true | UserMeSelect
+}
+
+export type UserMeOptions = {
+  currentOrganizationId?: string | null
+  limitOrganizations?: boolean
+}
+
+export const CURRENT_USER_BOOTSTRAP_SELECT: UserMeSelect = {
+  id: true,
+  email: true,
+  username: true,
+  firstName: true,
+  lastName: true,
+  mobile: true,
+  imageUrl: true,
+  timeZone: true,
+  tenantId: true,
+  preferredLanguage: true,
+  role: {
+    id: true,
+    name: true,
+    rolePermissions: {
+      id: true,
+      permission: true,
+      enabled: true
+    }
+  },
+  tenant: {
+    id: true,
+    name: true
+  },
+  employee: {
+    id: true,
+    userId: true,
+    organizationId: true,
+    isActive: true
+  },
+  organizations: {
+    id: true,
+    userId: true,
+    tenantId: true,
+    organizationId: true,
+    isDefault: true,
+    isActive: true,
+    organization: {
+      id: true,
+      name: true,
+      imageUrl: true,
+      isDefault: true,
+      isActive: true,
+      defaultValueDateType: true,
+      allowManualTime: true,
+      allowModifyTime: true,
+      allowDeleteTime: true,
+      futureDateAllowed: true
+    }
+  }
+}
+
+export const CURRENT_USER_ORGANIZATIONS_SELECT: UserMeSelect = {
+  id: true,
+  tenantId: true,
+  organizations: {
+    id: true,
+    userId: true,
+    tenantId: true,
+    organizationId: true,
+    isDefault: true,
+    isActive: true,
+    organization: {
+      id: true,
+      name: true,
+      imageUrl: true,
+      isDefault: true,
+      isActive: true,
+      defaultValueDateType: true,
+      allowManualTime: true,
+      allowModifyTime: true,
+      allowDeleteTime: true,
+      futureDateAllowed: true
+    }
+  }
+}
 
 @Injectable({
   providedIn: 'root'
@@ -12,9 +116,16 @@ export class UsersService {
 
   API_URL = `${API_PREFIX}/user`
 
-  getMe(relations?: string[]): Promise<IUser> {
-    const data = JSON.stringify({ relations })
+  getMe(relations?: string[], select?: UserMeSelect, options?: UserMeOptions): Promise<IUser> {
+    if (!relations?.length && !select && !options) {
+      return firstValueFrom(this.http.get<IUser>(`${this.API_URL}/me`))
+    }
 
+    const data = JSON.stringify({
+      ...(relations?.length ? { relations } : {}),
+      ...(select ? { select } : {}),
+      ...(options ?? {})
+    })
     return firstValueFrom(
       this.http.get<IUser>(`${this.API_URL}/me`, {
         params: { data }
@@ -42,9 +153,17 @@ export class UsersService {
       }).pipe(map(({items}) => items))
   }
 
-  search(search: string) {
+  search(search: string, options?: { organizationId?: string; membership?: string }) {
+    const params: Record<string, string> = { search }
+    if (options?.organizationId) {
+      params.organizationId = options.organizationId
+    }
+    if (options?.membership) {
+      params.membership = options.membership
+    }
+
     return this.http.get<{ items: IUser[]; total: number }>(`${this.API_URL}/search`, {
-        params: { search }
+        params
       }).pipe(
         map(({items}) => items)
       )

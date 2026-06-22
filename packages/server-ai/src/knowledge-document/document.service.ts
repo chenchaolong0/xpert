@@ -1,389 +1,606 @@
-import { IDocChunkMetadata, IKnowledgeDocument, IKnowledgeDocumentChunk, IKnowledgeDocumentPage, KBDocumentStatusEnum, KDocumentSourceType, KnowledgeStructureEnum } from '@metad/contracts'
-import { RequestContext, StorageFileService, TenantOrganizationAwareCrudService } from '@metad/server-core'
+import fsPromises from 'node:fs/promises'
+import path from 'node:path'
+import {
+    IDocChunkMetadata,
+    IKnowledgeDocument,
+    IKnowledgeDocumentChunk,
+    IKnowledgeDocumentPage,
+    KBDocumentStatusEnum,
+    KDocumentSourceType,
+    KnowledgeStructureEnum
+} from '@xpert-ai/contracts'
+import { getErrorMessage } from '@xpert-ai/server-common'
+import { RequestContext, StorageFileService, TenantOrganizationAwareCrudService } from '@xpert-ai/server-core'
 import { BadRequestException, forwardRef, Inject, Injectable, Logger } from '@nestjs/common'
 import { CommandBus } from '@nestjs/cqrs'
 import { InjectRepository } from '@nestjs/typeorm'
 import { InjectQueue } from '@nestjs/bull'
-import { ChunkMetadata, DocumentSourceRegistry, mergeParentChildChunks, TextSplitterRegistry } from '@xpert-ai/plugin-sdk'
+import {
+    ChunkMetadata,
+    DocumentSourceRegistry,
+    mergeParentChildChunks,
+    TextSplitterRegistry
+} from '@xpert-ai/plugin-sdk'
 import { Queue } from 'bull'
 import { Document } from 'langchain/document'
 import { compact, uniq } from 'lodash-es'
 import { DataSource, DeepPartial, In, Repository } from 'typeorm'
-import { v4 as uuidv4 } from 'uuid'
 import { KnowledgebaseService, KnowledgeDocumentStore, TVectorSearchParams } from '../knowledgebase'
 import { KnowledgeDocument } from './document.entity'
-import { LoadStorageFileCommand } from '../shared'
+import { KnowledgeWorkAreaResolver, LoadStorageFileCommand } from '../shared'
 import { KnowledgeDocumentPage } from '../core/entities/internal'
 import { KnowledgeDocumentChunkService } from './chunk/chunk.service'
+import { KnowledgeGraphClearDocumentCommand } from '../graphrag/commands'
+import { resolveKnowledgeDocumentParserConfig } from './parser-config'
 
+type OriginalFileDownloadTarget = {
+    absolutePath: string
+    fileName: string
+    mimeType: string
+}
+
+export type OriginalFileDownload = OriginalFileDownloadTarget & {
+    content: Buffer
+}
+
+function isCountableDocument(document: Pick<IKnowledgeDocument, 'sourceType' | 'metadata'> | null | undefined) {
+    if (!document || document.sourceType === KDocumentSourceType.FOLDER) {
+        return false
+    }
+
+    if (!document.metadata || typeof document.metadata !== 'object') {
+        return true
+    }
+
+    return !('systemManaged' in document.metadata) || document.metadata.systemManaged !== true
+}
+
+function isSystemManagedDocument(document: Pick<IKnowledgeDocument, 'metadata'> | null | undefined) {
+    if (!document?.metadata || typeof document.metadata !== 'object') {
+        return false
+    }
+
+    return 'systemManaged' in document.metadata && document.metadata.systemManaged === true
+}
+
+function getUniqueFileName(fileName: string, usedFileNames: Set<string>) {
+    if (!usedFileNames.has(fileName)) {
+        usedFileNames.add(fileName)
+        return fileName
+    }
+
+    const extensionStart = fileName.lastIndexOf('.')
+    const hasExtension = extensionStart > 0
+    const baseName = hasExtension ? fileName.slice(0, extensionStart) : fileName
+    const extension = hasExtension ? fileName.slice(extensionStart) : ''
+    let index = 2
+    let nextName = `${baseName} (${index})${extension}`
+
+    while (usedFileNames.has(nextName)) {
+        index += 1
+        nextName = `${baseName} (${index})${extension}`
+    }
+
+    usedFileNames.add(nextName)
+    return nextName
+}
 
 @Injectable()
 export class KnowledgeDocumentService extends TenantOrganizationAwareCrudService<KnowledgeDocument> {
-	readonly #logger = new Logger(KnowledgeDocumentService.name)
+    readonly #logger = new Logger(KnowledgeDocumentService.name)
 
-	@InjectRepository(KnowledgeDocumentPage)
-	private readonly pageRepository: Repository<KnowledgeDocumentPage>
+    @InjectRepository(KnowledgeDocumentPage)
+    private readonly pageRepository: Repository<KnowledgeDocumentPage>
 
-	@Inject(DocumentSourceRegistry)
-	private readonly docSourceRegistry: DocumentSourceRegistry;
+    @Inject(DocumentSourceRegistry)
+    private readonly docSourceRegistry: DocumentSourceRegistry
 
-	@Inject(TextSplitterRegistry)
-	private readonly textSplitterRegistry: TextSplitterRegistry
+    @Inject(TextSplitterRegistry)
+    private readonly textSplitterRegistry: TextSplitterRegistry
 
-	@Inject(KnowledgeDocumentChunkService)
-	private readonly chunkService: KnowledgeDocumentChunkService
+    @Inject(KnowledgeDocumentChunkService)
+    private readonly chunkService: KnowledgeDocumentChunkService
 
-	constructor(
-		@InjectRepository(KnowledgeDocument)
-		readonly repo: Repository<KnowledgeDocument>,
+    constructor(
+        @InjectRepository(KnowledgeDocument)
+        readonly repo: Repository<KnowledgeDocument>,
 
-		private readonly dataSource: DataSource,
+        private readonly dataSource: DataSource,
 
-		private readonly storageFileService: StorageFileService,
+        private readonly storageFileService: StorageFileService,
 
-		@Inject(forwardRef(() => KnowledgebaseService))
-		private readonly knowledgebaseService: KnowledgebaseService,
-		
-		private readonly commandBus: CommandBus,
-		@InjectQueue('embedding-document') private docQueue: Queue
-	) {
-		super(repo)
-	}
+        private readonly knowledgeWorkAreaResolver: KnowledgeWorkAreaResolver,
 
-	async findAncestors(id: string) {
-		const treeRepo = this.dataSource.getTreeRepository(KnowledgeDocument)
-		const entity = await treeRepo.findOneBy({ id })
-		const parents = await treeRepo.findAncestors(entity, {depth: 5})
-		return parents
-	}
+        @Inject(forwardRef(() => KnowledgebaseService))
+        private readonly knowledgebaseService: KnowledgebaseService,
 
-	/**
-	 */
-	async createDocument(document: Partial<IKnowledgeDocument>): Promise<KnowledgeDocument> {
-		// Complete file type
-		if (!document.type) {
-			if (document.storageFileId) {
-				const storageFile = await this.storageFileService.findOne(document.storageFileId)
-				const fileType = storageFile.originalName.split('.').pop()
-				document.type = fileType
-			} else if (document.options?.url) {
-				document.type = 'html'
-			}
-		}
-		
-		const doc = await this.create({
-			...document,
-		})
-		// Init folder path for document entity
-		const parents = await this.findAncestors(doc.id)
-		const folder = parents.map((i) => i.sourceType === KDocumentSourceType.FOLDER ? i.name : i.id).join('/')
-		doc.folder = folder
-		await this.repository.save(doc)
-		
-		return doc
-	}
+        private readonly commandBus: CommandBus,
+        @InjectQueue('embedding-document') private docQueue: Queue
+    ) {
+        super(repo)
+    }
 
-	/**
-	 * Create documents in bulk.
-	 * 
-	 * @param documents 
-	 * @returns 
-	 */
-	async createBulk(documents: Partial<IKnowledgeDocument>[]): Promise<KnowledgeDocument[]> {
-		if (!documents?.length) {
-			return []
-		}
+    async findAncestors(id: string) {
+        const treeRepo = this.dataSource.getTreeRepository(KnowledgeDocument)
+        const entity = await treeRepo.findOneBy({ id })
+        const parents = await treeRepo.findAncestors(entity, { depth: 5 })
+        return parents
+    }
 
-		// Update chunkStructure
-		const textSplitterType = documents[0].parserConfig?.textSplitterType
-		if (textSplitterType) {
-			const textSplitterStrategy = this.textSplitterRegistry.get(textSplitterType)
-			if (textSplitterStrategy) {
-				const structure = textSplitterStrategy.structure
-				const knowledgebase = await this.knowledgebaseService.findOneByIdString(documents[0].knowledgebaseId)
-				if (knowledgebase.structure && knowledgebase.structure !== structure) {
-					throw new BadRequestException(`Inconsistent chunk structure between knowledgebase (${knowledgebase.structure}) and document (${structure})`)
-				}
-				if (!knowledgebase.structure) {
-					await this.knowledgebaseService.update(knowledgebase.id, { structure })
-				}
-			}
-		}
+    async getOriginalFileDownload(id: string) {
+        const document = await this.findOne(id)
+        const target = await this.getOriginalFileDownloadTarget(document, new Set(), new Set())
+        if (!target) {
+            throw new BadRequestException('Original file is not available for this knowledge document')
+        }
 
-		return await Promise.all(documents.map((document) => this.createDocument(document)))
-	}
+        return {
+            ...target,
+            content: await this.readOriginalFileContent(target)
+        }
+    }
 
-	async updateBulk(entities: Partial<IKnowledgeDocument>[]): Promise<void> {
-		if (!entities?.length) {
-			return
-		}
-		await Promise.all(entities.map((entity) => this.update(entity.id, entity)))
-	}
+    async getOriginalFileDownloadTargets(ids: string[]) {
+        const uniqueIds = uniq((ids ?? []).filter((id) => typeof id === 'string' && !!id.trim()).map((id) => id.trim()))
+        if (!uniqueIds.length) {
+            return []
+        }
 
-	async deleteBulk(ids: string[]): Promise<void> {
-		await this.repository.delete(ids)
-	}
+        const { items } = await this.findAll({
+            where: {
+                id: In(uniqueIds)
+            }
+        })
 
-	async save(document: DeepPartial<KnowledgeDocument>)
-	async save(document: DeepPartial<KnowledgeDocument>[])
-	async save(document) {
-		return await this.repository.save(document)
-	}
+        const usedFileNames = new Set<string>()
+        const usedFilePaths = new Set<string>()
+        const targets: OriginalFileDownloadTarget[] = []
 
-	/**
-	 * @deprecated use Chunks
-	 */
-	async createPageBulk(documentId: string, pages: Partial<IKnowledgeDocumentPage<ChunkMetadata>>[]) {
-		return await this.pageRepository.save(pages.map((page) => ({ ...page, documentId })))
-	}
+        for (const document of items) {
+            const target = await this.getOriginalFileDownloadTarget(document, usedFileNames, usedFilePaths)
+            if (target) {
+                targets.push(target)
+            }
+        }
 
-	/**
-	 * @deprecated use Chunks
-	 */
-	async deletePage(documentId: string, id: string) {
-		const document = await this.findOne(documentId, {
-			relations: ['pages', 'knowledgebase', 'knowledgebase.copilotModel', 'knowledgebase.copilotModel.copilot']
-		})
-		const vectorStore = await this.knowledgebaseService.getVectorStore(document.knowledgebase)
-		await vectorStore.delete({ filter: { docPageId: id, knowledgeId: documentId } })
+        return targets
+    }
 
-		document.pages = document.pages.filter((_) => _.id !== id)
-		await this.save(document)
-	}
+    async getOriginalFileDownloads(ids: string[]): Promise<OriginalFileDownload[]> {
+        const targets = await this.getOriginalFileDownloadTargets(ids)
+        return Promise.all(
+            targets.map(async (target) => ({
+                ...target,
+                content: await this.readOriginalFileContent(target)
+            }))
+        )
+    }
 
-	/**
-	 * Find all chunks of a document, filter by metadata
-	 * 
-	 * @param id Document ID
-	 * @param params Vector Search Params
-	 * @returns 
-	 */
-	async getChunks(id: string, params: TVectorSearchParams) {
-		if (!params.search) {
-			const chunks = await this.chunkService.findAll({
-				where: {
-					...(params.filter ?? {}),
-					documentId: id,
-				},
-				relations: ['document'],
-				select: {
-					document: {
-						id: true,
-						name: true,
-						sourceType: true,
-						type: true,
-						category: true,
-						fileUrl: true,
-					}
-				},
-				skip: params.skip,
-				take: params.take,
-			})
+    private async getOriginalFileDownloadTarget(
+        document: IKnowledgeDocument,
+        usedFileNames: Set<string>,
+        usedFilePaths: Set<string>
+    ): Promise<OriginalFileDownloadTarget | null> {
+        if (
+            !document ||
+            document.sourceType === KDocumentSourceType.FOLDER ||
+            isSystemManagedDocument(document)
+        ) {
+            return null
+        }
 
-			return chunks
-		}
-		const document = await this.findOne(id, {
-			relations: ['knowledgebase', 'knowledgebase.copilotModel', 'knowledgebase.copilotModel.copilot']
-		})
-		const vectorStore = await this.knowledgebaseService.getVectorStore(document.knowledgebase, true)
-		
-		if (document.knowledgebase.structure === KnowledgeStructureEnum.ParentChild && !params.search) {
-			const pages = await this.pageRepository.find({
-				where: { tenantId: document.tenantId, documentId: document.id },
-				take: params.take,
-				skip: params.skip,
-				order: { createdAt: 'DESC' }
-			})
-			const pageTotal = await this.pageRepository.count({
-				where: { tenantId: document.tenantId, documentId: document.id }
-			})
-			return {
-					items: pages,
-					total: pageTotal
-				}
-		} else {
-			const result = await vectorStore.getChunks(id, params)
-			// @todo
-			if (document.knowledgebase.structure === KnowledgeStructureEnum.ParentChild) {
-				const ids = uniq(compact(result.items.map((item) => item.metadata?.pageId).filter(Boolean) as string[]))
-				if (ids.length) {
-					const pages = await this.pageRepository.find({
-						where: {
-							tenantId: document.tenantId,
-							documentId: document.id,
-							id: In(ids) 
-						},
-						take: params.take,
-						skip: params.skip,
-						order: { createdAt: 'DESC' },
-					})
-					return {
-						items: mergeParentChildChunks(pages, result.items as Document<ChunkMetadata>[]),
-					}
-				}
-			}
+        return await this.resolveOriginalWorkspaceFileTarget(document, usedFileNames, usedFilePaths)
+    }
 
-			return result
-		}
-	}
+    private async resolveOriginalWorkspaceFileTarget(
+        document: IKnowledgeDocument,
+        usedFileNames: Set<string>,
+        usedFilePaths: Set<string>
+    ): Promise<OriginalFileDownloadTarget | null> {
+        const filePath = typeof document.filePath === 'string' ? document.filePath.trim() : ''
+        if (!filePath || !document.knowledgebaseId) {
+            return null
+        }
 
-	/**
-	 * Create a chunk in document.
-	 * 
-	 * @param id Document ID
-	 * @param entity Chunk entity
-	 */
-	async createChunk(id: string, entity: IKnowledgeDocumentChunk) {
-		const { vectorStore, document } = await this.getDocumentVectorStore(id)
-		const chunk = await this.chunkService.create({
-			...entity,
-			documentId: id,
-			knowledgebaseId: document.knowledgebaseId,
-			metadata: {
-				...(entity.metadata ?? {}),
-				chunkId: entity.metadata?.chunkId || uuidv4() // Ensure chunkId exists
-			}
-		})
-		await vectorStore.addKnowledgeDocument(document, [chunk])
-	}
+        const fileIdentity = `workspace:${document.knowledgebaseId}:${filePath}`
+        if (usedFilePaths.has(fileIdentity)) {
+            return null
+        }
 
-	/**
-	 * Update a chunk in document.
-	 * 
-	 * @param documentId Document ID
-	 * @param id Chunk ID
-	 * @param entity Chunk entity
-	 * @returns 
-	 */
-	async updateChunk(documentId: string, id: string, entity: IKnowledgeDocumentChunk) {
-		try {
-			const { vectorStore, document } = await this.getDocumentVectorStore(documentId)
-			await this.chunkService.update(id, entity)
-			return await vectorStore.updateChunk(id, {
-				metadata: entity.metadata,
-				pageContent: entity.pageContent
-			}, document)
-		} catch (err) {
-			throw new BadRequestException(err.message)
-		}
-	}
+        const workArea = await this.knowledgeWorkAreaResolver.resolve({
+            tenantId: RequestContext.currentTenantId(),
+            userId: RequestContext.currentUserId(),
+            knowledgebaseId: document.knowledgebaseId
+        })
+        usedFilePaths.add(fileIdentity)
 
-	/**
-	 * Delete chunk by id in document.
-	 * 
-	 * @param documentId Document ID
-	 * @param id Chunk ID
-	 * @returns 
-	 */
-	async deleteChunk(documentId: string, id: string) {
-		const { vectorStore, document } = await this.getDocumentVectorStore(documentId)
-		// Delete entity
-		await this.chunkService.delete(id)
-		// Delete vector
-		await vectorStore.deleteChunk(id)
-	}
+        return {
+            absolutePath: workArea.volume.path(filePath),
+            fileName: getUniqueFileName(document.name || path.basename(filePath) || `${document.id}.download`, usedFileNames),
+            mimeType: document.mimeType || 'application/octet-stream'
+        }
+    }
 
-	/**
-	 * Cover chunks of a document. record tokens of each chunk.
-	 */
-	async coverChunks(document: IKnowledgeDocument, vectorStore: KnowledgeDocumentStore) {
-		await this.chunkService.deleteByDocumentId(document.id)
-		return await this.chunkService.upsertBulk(document.chunks.map((_) => {
-			return {
-				..._,
-				documentId: document.id,
-				knowledgebaseId: document.knowledgebaseId
-			} as IKnowledgeDocumentChunk
-		}))
-	}
+    private async readOriginalFileContent(target: OriginalFileDownloadTarget) {
+        return await fsPromises.readFile(target.absolutePath)
+    }
 
-	async findAllEmbeddingNodes(document: IKnowledgeDocument) {
-		return this.chunkService.findAllEmbeddingNodes(document.chunks)
-	}
+    /**
+     */
+    async createDocument(document: Partial<IKnowledgeDocument>): Promise<KnowledgeDocument> {
+        // Complete file type
+        if (!document.type) {
+            if (document.storageFileId) {
+                const storageFile = await this.storageFileService.findOne(document.storageFileId)
+                const fileType = storageFile.originalName.split('.').pop()
+                document.type = fileType
+            } else if (document.options?.url) {
+                document.type = 'html'
+            }
+        }
+        document.parserConfig = resolveKnowledgeDocumentParserConfig(document)
 
-	async getDocumentVectorStore(id: string) {
-		const document = await this.findOne(id, {
-			relations: ['knowledgebase', 'knowledgebase.copilotModel', 'knowledgebase.copilotModel.copilot']
-		})
-		const vectorStore = await this.knowledgebaseService.getVectorStore(document.knowledgebase)
-		return { document, vectorStore }
-	}
+        const doc = await this.create({
+            ...document
+        })
+        // Init folder path for document entity
+        const parents = await this.findAncestors(doc.id)
+        const folder = parents.map((i) => (i.sourceType === KDocumentSourceType.FOLDER ? i.name : i.id)).join('/')
+        doc.folder = folder
+        await this.repository.save(doc)
 
-	async previewFile(id: string) {
-		try {
-			const docs = await this.commandBus.execute<LoadStorageFileCommand, Document[]>(
-				new LoadStorageFileCommand(id)
-			)
-			// Limit the size of the data returned for preview
-			return docs.map((doc) => ({
-				...doc,
-				pageContent: doc.pageContent.length > 10000 ? doc.pageContent.slice(0, 10000) + ' ...' : doc.pageContent
-			}))
-		} catch (err) {
-			throw new BadRequestException(err.message)
-		}
-	}
+        return doc
+    }
 
-	/**
-	 * Start processing documents which is not in RUNNING status
-	 */
-	async startProcessing(ids: string[], kbId?: string) {
-		const userId = RequestContext.currentUserId()
-		const where = kbId ? { knowledgebaseId: kbId, id: In(ids) } : {id: In(ids)}
-		const { items } = await this.findAll({
-			where
-		})
+    /**
+     * Create documents in bulk.
+     *
+     * @param documents
+     * @returns
+     */
+    async createBulk(documents: Partial<IKnowledgeDocument>[]): Promise<KnowledgeDocument[]> {
+        if (!documents?.length) {
+            return []
+        }
+        documents.forEach((document) => {
+            document.parserConfig = resolveKnowledgeDocumentParserConfig(document)
+        })
+        const knowledgebaseIds = uniq(compact(documents.map((document) => document.knowledgebaseId)))
+        await Promise.all(
+            knowledgebaseIds.map((knowledgebaseId) => this.knowledgebaseService.assertNotRebuilding(knowledgebaseId))
+        )
 
-		const docs = items.filter((doc) => doc.status !== KBDocumentStatusEnum.RUNNING)
+        // Update chunkStructure
+        const textSplitterType = documents[0].parserConfig?.textSplitterType
+        if (textSplitterType) {
+            const textSplitterStrategy = this.textSplitterRegistry.get(textSplitterType)
+            if (textSplitterStrategy) {
+                const structure = textSplitterStrategy.structure
+                const knowledgebase = await this.knowledgebaseService.findOneByIdString(documents[0].knowledgebaseId)
+                if (knowledgebase.structure && knowledgebase.structure !== structure) {
+                    throw new BadRequestException(
+                        `Inconsistent chunk structure between knowledgebase (${knowledgebase.structure}) and document (${structure})`
+                    )
+                }
+                if (!knowledgebase.structure) {
+                    await this.knowledgebaseService.update(knowledgebase.id, { structure })
+                }
+            }
+        }
 
-		const job = await this.docQueue.add({
-			userId,
-			docs
-		})
+        return await Promise.all(documents.map((document) => this.createDocument(document)))
+    }
 
-		docs.forEach((item) => {
-			item.jobId = job.id as string
-			item.status = KBDocumentStatusEnum.RUNNING
-			item.processMsg = ''
-			item.progress = 0
-		})
+    async updateBulk(entities: Partial<IKnowledgeDocument>[]): Promise<void> {
+        if (!entities?.length) {
+            return
+        }
+        await Promise.all(entities.map((entity) => this.update(entity.id, entity)))
+    }
 
-		return await this.save(docs)
-	}
+    async deleteBulk(ids: string[]): Promise<void> {
+        const { items } = await this.findAll({
+            where: { id: In(ids) },
+            select: { id: true, knowledgebaseId: true }
+        })
+        const knowledgebaseIds = uniq(compact(items.map((document) => document.knowledgebaseId)))
+        await Promise.all(
+            knowledgebaseIds.map((knowledgebaseId) => this.knowledgebaseService.assertNotRebuilding(knowledgebaseId))
+        )
+        for await (const id of ids) {
+            await this.delete(id)
+        }
+    }
 
-	async delete(id: string) {
-		const document = await this.findOne(id, {
-			relations: ['knowledgebase', 'knowledgebase.documents'],
-			select: {
-				knowledgebase: { id: true, documentNum: true, documents: { id: true, sourceType: true } }
-			}
-		})
-		const vectorStore = await this.knowledgebaseService.getVectorStore(document.knowledgebase, false)
-		await vectorStore.deleteKnowledgeDocument(document)
+    async save(document: DeepPartial<KnowledgeDocument>)
+    async save(document: DeepPartial<KnowledgeDocument>[])
+    async save(document) {
+        return await this.repository.save(document)
+    }
 
-		document.knowledgebase.documentNum = document.knowledgebase.documents.filter((doc) => doc.sourceType !== KDocumentSourceType.FOLDER).length - 1
-		await this.knowledgebaseService.update(document.knowledgebaseId, {
-			documentNum: document.knowledgebase.documentNum
-		})
+    /**
+     * @deprecated use Chunks
+     */
+    async createPageBulk(documentId: string, pages: Partial<IKnowledgeDocumentPage<ChunkMetadata>>[]) {
+        return await this.pageRepository.save(pages.map((page) => ({ ...page, documentId })))
+    }
 
-		const result = await super.delete(id)
-		return result
-	}
+    /**
+     * @deprecated use Chunks
+     */
+    async deletePage(documentId: string, id: string) {
+        const document = await this.findOne(documentId, {
+            relations: ['pages', 'knowledgebase', 'knowledgebase.copilotModel', 'knowledgebase.copilotModel.copilot']
+        })
+        await this.knowledgebaseService.assertNotRebuilding(document.knowledgebaseId)
+        const vectorStore = await this.knowledgebaseService.getActiveVectorStore(document.knowledgebase)
+        await vectorStore.delete({ filter: { docPageId: id, knowledgeId: documentId } })
 
-	// Document source connection
-	async connectDocumentSource(type: string, config: any) {
-		const documentSource = this.docSourceRegistry.get(type)
-		if (!documentSource) {
-			throw new BadRequestException(`Document source '${type}' not found`)
-		}
+        document.pages = document.pages.filter((_) => _.id !== id)
+        await this.save(document)
+    }
 
-		try {
-			const docs = await documentSource.test(config)
-			
-			return docs
-		} catch (err) {
-			this.#logger.error(`Failed to connect document source '${type}'`, err)
-			throw new BadRequestException(`Failed to connect document source '${type}': ${err.message}`)
-		}
-	}
+    /**
+     * Find all chunks of a document, filter by metadata
+     *
+     * @param id Document ID
+     * @param params Vector Search Params
+     * @returns
+     */
+    async getChunks(id: string, params: TVectorSearchParams) {
+        if (!params.search) {
+            const chunks = await this.chunkService.findAll({
+                where: {
+                    ...(params.filter ?? {}),
+                    documentId: id
+                },
+                relations: ['document'],
+                select: {
+                    document: {
+                        id: true,
+                        name: true,
+                        sourceType: true,
+                        type: true,
+                        category: true,
+                        fileUrl: true
+                    }
+                },
+                skip: params.skip,
+                take: params.take
+            })
+
+            return chunks
+        }
+        const document = await this.findOne(id, {
+            relations: ['knowledgebase', 'knowledgebase.copilotModel', 'knowledgebase.copilotModel.copilot']
+        })
+        const vectorStore = await this.knowledgebaseService.getActiveVectorStore(document.knowledgebase, true)
+
+        if (document.knowledgebase.structure === KnowledgeStructureEnum.ParentChild && !params.search) {
+            const pages = await this.pageRepository.find({
+                where: { tenantId: document.tenantId, documentId: document.id },
+                take: params.take,
+                skip: params.skip,
+                order: { createdAt: 'DESC' }
+            })
+            const pageTotal = await this.pageRepository.count({
+                where: { tenantId: document.tenantId, documentId: document.id }
+            })
+            return {
+                items: pages,
+                total: pageTotal
+            }
+        } else {
+            const result = await vectorStore.getChunks(id, params)
+            // @todo
+            if (document.knowledgebase.structure === KnowledgeStructureEnum.ParentChild) {
+                const ids = uniq(compact(result.items.map((item) => item.metadata?.pageId).filter(Boolean) as string[]))
+                if (ids.length) {
+                    const pages = await this.pageRepository.find({
+                        where: {
+                            tenantId: document.tenantId,
+                            documentId: document.id,
+                            id: In(ids)
+                        },
+                        take: params.take,
+                        skip: params.skip,
+                        order: { createdAt: 'DESC' }
+                    })
+                    return {
+                        items: mergeParentChildChunks(pages, result.items as Document<ChunkMetadata>[])
+                    }
+                }
+            }
+
+            return result
+        }
+    }
+
+    /**
+     * Create a chunk in document.
+     *
+     * @param id Document ID
+     * @param entity Chunk entity
+     */
+    async createChunk(id: string, entity: IKnowledgeDocumentChunk) {
+        const { vectorStore, document } = await this.getDocumentVectorStore(id)
+        const chunk = await this.chunkService.create({
+            ...entity,
+            documentId: id,
+            knowledgebaseId: document.knowledgebaseId,
+            metadata: {
+                ...(entity.metadata ?? {})
+            }
+        })
+        await vectorStore.addKnowledgeDocument(document, [chunk])
+    }
+
+    /**
+     * Update a chunk in document.
+     *
+     * @param documentId Document ID
+     * @param id Chunk ID
+     * @param entity Chunk entity
+     * @returns
+     */
+    async updateChunk(documentId: string, id: string, entity: IKnowledgeDocumentChunk) {
+        try {
+            const { vectorStore, document } = await this.getDocumentVectorStore(documentId)
+            await this.chunkService.update(id, entity)
+            return await vectorStore.updateChunk(
+                id,
+                {
+                    metadata: entity.metadata,
+                    pageContent: entity.pageContent
+                },
+                document
+            )
+        } catch (err) {
+            throw new BadRequestException(err.message)
+        }
+    }
+
+    /**
+     * Delete chunk by id in document.
+     *
+     * @param documentId Document ID
+     * @param id Chunk ID
+     * @returns
+     */
+    async deleteChunk(documentId: string, id: string) {
+        const { vectorStore, document } = await this.getDocumentVectorStore(documentId)
+        // Delete entity
+        await this.chunkService.delete(id)
+        // Delete vector
+        await vectorStore.deleteChunk(id)
+    }
+
+    /**
+     * Cover chunks of a document. record tokens of each chunk.
+     */
+    async coverChunks(document: IKnowledgeDocument, vectorStore: KnowledgeDocumentStore) {
+        await this.chunkService.deleteByDocumentId(document.id)
+        return await this.chunkService.upsertBulk(
+            document.chunks.map((_) => {
+                return {
+                    ..._,
+                    documentId: document.id,
+                    knowledgebaseId: document.knowledgebaseId
+                } as IKnowledgeDocumentChunk
+            })
+        )
+    }
+
+    async findAllEmbeddingNodes(document: IKnowledgeDocument) {
+        return this.chunkService.findAllEmbeddingNodes(document.chunks)
+    }
+
+    async getDocumentVectorStore(id: string) {
+        const document = await this.findOne(id, {
+            relations: ['knowledgebase', 'knowledgebase.copilotModel', 'knowledgebase.copilotModel.copilot']
+        })
+        await this.knowledgebaseService.assertNotRebuilding(document.knowledgebaseId)
+        const vectorStore = await this.knowledgebaseService.getActiveVectorStore(document.knowledgebase)
+        return { document, vectorStore }
+    }
+
+    async previewFile(id: string) {
+        try {
+            const docs = await this.commandBus.execute<LoadStorageFileCommand, Document[]>(
+                new LoadStorageFileCommand(id)
+            )
+            // Limit the size of the data returned for preview
+            return docs.map((doc) => ({
+                ...doc,
+                pageContent: doc.pageContent.length > 10000 ? doc.pageContent.slice(0, 10000) + ' ...' : doc.pageContent
+            }))
+        } catch (err) {
+            throw new BadRequestException(err.message)
+        }
+    }
+
+    /**
+     * Start processing documents which is not in RUNNING status
+     */
+    async startProcessing(ids: string[], kbId?: string) {
+        const userId = RequestContext.currentUserId()
+        const where = kbId ? { knowledgebaseId: kbId, id: In(ids) } : { id: In(ids) }
+        const { items } = await this.findAll({
+            where
+        })
+
+        const docs = items.filter((doc) => doc.status !== KBDocumentStatusEnum.RUNNING)
+        const knowledgebaseIds = uniq(compact(docs.map((doc) => doc.knowledgebaseId)))
+        await Promise.all(
+            knowledgebaseIds.map((knowledgebaseId) => this.knowledgebaseService.assertNotRebuilding(knowledgebaseId))
+        )
+
+        const job = await this.docQueue.add({
+            userId,
+            docs
+        })
+
+        docs.forEach((item) => {
+            item.jobId = job.id as string
+            item.status = KBDocumentStatusEnum.RUNNING
+            item.processMsg = ''
+            item.progress = 0
+        })
+
+        return await this.save(docs)
+    }
+
+    async delete(id: string) {
+        const document = await this.findOne(id, {
+            relations: ['knowledgebase', 'knowledgebase.documents'],
+            select: {
+                knowledgebase: {
+                    id: true,
+                    documentNum: true,
+                    documents: { id: true, sourceType: true, metadata: true }
+                }
+            }
+        })
+        await this.knowledgebaseService.assertNotRebuilding(document.knowledgebaseId)
+        const vectorStore = await this.knowledgebaseService.getActiveVectorStore(document.knowledgebase, false)
+        await vectorStore.deleteKnowledgeDocument(document)
+        try {
+            await this.commandBus.execute(
+                new KnowledgeGraphClearDocumentCommand({
+                    knowledgebaseId: document.knowledgebaseId,
+                    documentId: document.id
+                })
+            )
+        } catch (error) {
+            this.#logger.warn(`Failed to clear GraphRAG data for document '${document.id}': ${getErrorMessage(error)}`)
+        }
+
+        const nextDocumentNum =
+            document.knowledgebase.documents.filter(isCountableDocument).length -
+            (isCountableDocument(document) ? 1 : 0)
+        document.knowledgebase.documentNum = nextDocumentNum
+        await this.knowledgebaseService.update(document.knowledgebaseId, {
+            documentNum: document.knowledgebase.documentNum
+        })
+
+        const result = await super.delete(id)
+        return result
+    }
+
+    // Document source connection
+    async connectDocumentSource(type: string, config: any) {
+        const documentSource = this.docSourceRegistry.get(type)
+        if (!documentSource) {
+            throw new BadRequestException(`Document source '${type}' not found`)
+        }
+
+        try {
+            const docs = await documentSource.test(config)
+
+            return docs
+        } catch (err) {
+            this.#logger.error(`Failed to connect document source '${type}'`, err)
+            throw new BadRequestException(`Failed to connect document source '${type}': ${err.message}`)
+        }
+    }
 }

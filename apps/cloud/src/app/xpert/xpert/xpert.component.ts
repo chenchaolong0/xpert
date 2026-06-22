@@ -1,7 +1,8 @@
 import { DragDropModule } from '@angular/cdk/drag-drop'
+import { Dialog } from '@angular/cdk/dialog'
 import { CdkListboxModule } from '@angular/cdk/listbox'
 import { CdkMenuModule } from '@angular/cdk/menu'
-import { CommonModule } from '@angular/common'
+
 import {
   ChangeDetectionStrategy,
   Component,
@@ -9,18 +10,18 @@ import {
   effect,
   ElementRef,
   HostListener,
+  input,
   inject,
   model,
   signal,
   output,
   DestroyRef,
-  viewChild,
+  viewChild
 } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { RouterModule } from '@angular/router'
-import { DisappearBL, IfAnimation, SlideUpDownAnimation } from '@metad/core'
-import { isNil } from '@metad/ocap-core'
+import { DisappearBL, IfAnimation, SlideUpDownAnimation } from '@xpert-ai/core'
+import { isNil } from '@xpert-ai/ocap-core'
 import { TranslateModule } from '@ngx-translate/core'
 import { derivedAsync } from 'ngxtension/derived-async'
 import { injectParams } from 'ngxtension/inject-params'
@@ -28,18 +29,21 @@ import { EmojiAvatarComponent } from '../../@shared/avatar'
 import { XpertParametersCardComponent } from '../../@shared/xpert'
 import { ChatCanvasComponent } from '../canvas/canvas.component'
 import { ChatInputComponent } from '../chat-input/chat-input.component'
-import { IXpert, Store } from '@metad/cloud/state'
+import { IXpert, Store } from '@xpert-ai/cloud/state'
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop'
 import { UserPipe } from '../../@shared/pipes'
 import { ChatService } from '../chat.service'
 import { XpertHomeService } from '../home.service'
 import { ChatConversationComponent } from '../conversation/conversation.component'
 import { debounceTime, fromEvent } from 'rxjs'
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { ViewClientCommandRegistry } from '../../@shared/view-extension/view-client-command-registry.service'
+import { registerWorkbenchFileOpenCommand } from '../../features/assistant/workbench-file-open-client-command'
+import { openWorkbenchFilePreviewDialog } from '../../features/assistant/workbench-file-preview-dialog.component'
 
 @Component({
   standalone: true,
   imports: [
-    CommonModule,
     RouterModule,
     FormsModule,
     ReactiveFormsModule,
@@ -47,7 +51,7 @@ import { debounceTime, fromEvent } from 'rxjs'
     CdkListboxModule,
     CdkMenuModule,
     DragDropModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
     EmojiAvatarComponent,
     XpertParametersCardComponent,
     ChatInputComponent,
@@ -59,7 +63,7 @@ import { debounceTime, fromEvent } from 'rxjs'
   templateUrl: './xpert.component.html',
   styleUrl: 'xpert.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  animations: [IfAnimation, DisappearBL, SlideUpDownAnimation],
+  animations: [IfAnimation, DisappearBL, SlideUpDownAnimation]
 })
 export class XpertChatAppComponent {
   readonly #store = inject(Store)
@@ -67,7 +71,10 @@ export class XpertChatAppComponent {
   readonly homeService = inject(XpertHomeService)
   readonly #elementRef = inject(ElementRef)
   readonly #destroyRef = inject(DestroyRef)
+  readonly #clientCommands = inject(ViewClientCommandRegistry)
+  readonly #dialog = inject(Dialog)
 
+  readonly idleLayout = input<'xpert' | 'welcome'>('xpert')
   readonly paramRole = injectParams('name')
   readonly paramConvId = injectParams('id')
 
@@ -75,16 +82,36 @@ export class XpertChatAppComponent {
   readonly openHistories = output()
 
   // Children
-  readonly convComponent = viewChild('conversation', {read: ChatConversationComponent})
+  readonly convComponent = viewChild('conversation', { read: ChatConversationComponent })
 
   // States
   readonly userSignal = toSignal(this.#store.user$)
   readonly conversationId = this.chatService.conversationId
   readonly messages = this.chatService.messages
 
-  readonly xpert = derivedAsync(() => {
+  readonly routeXpert = derivedAsync(() => {
     const slug = this.paramRole()
     return slug && slug !== 'common' ? this.homeService.getXpert(slug) : null
+  })
+  readonly xpert = computed(() => {
+    const paramRole = this.paramRole()
+    const routeXpert = this.routeXpert()
+    const currentXpert = this.chatService.xpert()
+
+    if (routeXpert) {
+      return routeXpert
+    }
+
+    if (paramRole === 'common' || !!this.conversationId()) {
+      return currentXpert
+    }
+
+    // Keep the xpert seeded from route.data while the async route lookup is still resolving.
+    if (paramRole && currentXpert?.slug === paramRole) {
+      return currentXpert
+    }
+
+    return null
   })
 
   readonly features = computed(() => this.xpert()?.features)
@@ -97,9 +124,16 @@ export class XpertChatAppComponent {
   })
 
   readonly primaryAgent = computed(() => this.xpert()?.agent)
-  readonly parameters = computed(() => this.xpert()?.agentConfig?.parameters ?? (
-    this.primaryAgent()?.options?.hidden ? null : this.primaryAgent()?.parameters
-  ))
+  readonly parameters = computed(() => {
+    if (this.idleLayout() === 'welcome') {
+      return null
+    }
+
+    return (
+      this.xpert()?.agentConfig?.parameters ??
+      (this.primaryAgent()?.options?.hidden ? null : this.primaryAgent()?.parameters)
+    )
+  })
   readonly parametersValue = model<Record<string, unknown>>()
 
   readonly parameterInvalid = computed(() => {
@@ -112,73 +146,78 @@ export class XpertChatAppComponent {
   readonly isBottom = signal(true)
 
   readonly greeting = computed(() => {
-    const now = new Date();
-    const hours = now.getHours();
-    let greeting = 'Good';
+    const now = new Date()
+    const hours = now.getHours()
+    let greeting = 'Good'
 
     if (hours >= 5 && hours < 12) {
-      greeting = "Good morning";
+      greeting = 'Good morning'
     } else if (hours >= 12 && hours < 18) {
-      greeting = "Good afternoon";
+      greeting = 'Good afternoon'
     } else if (hours >= 18 && hours < 22) {
-      greeting = "Good evening";
+      greeting = 'Good evening'
     }
 
-    return greeting;
+    return greeting
   })
 
   constructor() {
-    effect(() => {
-      this.chatService.xpert.set(this.xpert())
-    }, { allowSignalWrites: true })
-
-    effect(
-      () => {
-        this.paramRole()
-        // Reset staged parameters when switching role in "new chat" context.
-        if (!this.paramConvId()) {
-          this.parametersValue.set({})
-        }
-      },
-      { allowSignalWrites: true }
-    )
-
-    effect(
-      () => {
-        if (this.parametersValue()) {
-          this.chatService.parametersValue.set(this.parametersValue())
-        }
-      },
-      { allowSignalWrites: true }
-    )
+    const unregisterFileOpen = registerWorkbenchFileOpenCommand(this.#clientCommands, {
+      openFile: (file) => {
+        openWorkbenchFilePreviewDialog(this.#dialog, file)
+      }
+    })
 
     effect(() => {
-        const conv = this.chatService.conversation()
-        if (conv?.id) {
-          const xpertId = conv.xpertId ?? ''
-          this.homeService.conversations.update((state) => {
-            const items = state[xpertId]?.items ?? []
-            const index = items.findIndex((_) => _.id === conv.id)
-            if (index > -1) {
-              items[index] = {
-                ...items[index],
-                ...conv
-              }
-            } else {
-              items.push(conv)
+      const resolvedXpert = this.xpert()
+
+      if (!resolvedXpert && this.paramRole() && this.paramRole() !== 'common' && !this.paramConvId()) {
+        return
+      }
+
+      this.chatService.xpert.set(resolvedXpert)
+      // this.homeService.xpert.set(this.xpert())
+    })
+
+    effect(() => {
+      this.paramRole()
+      // Reset staged parameters when switching role in "new chat" context.
+      if (!this.paramConvId()) {
+        this.parametersValue.set({})
+      }
+    })
+
+    effect(() => {
+      if (this.parametersValue()) {
+        this.chatService.parametersValue.set(this.parametersValue())
+      }
+    })
+
+    effect(() => {
+      const conv = this.chatService.conversation()
+      if (conv?.id) {
+        const xpertId = conv.xpertId ?? ''
+        this.homeService.conversations.update((state) => {
+          const items = state[xpertId]?.items ?? []
+          const index = items.findIndex((_) => _.id === conv.id)
+          if (index > -1) {
+            items[index] = {
+              ...items[index],
+              ...conv
             }
-            return {
-              ...state,
-              [xpertId]: {
-                ...(state[xpertId] ?? {}),
-                items: [...items]
-              }
+          } else {
+            items.push(conv)
+          }
+          return {
+            ...state,
+            [xpertId]: {
+              ...(state[xpertId] ?? {}),
+              items: [...items]
             }
-          })
-        }
-      },
-      { allowSignalWrites: true }
-    )
+          }
+        })
+      }
+    })
 
     effect(() => {
       // Follow the latest news
@@ -188,6 +227,7 @@ export class XpertChatAppComponent {
     })
 
     this.#destroyRef.onDestroy(() => {
+      unregisterFileOpen()
       this.homeService.canvasOpened.set(null)
     })
 
@@ -237,12 +277,11 @@ export class XpertChatAppComponent {
   @HostListener('window:keydown', ['$event'])
   handleKeyboardEvent(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
-      event.preventDefault(); // Prevent the default action
-      this.openConversations(); // Execute the openConversations method
+      event.preventDefault() // Prevent the default action
+      this.openConversations() // Execute the openConversations method
     } else if ((event.metaKey || event.ctrlKey) && event.key === 'j') {
-      event.preventDefault(); // Prevent the default action
-      this.newXpertConv(); // Execute the newXpertConv method
+      event.preventDefault() // Prevent the default action
+      this.newXpertConv() // Execute the newXpertConv method
     }
   }
-
 }

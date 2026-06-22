@@ -1,6 +1,6 @@
-import { TFileDirectory } from '@metad/contracts'
-import { urlJoin } from '@metad/server-common';
-import { environment } from '@metad/server-config';
+import { TFileDirectory } from '@xpert-ai/contracts'
+import { urlJoin } from '@xpert-ai/server-common';
+import { environment } from '@xpert-ai/server-config';
 import { Dirent } from 'fs'
 import fsPromises from 'fs/promises'
 import path from 'path'
@@ -33,6 +33,7 @@ export async function listFiles(dir: string, depth: number, currentDepth = 0, pa
 					children,
 					size: 0,
 					createdAt: stat.mtime,
+					updatedAt: stat.mtime
 				} as TFileDirectory
 			} else {
 				const stat = await fsPromises.stat(path.join(root, fullPath))
@@ -44,6 +45,7 @@ export async function listFiles(dir: string, depth: number, currentDepth = 0, pa
 					hasChildren: false,
 					size: stat.size,
 					createdAt: stat.birthtime,
+					updatedAt: stat.mtime,
 					url: urlJoin(baseUrl, fullPath.replace(/\\/g, '/'))
 				} as TFileDirectory
 			}

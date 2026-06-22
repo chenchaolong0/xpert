@@ -1,13 +1,31 @@
 <div class="p-4 space-y-3">
-  <div class="text-lg font-semibold flex items-center gap-1 text-text-primary">
-    <xp-icon [icon]="providerMeta()?.icon" size="20" class="w-8 h-8 shrink-0 inline-flex items-center" />
-    <span>
-      {{ providerMeta()?.label | i18n }}
-    </span>
-  </div>
-  <div class="text-sm text-text-tertiary leading-5">
-    {{ providerMeta()?.description | i18n }}
-  </div>
+  @if (providerMeta(); as meta) {
+    <div class="text-lg font-semibold flex items-center gap-1 text-text-primary">
+      <xp-icon [icon]="meta.icon" size="20" class="w-8 h-8 shrink-0 inline-flex items-center" />
+      <span [class]="meta.deprecated ? 'line-through decoration-2 decoration-current' : ''">
+        {{ meta.label | i18n }}
+      </span>
+      @if (meta.deprecated) {
+        <i
+          class="ri-alert-line shrink-0 text-text-warning"
+          [zTooltip]="
+            meta.deprecationMessage
+              ? (meta.deprecationMessage | i18n)
+              : ('PAC.Xpert.DeprecatedMiddleware'
+                | translate
+                  : {
+                      Default:
+                        'This middleware is deprecated. Use the built-in feature or a replacement middleware instead.'
+                    })
+          "
+          zPosition="top"
+        ></i>
+      }
+    </div>
+    <div class="text-sm text-text-tertiary leading-5">
+      {{ meta.description | i18n }}
+    </div>
+  }
 </div>
 
 <div class="w-full h-[0.5px] bg-divider-subtle"></div>
@@ -16,6 +34,31 @@
   <div class="font-bold mb-2">
     {{ 'PAC.KEY_WORDS.Configuration' | translate: { Default: 'Configuration' } }}
   </div>
+
+  <label class="flex items-start gap-3 rounded-lg border border-divider-subtle p-3 text-sm">
+    <input
+      type="checkbox"
+      class="mt-1 h-4 w-4 shrink-0"
+      [ngModel]="required() === true"
+      (ngModelChange)="required.set($event ? true : undefined)"
+    />
+    <span class="min-w-0 flex-1">
+      <span class="block font-medium text-text-primary">
+        {{ 'PAC.Xpert.SystemMiddleware' | translate: { Default: 'System middleware' } }}
+      </span>
+      <span class="mt-1 block text-xs leading-5 text-text-tertiary">
+        {{
+          'PAC.Xpert.SystemMiddlewareTooltip'
+            | translate
+              : {
+                  Default:
+                    'Always load this middleware at runtime and hide it from user-facing skills/plugins selection.'
+                }
+        }}
+      </span>
+    </span>
+  </label>
+
   @if (configSchema(); as configSchema) {
     <json-schema-form
       class="mt-2 grid grid-cols-2 gap-2"
@@ -24,7 +67,8 @@
       [variables]="variables()"
       [context]="{
         draft: draft(),
-        entity: entity()
+        entity: entity(),
+        xpertId: xpertId()
       }"
     />
   } @else {
@@ -33,17 +77,6 @@
     </div>
   }
 </div>
-
-@if (stateSchema(); as stateSchema) {
-  <div class="w-full h-[0.5px] bg-divider-subtle"></div>
-
-  <div class="p-4 space-y-4">
-    <div class="font-bold mb-2">
-      {{ 'PAC.Xpert.StateSchema' | translate: { Default: 'State Schema' } }}
-    </div>
-    <json-schema-form class="mt-2 grid grid-cols-2 gap-2" [schema]="stateSchema" [readonly]="true" />
-  </div>
-}
 
 <div class="w-full h-[0.5px] bg-divider-subtle"></div>
 
@@ -83,7 +116,7 @@
               {{ item.name }}
             </span>
             <div
-              class="border-[0.5px] border-slate-200 border-solid rounded-md px-2 text-xs font-mono truncate text-gray-600 bg-slate-50"
+              class="border-[0.5px] border-divider-deep border-solid rounded-md px-2 text-xs font-mono truncate text-text-secondary bg-background-default-subtle"
             >
               {{ item.name }}
             </div>
@@ -108,10 +141,10 @@
               {{ 'PAC.Xpert.ToolDescription' | translate: { Default: 'Tool Description' } }}
             </div>
             <div
-              class="group flex pl-2 py-[5px] rounded-lg overflow-y-auto border border-transparent hover:bg-gray-50 leading-0 font-mono"
+              class="group flex pl-2 py-[5px] rounded-lg overflow-y-auto border border-transparent hover:bg-hover-bg leading-0 font-mono"
             >
               <textarea
-                class="w-full text-sm text-gray-900 leading-[18px] bg-transparent appearance-none outline-none placeholder:text-gray-400 caret-[#295EFF]"
+                class="xp-input w-full text-sm text-text-primary leading-[18px]"
                 placeholder="{{ 'PAC.Xpert.AddDescription' | translate: { Default: 'Add description' } }}..."
                 [ngModel]="getToolDescription(item.name, item.description)"
                 (ngModelChange)="updateToolDescription(item.name, $event)"

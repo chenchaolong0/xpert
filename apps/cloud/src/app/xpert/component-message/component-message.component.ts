@@ -4,15 +4,15 @@ import { CdkMenuModule } from '@angular/cdk/menu'
 import { CommonModule } from '@angular/common'
 import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { RouterModule } from '@angular/router'
-import { ChatToolCallChunkComponent } from '@cloud/app/@shared/chat'
-import { NgmDSCoreService } from '@metad/ocap-angular/core'
-import { SlicersCapacity } from '@metad/ocap-angular/selection'
-import { TimeGranularity } from '@metad/ocap-core'
+import { ChatContextCompressionChunkComponent, ChatToolCallChunkComponent } from '@cloud/app/@shared/chat'
+import { NgmDSCoreService } from '@xpert-ai/ocap-angular/core'
+import { SlicersCapacity } from '@xpert-ai/ocap-angular/selection'
+import { TimeGranularity } from '@xpert-ai/ocap-core'
 import { TranslateModule } from '@ngx-translate/core'
 import {
   ChatMessageStepCategory,
+  CONTEXT_COMPRESSION_COMPONENT_TYPE,
   IXpertTask,
   TMessageComponent,
   TMessageComponentStep,
@@ -25,6 +25,7 @@ import { ChatComponentMemoriesComponent } from './memories/memories.component'
 import { ChatComponentScheduleTasksComponent } from './schedule-tasks/tasks.component'
 import { ChatComponentMessageTasksComponent } from './tasks/tasks.component'
 import { ChatService } from '../chat.service'
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
 
 /**
  * A component that uniformly displays different types of component messages.
@@ -40,15 +41,15 @@ import { ChatService } from '../chat.service'
     RouterModule,
     DragDropModule,
     CdkMenuModule,
-    RouterModule,
     TranslateModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
 
     ChatComponentMessageTasksComponent,
     ChatComponentScheduleTasksComponent,
     ChatComponentMemoriesComponent,
     ChatComponentMessageFilesComponent,
     ChatComponentMessageIframeComponent,
+    ChatContextCompressionChunkComponent,
     ChatToolCallChunkComponent
   ],
   selector: 'chat-component-message',
@@ -60,6 +61,7 @@ export class ChatComponentMessageComponent {
   eSlicersCapacity = SlicersCapacity
   eTimeGranularity = TimeGranularity
   eChatMessageStepCategory = ChatMessageStepCategory
+  readonly contextCompressionComponentType = CONTEXT_COMPRESSION_COMPONENT_TYPE
 
   readonly #dialog = inject(Dialog)
   readonly dsCore = inject(NgmDSCoreService)
@@ -73,7 +75,7 @@ export class ChatComponentMessageComponent {
   readonly message = input<TMessageContentComponent>()
 
   // States
-  readonly data = computed(() => this.message()?.data as TMessageComponent<{ data?: any }>)
+  readonly data = computed(() => this.message()?.data as TMessageComponent)
   readonly category = computed(() => this.data()?.category || 'Tool')
 
   readonly tasks = computed(() => (<TMessageComponent<{ tasks: IXpertTask[] }>>this.data())?.tasks)
@@ -84,7 +86,6 @@ export class ChatComponentMessageComponent {
     return (end.getTime() - start.getTime()) / 1000
   })
   readonly conversationStatus = computed(() => this.chatService.conversation()?.status)
-
 
   openComponentMessage() {
     if (this.data()?.category === 'Computer') {

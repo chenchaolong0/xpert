@@ -1,5 +1,5 @@
 import { DynamicModule, Module, Provider } from '@nestjs/common';
-import { ConfigModule } from '@metad/server-config';
+import { ConfigModule } from '@xpert-ai/server-config';
 import { AuthGuards, Controllers, Strategies } from './internal';
 import { SocialAuthService } from './social-auth.service';
 
@@ -14,12 +14,21 @@ export class SocialAuthModule {
 		return {
 			module: SocialAuthModule,
 			providers: [...SocialAuthModule.createConnectProviders(options)],
-			imports: [...options.imports],
-			exports: [...options.imports]
+			imports: [...(options.imports ?? [])],
+			exports: [...(options.imports ?? [])]
 		} as DynamicModule;
 	}
 
 	private static createConnectProviders(options: any): Provider[] {
+		if (options.useExisting) {
+			return [
+				{
+					provide: SocialAuthService,
+					useExisting: options.useExisting
+				}
+			];
+		}
+
 		return [
 			{
 				provide: SocialAuthService,

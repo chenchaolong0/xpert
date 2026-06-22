@@ -1,5 +1,5 @@
-import { FetchFrom, ICopilotProviderModel, ModelFeature, ProviderModel } from '@metad/contracts'
-import { ConfigService } from '@metad/server-config'
+import { AiModelTypeEnum, FetchFrom, ICopilotProviderModel, ModelFeature, ProviderModel } from '@xpert-ai/contracts'
+import { ConfigService } from '@xpert-ai/server-config'
 import { IQueryHandler, QueryBus, QueryHandler } from '@nestjs/cqrs'
 import { Inject } from '@nestjs/common'
 import { AIProvidersService } from '../../../ai-model/index'
@@ -9,6 +9,12 @@ import { CopilotWithProviderDto, ProviderWithModelsDto } from '../../dto'
 import { FindCopilotModelsQuery } from '../copilot-model-find.query'
 import { CopilotProviderPublicDto } from '../../../copilot-provider/dto'
 
+/**
+ * Builds the LLM/model catalog visible to the current tenant and organization.
+ * It combines provider built-ins, provider custom model records, and the
+ * copilot's already-selected model so custom selections remain importable even
+ * when they are absent from the provider catalog query.
+ */
 @QueryHandler(FindCopilotModelsQuery)
 export class FindCopilotModelsHandler implements IQueryHandler<FindCopilotModelsQuery> {
 
@@ -21,6 +27,10 @@ export class FindCopilotModelsHandler implements IQueryHandler<FindCopilotModels
 		private readonly providersService: AIProvidersService
 	) {}
 
+	/**
+	 * Returns visible copilots with their provider metadata and available models
+	 * for the requested model type.
+	 */
 	public async execute(command: FindCopilotModelsQuery): Promise<CopilotWithProviderDto[]> {
 		const copilots = await this.service.findAllAvailablesCopilots(null, null)
 		const copilotSchemas: CopilotWithProviderDto[] = []
@@ -35,7 +45,7 @@ export class FindCopilotModelsHandler implements IQueryHandler<FindCopilotModels
 						GetCopilotProviderModelQuery,
 						ICopilotProviderModel[]
 					>(new GetCopilotProviderModelQuery(copilot.modelProvider.id, {modelType: command.type}))
-					const models = []
+					const models: ProviderModel[] = []
 					if (customModels?.length) {
 						models.push(
 							...customModels.map(
@@ -60,6 +70,10 @@ export class FindCopilotModelsHandler implements IQueryHandler<FindCopilotModels
 							models.push(model)
 						}
 					})
+					const selectedModel = selectedCopilotModelAsProviderModel(copilot.copilotModel, command.type)
+					if (selectedModel && !models.some((_) => _.model === selectedModel.model)) {
+						models.push(selectedModel)
+					}
 
 					if (models.length) {
 						const providerSchema = provider.getProviderSchema()
@@ -89,9 +103,10 @@ export class FindCopilotModelsHandler implements IQueryHandler<FindCopilotModels
 }
 
 /**
- * 
+ * Converts custom provider model properties into the feature flags consumed by
+ * model selection and model synchronization.
+ *
  * @todo move to PLUGINS level
- * @returns 
  */
 function customFeatures(modelProperties: Record<string, any>): string[] {
 	const features: ModelFeature[] = []
@@ -109,4 +124,38 @@ function customFeatures(modelProperties: Record<string, any>): string[] {
 		features.push(ModelFeature.AGENT_THOUGHT)
 	}
 	return features
+}
+
+/**
+ * Re-exposes the copilot's current selected model as a ProviderModel when that
+ * model is not listed by built-in or custom provider model sources.
+ */
+function selectedCopilotModelAsProviderModel(
+	copilotModel: { model?: string | null; modelType?: AiModelTypeEnum | string | null } | null | undefined,
+	modelType: AiModelTypeEnum
+): ProviderModel | null {
+	const model = readString(copilotModel?.model)
+	const selectedModelType = readString(copilotModel?.modelType) || AiModelTypeEnum.LLM
+	if (!model || selectedModelType !== modelType) {
+		return null
+	}
+
+	return {
+		model,
+		model_type: modelType,
+		fetch_from: FetchFrom.CUSTOMIZABLE_MODEL,
+		model_properties: {},
+		features: [],
+		label: {
+			zh_Hans: model,
+			en_US: model
+		}
+	}
+}
+
+/**
+ * Normalizes optional string-like fields before model id comparisons.
+ */
+function readString(value: unknown) {
+	return typeof value === 'string' ? value.trim() : ''
 }

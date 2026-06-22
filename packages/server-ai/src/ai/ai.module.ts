@@ -1,4 +1,4 @@
-import { RedisModule, SecretTokenModule, StorageFileModule, TenantModule } from '@metad/server-core'
+import { RedisModule, SecretTokenModule, StorageFileModule, TenantModule } from '@xpert-ai/server-core'
 import { forwardRef, Module } from '@nestjs/common'
 import { CqrsModule } from '@nestjs/cqrs'
 import { RouterModule } from '@nestjs/core'
@@ -22,41 +22,54 @@ import { ConversationsController } from './conversation.controller'
 import { ChatConversationModule } from '../chat-conversation'
 import { ChatMessageModule } from '../chat-message'
 import { ChatMessageFeedbackModule } from '../chat-message-feedback'
-import { RedisSseStreamService } from './stream/redis-sse.service'
+import { EnvironmentModule } from '../environment'
+import { AssistantBindingModule } from '../assistant-binding'
+import { XpertAgentModule } from '../xpert-agent'
+import { SkillPackageModule } from '../skill-package'
+import { RuntimeCommandService } from './runtime-command.service'
+import { PromptWorkflowModule } from '../prompt-workflow'
+import { RuntimeCapabilitiesService } from './runtime-capabilities.service'
+import { SseStreamModule } from '../shared/stream'
 
 @Module({
-	imports: [
-		RouterModule.register([
-			{
-				path: '/ai',
-				module: AIModule
-			}
-		]),
-		TenantModule,
-		SecretTokenModule,
-		RedisModule,
-		CqrsModule,
-		CopilotModule,
-		CopilotUserModule,
-		CopilotOrganizationModule,
-		forwardRef(() => KnowledgebaseModule),
-		forwardRef(() => KnowledgeDocumentModule),
-		forwardRef(() => StorageFileModule),
-		forwardRef(() => XpertModule),
-		forwardRef(() => ChatConversationModule),
-		forwardRef(() => ChatMessageModule),
-		forwardRef(() => ChatMessageFeedbackModule)
-	],
-	controllers: [
-		AIController,
-		AIV1Controller,
-		ContextsController,
-		KnowledgesController,
-		AssistantsController,
-		ThreadsController,
-		ConversationsController,
-		StoreController
-	],
-	providers: [AiService, RedisSseStreamService, ...CommandHandlers, ...QueryHandlers]
+    imports: [
+        RouterModule.register([
+            {
+                path: '/ai',
+                module: AIModule
+            }
+        ]),
+        TenantModule,
+        SecretTokenModule,
+        RedisModule,
+        CqrsModule,
+        CopilotModule,
+        CopilotUserModule,
+        CopilotOrganizationModule,
+        forwardRef(() => KnowledgebaseModule),
+        forwardRef(() => KnowledgeDocumentModule),
+        forwardRef(() => StorageFileModule),
+        forwardRef(() => XpertModule),
+        forwardRef(() => XpertAgentModule),
+        forwardRef(() => SkillPackageModule),
+        forwardRef(() => PromptWorkflowModule),
+        forwardRef(() => AssistantBindingModule),
+        forwardRef(() => EnvironmentModule),
+        forwardRef(() => ChatConversationModule),
+        forwardRef(() => ChatMessageModule),
+        forwardRef(() => ChatMessageFeedbackModule),
+        SseStreamModule
+    ],
+    controllers: [
+        AIController,
+        AIV1Controller,
+        ContextsController,
+        KnowledgesController,
+        AssistantsController,
+        ThreadsController,
+        ConversationsController,
+        StoreController
+    ],
+    providers: [AiService, RuntimeCommandService, RuntimeCapabilitiesService, ...CommandHandlers, ...QueryHandlers]
 })
 export class AIModule {}

@@ -169,7 +169,9 @@ connections:
     key: Agent_ElknkNac9B/Agent_aRuR7KNxVn
     from: Agent_ElknkNac9B
     to: Agent_aRuR7KNxVn
+    required: true
   - type: agent
     key: Agent_ElknkNac9B/Agent_GRZ1N0h9Zf
     from: Agent_ElknkNac9B
     to: Agent_GRZ1N0h9Zf
+    required: true

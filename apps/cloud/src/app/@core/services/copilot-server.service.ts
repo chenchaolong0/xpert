@@ -1,10 +1,10 @@
 import { HttpParams } from '@angular/common/http'
 import { inject, Injectable } from '@angular/core'
 import { toSignal } from '@angular/core/rxjs-interop'
-import { ICopilotModel, OrganizationBaseCrudService } from '@metad/cloud/state'
-import { toParams } from '@metad/core'
+import { ICopilotModel, OrganizationBaseCrudService } from '@xpert-ai/cloud/state'
+import { toParams } from '@xpert-ai/core'
 import { NGXLogger } from 'ngx-logger'
-import { BehaviorSubject, Observable, shareReplay, switchMap } from 'rxjs'
+import { BehaviorSubject, filter, firstValueFrom, Observable, shareReplay, switchMap } from 'rxjs'
 import { API_COPILOT } from '../constants/app.constants'
 import {
   AiModelTypeEnum,
@@ -15,6 +15,11 @@ import {
   ParameterRule
 } from '../types'
 
+type StatisticsFilters = {
+  model?: string | null
+  userId?: string | null
+}
+
 @Injectable({ providedIn: 'root' })
 export class CopilotServerService extends OrganizationBaseCrudService<ICopilot> {
   readonly #logger = inject(NGXLogger)
@@ -22,9 +27,8 @@ export class CopilotServerService extends OrganizationBaseCrudService<ICopilot> 
   readonly refresh$ = new BehaviorSubject(false)
 
   private readonly modelsByType = new Map<AiModelTypeEnum, Observable<ICopilotWithProvider[]>>()
-  private readonly aiProviders$ = this.httpClient
-    .get<IAiProviderEntity[]>(API_COPILOT + `/providers`)
-    .pipe(shareReplay(1))
+  private readonly aiProviders$ = new BehaviorSubject<IAiProviderEntity[] | null>(null)
+  private aiProvidersRequest: Promise<IAiProviderEntity[]> | null = null
 
   /**
    * All available copilots (enabled or tenant free quota)
@@ -47,8 +51,38 @@ export class CopilotServerService extends OrganizationBaseCrudService<ICopilot> 
     return this.copilots$
   }
 
+  getAvailableByRole(role: AiProviderRole) {
+    return this.refresh$.pipe(
+      switchMap(() => this.selectOrganizationId()),
+      switchMap(() => this.httpClient.get<ICopilot | null>(this.apiBaseUrl + `/availables/${role}`))
+    )
+  }
+
   getAiProviders() {
-    return this.aiProviders$
+    if (this.aiProviders$.value === null) {
+      void this.refreshAiProviders().catch((error) => {
+        this.#logger.error('Failed to load AI providers', error)
+      })
+    }
+
+    return this.aiProviders$.pipe(filter((providers): providers is IAiProviderEntity[] => providers !== null))
+  }
+
+  async refreshAiProviders() {
+    if (this.aiProvidersRequest) {
+      return this.aiProvidersRequest
+    }
+
+    this.aiProvidersRequest = firstValueFrom(this.httpClient.get<IAiProviderEntity[]>(API_COPILOT + `/providers`))
+      .then((providers) => {
+        this.aiProviders$.next(providers)
+        return providers
+      })
+      .finally(() => {
+        this.aiProvidersRequest = null
+      })
+
+    return this.aiProvidersRequest
   }
 
   /**
@@ -62,6 +96,7 @@ export class CopilotServerService extends OrganizationBaseCrudService<ICopilot> 
       this.modelsByType.set(
         type,
         this.refresh$.pipe(
+          switchMap(() => this.selectOrganizationId()),
           switchMap(() =>
             this.httpClient.get<ICopilotWithProvider[]>(API_COPILOT + '/models', { params: toParams({ type }) })
           ),
@@ -100,58 +135,76 @@ export class CopilotServerService extends OrganizationBaseCrudService<ICopilot> 
 
   // Statistics
 
-  getStatisticsDailyConversations(timeRange: string[]) {
+  getStatisticsDailyConversations(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; count?: number }[]>(
       this.apiBaseUrl + `/statistics/daily-conversations`,
       {
-        params: this.timeRangeToParams(new HttpParams(), timeRange)
+        params: this.statisticsParams(timeRange, filters)
       }
     )
   }
 
-  getStatisticsDailyEndUsers(timeRange: string[]) {
+  getStatisticsDailyEndUsers(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; count?: number }[]>(this.apiBaseUrl + `/statistics/daily-end-users`, {
-      params: this.timeRangeToParams(new HttpParams(), timeRange)
+      params: this.statisticsParams(timeRange, filters)
     })
   }
 
-  getStatisticsAverageSessionInteractions(timeRange: string[]) {
+  getStatisticsAverageSessionInteractions(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; count?: number }[]>(
       this.apiBaseUrl + `/statistics/average-session-interactions`,
       {
-        params: this.timeRangeToParams(new HttpParams(), timeRange)
+        params: this.statisticsParams(timeRange, filters)
       }
     )
   }
 
-  getStatisticsDailyMessages(timeRange: string[]) {
+  getStatisticsDailyMessages(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; count?: number }[]>(this.apiBaseUrl + `/statistics/daily-messages`, {
-      params: this.timeRangeToParams(new HttpParams(), timeRange)
+      params: this.statisticsParams(timeRange, filters)
     })
   }
 
-  getStatisticsTokensPerSecond(timeRange: string[]) {
+  getStatisticsTokensPerSecond(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; count?: number }[]>(this.apiBaseUrl + `/statistics/tokens-per-second`, {
-      params: this.timeRangeToParams(new HttpParams(), timeRange)
+      params: this.statisticsParams(timeRange, filters)
     })
   }
 
-  getStatisticsTokenCost(timeRange: string[]) {
+  getStatisticsTokenCost(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; tokens: number; price: number; model: string; currency: string }[]>(
       this.apiBaseUrl + `/statistics/token-costs`,
       {
-        params: this.timeRangeToParams(new HttpParams(), timeRange)
+        params: this.statisticsParams(timeRange, filters)
       }
     )
   }
 
-  getStatisticsUserSatisfactionRate(timeRange: string[]) {
+  getStatisticsUserSatisfactionRate(timeRange: string[], filters?: StatisticsFilters) {
     return this.httpClient.get<{ date: string; tokens: number; price: number; model: string; currency: string }[]>(
       this.apiBaseUrl + `/statistics/user-satisfaction-rate`,
       {
-        params: this.timeRangeToParams(new HttpParams(), timeRange)
+        params: this.statisticsParams(timeRange, filters)
       }
     )
+  }
+
+  getStatisticsModels(timeRange: string[], filters?: Pick<StatisticsFilters, 'userId'>) {
+    return this.httpClient.get<{ model: string; tokens: number }[]>(this.apiBaseUrl + `/statistics/models`, {
+      params: this.statisticsParams(timeRange, filters)
+    })
+  }
+
+  statisticsParams(timeRange: string[], filters?: StatisticsFilters) {
+    let params = this.timeRangeToParams(new HttpParams(), timeRange)
+    if (filters?.model) {
+      params = params.set('model', filters.model)
+    }
+    if (filters?.userId) {
+      params = params.set('userId', filters.userId)
+    }
+
+    return params
   }
 
   timeRangeToParams(params: HttpParams, timeRange: string[]) {

@@ -23,8 +23,8 @@ English | [中文](./README_zh.md)
   <a href="https://github.com/xpert-ai/xpert/" target="_blank">
     <img src="https://visitor-badge.laobi.icu/badge?page_id=meta-d.ocap" alt="Visitors">
   </a>
-  <a href="https://www.npmjs.com/@metad/ocap-core">
-    <img src="https://img.shields.io/npm/v/@metad/ocap-core.svg?logo=npm&logoColor=fff&label=NPM+package&color=limegreen" alt="ocap on npm" />
+  <a href="https://www.npmjs.com/@xpert-ai/contracts" target="_blank">
+    <img src="https://img.shields.io/npm/v/@xpert-ai/contracts.svg?logo=npm&logoColor=fff&label=NPM+package&color=limegreen" alt="contracts on npm" />
   </a>&nbsp;
   <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank">
     <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL v3">
@@ -38,13 +38,16 @@ English | [中文](./README_zh.md)
 
 ## 💡 What's New
 
-**🚀 3.8 Sandbox Environment!**
+**🚀 3.10 Agentic Apps & File Understanding!**
 
-XpertAI 3.8 releases the Agent Sandbox feature, providing an isolated execution and file operation environment for agents. One of the core capabilities of the sandbox plugin is the provider plugin mechanism. Through custom providers, you can integrate different runtime infrastructures, such as:
+XpertAI 3.10 turns plugins into first-class `Agentic Apps`, combining plugin-provided Xpert templates, Workbench views, runtime middleware capabilities, and file-aware agent execution into a more extensible assistant platform.
 
-- Docker/Podman container systems
-- [Runloop](https://runloop.ai/), [Modal](https://modal.com/), [Daytona](https://daytona.io/)
-- Remote virtual machines or secure sandbox services
+- Build business apps with plugin `targetApps` and `targetAppMeta`, plugin-contributed Xpert templates, deprecation controls, and richer manifest metadata for app-specific plugin centers.
+- Render plugin-owned Workbench experiences with fixed views, remote component iframe entries, host theme propagation, host events, task status updates, and client commands.
+- Open tool-triggered remote components in the Assistant Workbench, including the built-in Data X metric management plugin for project and semantic model metric operations.
+- Use the new File Understanding layer to parse uploads into `FileAsset` records, artifacts, chunks, page images, citation anchors, and workspace paths that agents can search and read on demand.
+- Give middleware safer runtime capabilities for files, knowledgebases, assistant tasks, organization context, chat events, and the new Office Automation middleware flow.
+- Monitor Copilot operations with user-level usage details, usage summaries, filters, checkpoint retention cleanup, Prometheus metrics, and conversation goals.
 
 ## Agent-Workflow Hybrid Architecture
 
@@ -78,7 +81,7 @@ The easiest way to start the Xpert server is through [docker compose](docker/doc
 ```bash
 cd xpert
 cd docker
-cp .env.example .env
+cp env.example .env
 docker compose up -d
 ```
 
@@ -139,6 +142,13 @@ For Production, we recommend:
 - [x] **Widgets** – UI widgets that let large-model responses drive richer interface experiences.
 - [x] **Agent Middlewares** Plugin-based Agent Middleware.
 - [x] **Agent Skills** – lightweight agent skills for rapid custom capability integration, offering a quicker alternative to MCP tools.
+- [ ] **Project Management** – AI-driven project execution workspace for planning, coordinating, and running multi-agent work.
+  - [ ] Project workspaces with overview, Kanban board, files, teams, and tabbed project layout.
+  - [ ] Project, sprint, task, backlog, and swimlane models with APIs for planning and execution strategy.
+  - [ ] Bind published Xperts as project assistants and project teams, with team role and environment settings.
+  - [ ] Project assistant tools for backlog management, sprint planning, task updates, team binding, and runnable task dispatch.
+  - [ ] Task assistant ChatKit conversations with execution artifacts and project-context handoff.
+  - [ ] Project event stream for real-time board updates and agent execution feedback.
 - [ ] **Audit, Security, Compliance** – Enterprise-grade features to ensure data privacy and compliance.
   - [ ] Audit logs
   - [ ] Role-based access control
@@ -149,7 +159,7 @@ For Production, we recommend:
   - [ ] Evaluation framework
 - [ ] System monitoring and alerting
   - [ ] Sentry integration
-  - [ ] Prometheus integration
+  - [x] Prometheus integration
 
 ## 💌 Contact Us
 

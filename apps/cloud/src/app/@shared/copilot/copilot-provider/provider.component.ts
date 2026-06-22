@@ -13,26 +13,23 @@ import {
   signal
 } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { MatInputModule } from '@angular/material/input'
-import { MatSlideToggleModule } from '@angular/material/slide-toggle'
-import { MatTooltipModule } from '@angular/material/tooltip'
-import { CdkConfirmDeleteComponent, NgmSpinComponent } from '@metad/ocap-angular/common'
-import { NgmI18nPipe } from '@metad/ocap-angular/core'
+import { ZardInputDirective, ZardSwitchComponent, ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { CdkConfirmDeleteComponent, NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
+import { NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
 import { derivedAsync } from 'ngxtension/derived-async'
 import { BehaviorSubject, EMPTY, switchMap } from 'rxjs'
 import {
-  ConfigurateMethod,
   getErrorMessage,
   ICopilotProviderModel,
-  injectAiProviders,
   injectCopilotProviderService,
-  ModelFeature,
   TCopilotTokenUsage,
   ToastrService
 } from '../../../@core'
 import { CopilotProviderModelComponent } from '../copilot-provider-model/model.component'
 import { CopilotAiProviderAuthComponent } from '../provider-authorization/authorization.component'
+import { customProviderModelDisplayTags, providerModelDisplayTags } from '../model-tags'
+import { canCreateCustomProviderModel } from './provider-schema'
 
 @Component({
   standalone: true,
@@ -45,26 +42,22 @@ import { CopilotAiProviderAuthComponent } from '../provider-authorization/author
     FormsModule,
     TranslateModule,
     DragDropModule,
-    MatTooltipModule,
-    MatInputModule,
-    MatSlideToggleModule,
+    ...ZardTooltipImports,
+    ZardInputDirective,
     NgmI18nPipe,
-    NgmSpinComponent
+    NgmSpinComponent,
+    ZardSwitchComponent
   ],
   host: {
     '[style.background]': 'background()'
   }
 })
 export class CopilotProviderComponent {
-  eConfigurateMethod = ConfigurateMethod
-  eModelFeature = ModelFeature
-
   readonly #dialog = inject(Dialog)
   readonly #translate = inject(TranslateService)
   readonly #toastr = inject(ToastrService)
   readonly #i18n = new NgmI18nPipe()
   readonly #copilotProviderService = injectCopilotProviderService()
-  readonly aiProviders = injectAiProviders()
 
   // Inputs
   readonly providerId = input<string>()
@@ -93,11 +86,8 @@ export class CopilotProviderComponent {
   readonly icon = computed(() => this.largeIcon() || this.smallIcon())
   readonly label = computed(() => this.copilotProvider()?.provider?.label)
   readonly supported_model_types = computed(() => this.copilotProvider()?.provider?.supported_model_types)
-  readonly configurate_methods = computed(() => this.copilotProvider()?.provider?.configurate_methods)
-  readonly canCustomizableModel = computed(() =>
-    this.configurate_methods()?.includes(ConfigurateMethod.CUSTOMIZABLE_MODEL)
-  )
   readonly provider_credential_schema = computed(() => this.copilotProvider()?.provider?.provider_credential_schema)
+  readonly canCustomizableModel = computed(() => canCreateCustomProviderModel(this.copilotProvider()?.provider))
 
   readonly #models = derivedAsync(() => {
     return this.showModels()
@@ -123,6 +113,9 @@ export class CopilotProviderComponent {
   })
   readonly usageWarn = computed(() => this.tokenRemain() < 40 && this.tokenRemain() > 1)
   readonly usageError = computed(() => this.tokenRemain() < 1)
+
+  readonly customModelTags = customProviderModelDisplayTags
+  readonly builtinModelTags = providerModelDisplayTags
 
   constructor() {
     effect(() => {
@@ -176,10 +169,14 @@ export class CopilotProviderComponent {
     if (this.readonly()) {
       return
     }
+    const copilotProvider = this.copilotProvider()
+    if (!copilotProvider || !canCreateCustomProviderModel(copilotProvider.provider)) {
+      return
+    }
     this.#dialog
       .open(CopilotProviderModelComponent, {
         data: {
-          provider: this.copilotProvider(),
+          provider: copilotProvider,
           modelId: null
         }
       })
@@ -197,10 +194,14 @@ export class CopilotProviderComponent {
     if (this.readonly()) {
       return
     }
+    const copilotProvider = this.copilotProvider()
+    if (!copilotProvider || !canCreateCustomProviderModel(copilotProvider.provider)) {
+      return
+    }
     this.#dialog
       .open(CopilotProviderModelComponent, {
         data: {
-          provider: this.copilotProvider(),
+          provider: copilotProvider,
           modelId: model.id
         }
       })

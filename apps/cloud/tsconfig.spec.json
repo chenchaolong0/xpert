@@ -2,9 +2,22 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../dist/out-tsc",
-    "module": "commonjs",
-    "types": ["jest", "node"]
+    "emitDecoratorMetadata": false,
+    "isolatedModules": true,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "types": [
+      "jest",
+      "node"
+    ]
   },
-  "files": ["src/test-setup.ts"],
-  "include": ["**/*.spec.ts", "**/*.test.ts", "**/*.d.ts", "jest.config.ts"]
+  "files": [
+    "src/test-setup.ts"
+  ],
+  "include": [
+    "**/*.spec.ts",
+    "**/*.test.ts",
+    "**/*.d.ts",
+    "jest.config.ts"
+  ]
 }

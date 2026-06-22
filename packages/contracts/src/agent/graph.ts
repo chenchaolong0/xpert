@@ -1,6 +1,6 @@
 import { BaseMessage } from '@langchain/core/messages'
 import { RunnableConfig } from '@langchain/core/runnables'
-import { TMessageContentComplex } from '@xpert-ai/chatkit-types'
+import type { TMessageContentComplex } from '@xpert-ai/chatkit-types'
 import { Subscriber } from 'rxjs'
 import { ICopilotModel } from '../ai/copilot-model.model'
 import { IWFNTrigger, TWorkflowVarGroup, WorkflowNodeTypeEnum } from '../ai/xpert-workflow.model'
@@ -25,6 +25,15 @@ export const STATE_SYS_WORKSPACE_PATH = 'workspace_path'
  * URL for workspace files in sandbox environment
  */
 export const STATE_SYS_WORKSPACE_URL = 'workspace_url'
+export const STATE_SYS_WORKSPACE_ROOT = 'workspace_root'
+export const STATE_SYS_SHARED_WORKSPACE_PATH = 'shared_workspace_path'
+export const STATE_SYS_AGENT_WORKSPACE_PATH = 'agent_workspace_path'
+export const STATE_SYS_SESSION_WORKSPACE_PATH = 'session_workspace_path'
+export const STATE_SYS_MEMORY_WORKSPACE_PATH = 'memory_workspace_path'
+/**
+ * Current runtime thread id
+ */
+export const STATE_SYS_THREAD_ID = 'thread_id'
 export const STATE_VARIABLE_TITLE_CHANNEL = channelName('title')
 
 export type TMessageChannel = {
@@ -32,6 +41,10 @@ export type TMessageChannel = {
   messages: BaseMessage[]
   summary?: string
   error?: string | null
+}
+
+export interface IBackendProtocol {
+  workingDirectory: string
 }
 
 export type TSandboxConfigurable = {
@@ -85,6 +98,12 @@ export type TAgentRunnableConfigurable = {
   agentKey: string
   xpertName?: string
   toolName?: string
+  /**
+   * Additional runtime context for middleware/tool execution.
+   */
+  context?: Record<string, unknown> & {
+    env?: Record<string, unknown>
+  }
 
   copilotModel?: ICopilotModel
 
@@ -93,6 +112,16 @@ export type TAgentRunnableConfigurable = {
    * Execution id of agent workflow node
    */
   executionId: string
+  /**
+   * Root execution id of the current agent run.
+   * Nested subgraphs keep writing steer follow-ups back into this execution.
+   */
+  rootExecutionId?: string
+  /**
+   * Root agent key of the current agent run.
+   * Nested subgraphs use this as the primary transcript/log channel.
+   */
+  rootAgentKey?: string
   /**
    * Sandbox backend context
    */
@@ -127,15 +156,15 @@ export function messageContentText(content: string | TMessageContentComplex) {
  * @returns
  */
 export function getWorkspaceFromRunnable(configurable: TAgentRunnableConfigurable): {
-  type?: 'project' | 'conversation'
+  type?: 'project' | 'user'
   id?: string
 } {
   return configurable?.projectId
     ? { type: 'project', id: '' }
-    : configurable?.thread_id
+    : configurable?.userId || configurable?.thread_id
       ? {
-          type: 'conversation',
-          id: configurable.thread_id
+          type: 'user',
+          id: ''
         }
       : {}
 }

@@ -1,6 +1,6 @@
 import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog'
 import { DragDropModule } from '@angular/cdk/drag-drop'
-import { CommonModule } from '@angular/common'
+
 import { Component, computed, inject, model, signal } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { CopilotModelSelectComponent } from '@cloud/app/@shared/copilot'
@@ -19,7 +19,7 @@ import {
 @Component({
   selector: 'xpert-new-knowledge',
   standalone: true,
-  imports: [CommonModule, TranslateModule, DragDropModule, FormsModule, CopilotModelSelectComponent],
+  imports: [TranslateModule, DragDropModule, FormsModule, CopilotModelSelectComponent],
   templateUrl: './new.component.html',
   styleUrl: './new.component.scss'
 })
@@ -33,8 +33,9 @@ export class XpertNewKnowledgeComponent {
   readonly knowledgebaseService = inject(KnowledgebaseService)
 
   readonly workspaceId = signal(this.#dialogData?.workspaceId)
-  readonly name = model<string>()
+  readonly name = model<string>('')
   readonly copilotModel = model<ICopilotModel>()
+  readonly chatModel = model<ICopilotModel>()
   readonly rerankModel = model<ICopilotModel>()
 
   readonly loading = signal(false)
@@ -47,7 +48,8 @@ export class XpertNewKnowledgeComponent {
         name: this.name(),
         workspaceId: this.workspaceId(),
         copilotModel: this.copilotModel(),
-        rerankModel: this.rerankModel(),
+        chatModel: this.chatModel(),
+        rerankModel: this.rerankModel()
       })
       .subscribe({
         next: (knowledgebase) => {

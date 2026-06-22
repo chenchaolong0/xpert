@@ -4,16 +4,11 @@ import { CdkMenuModule, CdkMenuTrigger } from '@angular/cdk/menu'
 import { afterNextRender, Component, computed, effect, inject, model, signal } from '@angular/core'
 import { takeUntilDestroyed, toObservable, toSignal } from '@angular/core/rxjs-interop'
 import { FormsModule } from '@angular/forms'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { Dialog } from '@angular/cdk/dialog'
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
 import { I18nService } from '@cloud/app/@shared/i18n'
-import {
-  injectConfirmDelete,
-  injectConfirmUnique,
-  NgmCommonModule,
-} from '@metad/ocap-angular/common'
-import { debouncedSignal, linkedModel, NgmI18nPipe } from '@metad/ocap-angular/core'
+import { injectConfirmDelete, injectConfirmUnique, NgmCommonModule } from '@xpert-ai/ocap-angular/common'
+import { debouncedSignal, linkedModel, NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import { formatRelative } from 'date-fns/formatRelative'
 import { get } from 'lodash-es'
@@ -25,13 +20,15 @@ import {
   debounceTime,
   EMPTY,
   filter,
+  finalize,
   map,
   merge,
   Observable,
   of as observableOf,
   startWith,
   Subject,
-  switchMap
+  switchMap,
+  take
 } from 'rxjs'
 import {
   getDateLocale,
@@ -44,6 +41,10 @@ import {
   KBMetadataFieldDef,
   KDocumentSourceType,
   KnowledgebaseService,
+  KnowledgeGraphIndexJobStatus,
+  KnowledgeGraphStatus,
+  KnowledgeGraphStatusResponse,
+  KnowledgebaseStatusEnum,
   KnowledgebaseTypeEnum,
   KnowledgeDocumentService,
   OrderTypeEnum,
@@ -52,7 +53,7 @@ import {
 } from '../../../../../@core'
 import { KnowledgeDocIdComponent, KnowledgeTaskComponent } from '../../../../../@shared/knowledge'
 import { KnowledgebaseComponent } from '../knowledgebase.component'
-
+import { ZardSwitchComponent, ZardTooltipImports } from '@xpert-ai/headless-ui'
 
 const REFRESH_DEBOUNCE_TIME = 5000
 
@@ -66,7 +67,8 @@ const REFRESH_DEBOUNCE_TIME = 5000
     FormsModule,
     TranslateModule,
     CdkMenuModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
+    ZardSwitchComponent,
     NgmCommonModule,
     KnowledgeDocIdComponent,
     NgmI18nPipe
@@ -82,6 +84,9 @@ const REFRESH_DEBOUNCE_TIME = 5000
 export class KnowledgeDocumentsComponent {
   eKDocumentSourceType = KDocumentSourceType
   eKBDocumentStatusEnum = KBDocumentStatusEnum
+  eKnowledgeGraphIndexJobStatus = KnowledgeGraphIndexJobStatus
+  eKnowledgeGraphStatus = KnowledgeGraphStatus
+  eKnowledgebaseStatusEnum = KnowledgebaseStatusEnum
   STANDARD_METADATA_FIELDS = STANDARD_METADATA_FIELDS
 
   readonly kbAPI = inject(KnowledgebaseService)
@@ -101,6 +106,8 @@ export class KnowledgeDocumentsComponent {
   // readonly pageSize = model(20)
   readonly knowledgebase = this.knowledgebaseComponent.knowledgebase
   readonly knowledgebase$ = toObservable(this.knowledgebase)
+  readonly vectorRebuildStatus = computed(() => this.knowledgebase()?.status)
+  readonly vectorMutationLocked = computed(() => this.vectorRebuildStatus() === KnowledgebaseStatusEnum.REBUILDING)
   readonly xperts = computed(() => this.knowledgebase()?.xperts)
   readonly parentId$ = toObservable(this.parentId)
   readonly pipelineId = computed(() => this.knowledgebase()?.pipelineId)
@@ -132,13 +139,27 @@ export class KnowledgeDocumentsComponent {
   expandedElement: any | null
 
   readonly isLoading = signal(false)
+  readonly downloadingOriginalFileIds = signal<Set<string>>(new Set())
+  readonly downloadingSelectedOriginalFiles = signal(false)
   isRateLimitReached = false
   readonly #data = signal<IKnowledgeDocument[]>([])
+  readonly graphJobs = signal<KnowledgeGraphStatusResponse['jobs']>([])
+  readonly graphJobByDocumentId = computed(() => {
+    const byDocumentId = new Map<string, NonNullable<KnowledgeGraphStatusResponse['jobs']>[number]>()
+    for (const job of this.graphJobs() ?? []) {
+      if (typeof job.documentId === 'string' && job.documentId) {
+        byDocumentId.set(job.documentId, job)
+      }
+    }
+    return byDocumentId
+  })
   readonly total = signal<number>(0)
   readonly selectionModel = new SelectionModel<string>(true, [])
   readonly search = model<string>()
   readonly searchTerm = debouncedSignal(this.search, 300)
-  readonly notFolderItems = computed(() => this.#data().filter((item) => item.sourceType !== KDocumentSourceType.FOLDER))
+  readonly notFolderItems = computed(() =>
+    this.#data().filter((item) => item.sourceType !== KDocumentSourceType.FOLDER)
+  )
   readonly filteredData = computed(() => {
     const filterValue = this.searchTerm()?.toLowerCase() ?? ''
     return this.#data().filter((item) => item.name?.toLowerCase().includes(filterValue))
@@ -164,21 +185,14 @@ export class KnowledgeDocumentsComponent {
   })
 
   constructor() {
-    effect(
-      () => {
-        if (this.knowledgebase()?.type === KnowledgebaseTypeEnum.External) {
-          this.#router.navigate(['../test'], { relativeTo: this.#route })
-        }
-      },
-      { allowSignalWrites: true }
-    )
+    effect(() => {
+      if (this.knowledgebase()?.type === KnowledgebaseTypeEnum.External) {
+        this.#router.navigate(['../test'], { relativeTo: this.#route })
+      }
+    })
 
     afterNextRender(() => {
-      merge(
-        this.knowledgebase$,
-        this.parentId$,
-        this.refresh$
-      )
+      merge(this.knowledgebase$, this.parentId$, this.refresh$)
         .pipe(
           startWith({}),
           debounceTime(100),
@@ -194,7 +208,23 @@ export class KnowledgeDocumentsComponent {
             }
             return this.knowledgeDocumentAPI
               .getAll({
-                select: ['id', 'name', 'status', 'disabled', 'sourceType', 'type', 'category', 'createdAt', 'updatedAt', 'processMsg', 'progress', 'sourceConfig', 'folder'],
+                select: [
+                  'id',
+                  'name',
+                  'status',
+                  'disabled',
+                  'sourceType',
+                  'type',
+                  'category',
+                  'filePath',
+                  'createdAt',
+                  'updatedAt',
+                  'processMsg',
+                  'progress',
+                  'sourceConfig',
+                  'folder',
+                  'metadata'
+                ],
                 where,
                 relations: ['storageFile'],
                 order: {
@@ -219,7 +249,7 @@ export class KnowledgeDocumentsComponent {
             return data.items
           })
         )
-        .subscribe((data) =>
+        .subscribe((data) => {
           this.#data.set(
             data.map(
               (item) =>
@@ -232,13 +262,14 @@ export class KnowledgeDocumentsComponent {
                 }) as IKnowledgeDocument
             )
           )
-        )
+          this.refreshGraphJobs()
+        })
     })
 
     effect(() => {
       if (
-        this.#data()?.some(
-          (item) => [
+        this.#data()?.some((item) =>
+          [
             KBDocumentStatusEnum.WAITING,
             KBDocumentStatusEnum.RUNNING,
             KBDocumentStatusEnum.TRANSFORMED,
@@ -252,7 +283,22 @@ export class KnowledgeDocumentsComponent {
       }
     })
 
-    this.delayRefresh$.pipe(takeUntilDestroyed(), debounceTime(REFRESH_DEBOUNCE_TIME)).subscribe(() => this.refresh())
+    effect(() => {
+      if (this.knowledgebase()?.graphStatus === KnowledgeGraphStatus.INDEXING) {
+        this.delayRefresh$.next(true)
+      }
+    })
+
+    effect(() => {
+      if (this.vectorMutationLocked()) {
+        this.delayRefresh$.next(true)
+      }
+    })
+
+    this.delayRefresh$.pipe(takeUntilDestroyed(), debounceTime(REFRESH_DEBOUNCE_TIME)).subscribe(() => {
+      this.knowledgebaseComponent.refresh()
+      this.refresh()
+    })
   }
 
   getValue(row: any, name: string) {
@@ -261,6 +307,108 @@ export class KnowledgeDocumentsComponent {
 
   refresh() {
     this.refresh$.next(true)
+    this.refreshGraphJobs()
+  }
+
+  canDownloadOriginalFile(doc: IKnowledgeDocument) {
+    return (
+      doc.sourceType !== KDocumentSourceType.FOLDER &&
+      !isSystemManagedDocument(doc) &&
+      !!doc.filePath
+    )
+  }
+
+  isOriginalFileDownloading(id: string) {
+    return this.downloadingOriginalFileIds().has(id)
+  }
+
+  selectedDownloadableOriginalFileDocuments() {
+    return this.#data().filter((doc) => this.selectionModel.isSelected(doc.id) && this.canDownloadOriginalFile(doc))
+  }
+
+  hasSelectedDownloadableOriginalFiles() {
+    return this.selectedDownloadableOriginalFileDocuments().length > 0
+  }
+
+  downloadOriginalFile(doc: IKnowledgeDocument, event?: MouseEvent) {
+    event?.stopPropagation()
+    if (!this.canDownloadOriginalFile(doc) || this.isOriginalFileDownloading(doc.id)) {
+      return
+    }
+
+    this.markOriginalFileDownloading(doc.id, true)
+    this.knowledgeDocumentAPI
+      .downloadOriginalFile(doc.id)
+      .pipe(finalize(() => this.markOriginalFileDownloading(doc.id, false)))
+      .subscribe({
+        next: (blob) => {
+          triggerOriginalFileDownload(blob, getOriginalFileName(doc))
+        },
+        error: (err) => {
+          this.#toastr.error(getErrorMessage(err))
+        }
+      })
+  }
+
+  downloadSelectedOriginalFiles() {
+    const docs = this.selectedDownloadableOriginalFileDocuments()
+    if (!docs.length || this.downloadingSelectedOriginalFiles()) {
+      this.#toastr.warning(
+        this.#translate.instant('PAC.Knowledgebase.NoOriginalFilesToDownload', {
+          Default: 'No downloadable original files are available.'
+        })
+      )
+      return
+    }
+
+    this.downloadingSelectedOriginalFiles.set(true)
+    this.knowledgeDocumentAPI
+      .downloadOriginalFiles(docs.map((doc) => doc.id))
+      .pipe(finalize(() => this.downloadingSelectedOriginalFiles.set(false)))
+      .subscribe({
+        next: (blob) => {
+          triggerOriginalFileDownload(blob, getOriginalFilesZipName(this.knowledgebase()?.name))
+        },
+        error: (err) => {
+          this.#toastr.error(getErrorMessage(err))
+        }
+      })
+  }
+
+  private markOriginalFileDownloading(id: string, downloading: boolean) {
+    this.downloadingOriginalFileIds.update((ids) => {
+      const next = new Set(ids)
+      if (downloading) {
+        next.add(id)
+      } else {
+        next.delete(id)
+      }
+      return next
+    })
+  }
+
+  refreshGraphJobs() {
+    const knowledgebase = this.knowledgebase()
+    if (!knowledgebase?.id || !knowledgebase.graphRag?.enabled) {
+      this.graphJobs.set([])
+      return
+    }
+
+    this.kbAPI
+      .getGraphStatus(knowledgebase.id)
+      .pipe(take(1))
+      .subscribe({
+        next: (status) => {
+          this.graphJobs.set(status.jobs ?? [])
+        },
+        error: () => {
+          this.graphJobs.set([])
+        }
+      })
+  }
+
+  graphJobStatus(documentId: string) {
+    return this.graphJobByDocumentId().get(documentId)
   }
 
   backHome() {
@@ -268,6 +416,9 @@ export class KnowledgeDocumentsComponent {
   }
 
   createFolder() {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     this.confirmUnique<IKnowledgeDocument>(
       {
         title: this.#translate.instant('PAC.Knowledgebase.NewFolder', { Default: 'New Folder' })
@@ -293,6 +444,9 @@ export class KnowledgeDocumentsComponent {
   }
 
   createFromPipeline() {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     this.#router.navigate(['create-from-pipeline'], {
       relativeTo: this.#route,
       queryParams: { parentId: this.parentId() }
@@ -300,10 +454,16 @@ export class KnowledgeDocumentsComponent {
   }
 
   uploadDocuments() {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     this.#router.navigate(['create'], { relativeTo: this.#route, queryParams: { parentId: this.parentId() } })
   }
 
   deleteDocument(doc: IKnowledgeDocument) {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     this.confirmDelete(
       {
         value: doc.id,
@@ -337,6 +497,9 @@ export class KnowledgeDocumentsComponent {
   }
 
   startParsing(row: IKnowledgeDocument) {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     row.status = KBDocumentStatusEnum.RUNNING
     this.knowledgeDocumentAPI.startParsing(row.id).subscribe({
       next: () => {
@@ -383,6 +546,9 @@ export class KnowledgeDocumentsComponent {
   }
 
   deleteSelected() {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     this.isLoading.set(true)
     this.knowledgeDocumentAPI.deleteBulk(this.selectionModel.selected).subscribe({
       next: () => {
@@ -478,8 +644,13 @@ export class KnowledgeDocumentsComponent {
   }
 
   reprocess(docs: string[]) {
+    if (this.vectorMutationLocked()) {
+      return
+    }
     const calls: Observable<any>[] = []
-    const documents = docs.map((id) => this.#data().find((doc) => doc.id === id)).filter((doc) => !!doc) as IKnowledgeDocument[]
+    const documents = docs
+      .map((id) => this.#data().find((doc) => doc.id === id))
+      .filter((doc) => !!doc) as IKnowledgeDocument[]
     const standDocs = documents.filter((doc) => !doc.sourceConfig)
     if (standDocs.length) {
       calls.push(this.knowledgeDocumentAPI.startParsing(standDocs.map((doc) => doc.id)))
@@ -487,12 +658,11 @@ export class KnowledgeDocumentsComponent {
     const pipelineDocs = documents.filter((doc) => !!doc.sourceConfig)
     if (pipelineDocs.length) {
       calls.push(
-        this.kbAPI
-              .createTask(this.knowledgebase().id, {
-                taskType: 'document_reprocess',
-                status: 'running', // Start processing immediately
-                documents: pipelineDocs.map((doc) => ({ id: doc.id } as IKnowledgeDocument))
-              })
+        this.kbAPI.createTask(this.knowledgebase().id, {
+          taskType: 'document_reprocess',
+          status: 'running', // Start processing immediately
+          documents: pipelineDocs.map((doc) => ({ id: doc.id }) as IKnowledgeDocument)
+        })
       )
     }
     if (calls.length > 0) {
@@ -519,7 +689,13 @@ export class KnowledgeDocumentsComponent {
   }
 
   openChunkSettings(document: IKnowledgeDocument) {
-    this.#router.navigate(['./', document.id, 'settings'], { relativeTo: this.#route, queryParams: { parentId: this.parentId() } })
+    if (this.vectorMutationLocked()) {
+      return
+    }
+    this.#router.navigate(['./', document.id, 'settings'], {
+      relativeTo: this.#route,
+      queryParams: { parentId: this.parentId() }
+    })
   }
 
   // Metadata operations
@@ -554,19 +730,50 @@ export class KnowledgeDocumentsComponent {
 
   saveMetadataSchema(ref: CdkMenuTrigger) {
     this.isLoading.set(true)
-    this.knowledgebaseComponent.knowledgebaseAPI.update(this.knowledgebase().id, {
-      metadataSchema: this.metadataSchema()
-    }).subscribe({
-      next: () => {
-        this.isLoading.set(false)
-        this._toastrService.success(this.#translate.instant('PAC.Knowledgebase.MetadataSchemaSaved', { Default: 'Metadata schema saved successfully' }))
-        ref.close()
-        this.knowledgebaseComponent.refresh()
-      },
-      error: (err) => {
-        this.isLoading.set(false)
-        this._toastrService.error(getErrorMessage(err))
-      }
-    })
+    this.knowledgebaseComponent.knowledgebaseAPI
+      .update(this.knowledgebase().id, {
+        metadataSchema: this.metadataSchema()
+      })
+      .subscribe({
+        next: () => {
+          this.isLoading.set(false)
+          this._toastrService.success(
+            this.#translate.instant('PAC.Knowledgebase.MetadataSchemaSaved', {
+              Default: 'Metadata schema saved successfully'
+            })
+          )
+          ref.close()
+          this.knowledgebaseComponent.refresh()
+        },
+        error: (err) => {
+          this.isLoading.set(false)
+          this._toastrService.error(getErrorMessage(err))
+        }
+      })
   }
+}
+
+function getOriginalFileName(doc: IKnowledgeDocument) {
+  return doc.name || `${doc.id}.${doc.type || 'download'}`
+}
+
+function getOriginalFilesZipName(knowledgebaseName?: string) {
+  const baseName = (knowledgebaseName || 'knowledge-documents').replace(/[\\/:*?"<>|]+/g, '_')
+  return `${baseName}-original-files.zip`
+}
+
+function isSystemManagedDocument(doc: IKnowledgeDocument) {
+  const metadata = doc.metadata
+  return !!metadata && typeof metadata === 'object' && metadata['systemManaged'] === true
+}
+
+function triggerOriginalFileDownload(blob: Blob, fileName: string) {
+  const anchor = document.createElement('a')
+  const objectUrl = URL.createObjectURL(blob)
+  anchor.href = objectUrl
+  anchor.download = fileName
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(objectUrl)
 }

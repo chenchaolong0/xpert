@@ -1,11 +1,17 @@
 import { MessageType } from '@langchain/core/messages'
+import type {
+  ChatKitReference,
+  ChatKitReferenceBase,
+  TChatMessageStep,
+  TMessageContent,
+  TMessageContentReasoning
+} from '@xpert-ai/chatkit-types'
 import { IBasePerTenantAndOrganizationEntityModel } from '../base-entity.model'
 import { IChatConversation } from './chat.model'
 import { LongTermMemoryTypeEnum } from './xpert.model'
 import { IXpertAgentExecution, XpertAgentExecutionStatusEnum } from './xpert-agent-execution.model'
 import { JSONValue } from '../core.model'
 import { IStorageFile } from '../storage-file.model'
-import { TChatMessageStep, TMessageContent, TMessageContentReasoning } from '@xpert-ai/chatkit-types'
 
 export type TSummaryJob = Record<
   LongTermMemoryTypeEnum,
@@ -17,20 +23,79 @@ export type TSummaryJob = Record<
   }
 >
 
+export type TChatElementAttribute = {
+  name: string
+  value: string
+}
+
+export type TChatElementReferenceFields = {
+  attributes: TChatElementAttribute[]
+  outerHtml: string
+  pageTitle?: string
+  pageUrl: string
+  role?: string
+  selector: string
+  serviceId: string
+  tagName: string
+}
+
+export type TChatFileElementReferenceFields = {
+  attributes: TChatElementAttribute[]
+  documentTitle?: string
+  domPath: string
+  filePath: string
+  outerHtml: string
+  role?: string
+  selector: string
+  sourceEndLine?: number
+  sourceStartLine?: number
+  tagName: string
+  text: string
+}
+
+export type TChatElementReferenceCandidateFields = {
+  [Property in keyof TChatElementReferenceFields]?: unknown
+}
+
+export type TChatFileElementReferenceCandidateFields = {
+  [Property in keyof TChatFileElementReferenceFields]?: unknown
+}
+
+export type TChatElementReference = ChatKitReferenceBase &
+  TChatElementReferenceFields & {
+    type: 'element'
+  }
+
+export type TChatFileElementReference = ChatKitReferenceBase &
+  TChatFileElementReferenceFields & {
+    type: 'file_element'
+  }
+
+export type TChatReference = ChatKitReference | TChatElementReference | TChatFileElementReference
+
 /**
  * Chat message entity type
  */
 export interface IChatMessage
-  extends IBasePerTenantAndOrganizationEntityModel,
-    Omit<Omit<CopilotBaseMessage, 'createdAt'>, 'id'> {
+  extends IBasePerTenantAndOrganizationEntityModel, Omit<Omit<CopilotBaseMessage, 'createdAt'>, 'id'> {
   parent?: IChatMessage | null
   children?: IChatMessage[]
   parentId?: string | null
 
   /**
-   * Files
+   * @deprecated Chat attachments now use `fileAssets`. This field is kept only
+   * for historical messages that stored raw StorageFile handles.
    */
   attachments?: IStorageFile[]
+  /**
+   * Parsed file assets used by the file understanding pipeline and agent tools.
+   */
+  fileAssets?: Array<{ id?: string; storageFileId?: string; [key: string]: any }>
+
+  /**
+   * Structured references associated with the human input
+   */
+  references?: TChatReference[]
   /**
    * Job of summary
    */
@@ -55,6 +120,10 @@ export interface IChatMessage
 
   executionId?: string
   execution?: IXpertAgentExecution
+  followUpMode?: 'queue' | 'steer'
+  followUpStatus?: 'pending' | 'consumed' | 'canceled'
+  targetExecutionId?: string | null
+  visibleAt?: Date | string | null
 }
 
 /**

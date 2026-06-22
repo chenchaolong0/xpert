@@ -1,9 +1,10 @@
+@reference "../../../../styles/tailwind-reference.css";
 :host {
   @apply block;
 }
 
 :host::ng-deep {
   .monaco-editor:not(.focused) {
-    --ngm-monaco-editor-bg: theme(colors.neutral.50);
+    --editor-monaco-bg: theme(colors.neutral.50);
   }
 }

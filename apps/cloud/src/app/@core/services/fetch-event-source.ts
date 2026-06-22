@@ -1,22 +1,24 @@
 import { inject } from '@angular/core'
+import { RequestScopeLevel } from '@xpert-ai/contracts'
 import { EventSourceMessage, EventStreamContentType, fetchEventSource } from '@microsoft/fetch-event-source'
 import { firstValueFrom, Observable } from 'rxjs'
 import { AuthStrategy } from '../auth'
 import { Store } from './store.service'
 import { injectLanguage } from '../providers'
+import { isPublicXpertRequest } from '../utils/public-xpert-request'
+import { createOptionalQueryParams } from './query-params'
 
 export function injectFetchEventSource<T extends BodyInit | null>() {
   const store = inject(Store)
   const auth = inject(AuthStrategy)
   const lang = injectLanguage()
 
-
   return (params: string | {url: string; method: 'POST' | 'GET'; headers?: Record<string, any>; params?: Record<string, any>}, data?: T) => {
     const url: string = typeof params === 'string' ? params : params.url
     const method = typeof params === 'object' && params.method ? params.method : 'POST'
     return new Observable<EventSourceMessage>((subscriber) => {
       const ctrl = new AbortController()
-      const organization = store.selectedOrganization ?? { id: null }
+      const activeScope = store.activeScope
 
       const _headers = typeof params === 'object' && params.headers ? params.headers : {}
 
@@ -26,6 +28,7 @@ export function injectFetchEventSource<T extends BodyInit | null>() {
         // Has retry request
         let haveTry = false
         const token = store.token
+        const shouldSkipScopeHeaders = isPublicXpertRequest(method, url)
         const headers = {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
@@ -33,14 +36,21 @@ export function injectFetchEventSource<T extends BodyInit | null>() {
           'Time-Zone': Intl.DateTimeFormat().resolvedOptions().timeZone,
           ..._headers
         }
-        if (organization?.id) {
-          headers['Organization-Id'] = organization.id
+
+        if (!shouldSkipScopeHeaders) {
+          headers['X-Scope-Level'] = activeScope.level
+        }
+
+        if (!shouldSkipScopeHeaders && activeScope.level === RequestScopeLevel.ORGANIZATION) {
+          headers['Organization-Id'] = activeScope.organizationId
         }
         // Handle query params if provided
         let finalUrl = url
         if (typeof params === 'object' && params.params) {
-          const searchParams = new URLSearchParams(params.params as Record<string, string>).toString()
-          finalUrl += (finalUrl.includes('?') ? '&' : '?') + searchParams
+          const queryString = createOptionalQueryParams(params.params)?.toString()
+          if (queryString) {
+            finalUrl += (finalUrl.includes('?') ? '&' : '?') + queryString
+          }
         }
 
         fetchEventSource(finalUrl, {

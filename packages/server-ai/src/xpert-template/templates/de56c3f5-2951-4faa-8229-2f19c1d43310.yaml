@@ -351,6 +351,7 @@ connections:
     key: Iterating_Obt2ubUnuo/Agent_kZUOAglggf
     from: Iterating_Obt2ubUnuo
     to: Agent_kZUOAglggf
+    required: true
   - type: toolset
     key: Agent_kZUOAglggf/00930607-6084-40de-86b7-a5089042fcd3
     from: Agent_kZUOAglggf

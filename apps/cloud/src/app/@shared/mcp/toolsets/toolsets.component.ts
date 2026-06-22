@@ -1,14 +1,14 @@
 import { Dialog } from '@angular/cdk/dialog'
 import { DragDropModule } from '@angular/cdk/drag-drop'
 import { CdkMenuModule } from '@angular/cdk/menu'
-import { CommonModule } from '@angular/common'
+
 import { booleanAttribute, ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core'
 import { FormControl, FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { ActivatedRoute, Router, RouterModule } from '@angular/router'
-import { CapitalizePipe, DynamicGridDirective } from '@metad/core'
-import { injectConfirmUnique, NgmCommonModule } from '@metad/ocap-angular/common'
-import { NgmI18nPipe } from '@metad/ocap-angular/core'
-import { DisplayBehaviour } from '@metad/ocap-core'
+import { CapitalizePipe, DynamicGridDirective } from '@xpert-ai/core'
+import { injectConfirmUnique, NgmCommonModule } from '@xpert-ai/ocap-angular/common'
+import { NgmI18nPipe } from '@xpert-ai/ocap-angular/core'
+import { DisplayBehaviour } from '@xpert-ai/ocap-core'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
 import { CardCreateComponent } from 'apps/cloud/src/app/@shared/card'
 import { ToolsetCardComponent } from 'apps/cloud/src/app/@shared/xpert'
@@ -31,12 +31,12 @@ import {
 } from '@cloud/app/@core'
 import { AppService } from '@cloud/app/app.service'
 import { toSignal } from '@angular/core/rxjs-interop'
+import { MCPImportJsonComponent } from '../import-json/import-json.component'
 import { XpertMCPManageComponent } from '../manage/manage.component'
 
 @Component({
   standalone: true,
   imports: [
-    CommonModule,
     FormsModule,
     ReactiveFormsModule,
     RouterModule,
@@ -44,12 +44,11 @@ import { XpertMCPManageComponent } from '../manage/manage.component'
     CdkMenuModule,
     RouterModule,
     TranslateModule,
-
     DynamicGridDirective,
     NgmCommonModule,
     CardCreateComponent,
-    ToolsetCardComponent,
-  ],
+    ToolsetCardComponent
+],
   selector: 'mcp-toolsets',
   templateUrl: './toolsets.component.html',
   styleUrl: 'toolsets.component.scss',
@@ -152,6 +151,37 @@ export class MCPToolsetsComponent {
         next: (saved) => {
           if (saved) {
             this.refresh()
+          }
+        }
+      })
+  }
+
+  importFromJson(event: Event) {
+    event.stopPropagation()
+    this.#dialog
+      .open<Partial<IXpertToolset>>(MCPImportJsonComponent, {
+        backdropClass: 'backdrop-blur-lg-white',
+        disableClose: true
+      })
+      .closed.subscribe({
+        next: (toolset) => {
+          if (toolset) {
+            this.#dialog
+              .open(XpertMCPManageComponent, {
+                backdropClass: 'backdrop-blur-lg-white',
+                disableClose: true,
+                data: {
+                  workspaceId: this.workspaceId(),
+                  toolset
+                }
+              })
+              .closed.subscribe({
+                next: (saved) => {
+                  if (saved) {
+                    this.refresh()
+                  }
+                }
+              })
           }
         }
       })

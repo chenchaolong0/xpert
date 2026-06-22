@@ -1,0 +1,111 @@
+import { CommonModule } from '@angular/common'
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core'
+import { ChatConversationService } from '../../../@core'
+import {
+  FileWorkbenchComponent,
+  FileWorkbenchReferenceRequest,
+  FileWorkbenchFileDeleter,
+  FileWorkbenchFileDownloader,
+  FileWorkbenchFileLoader,
+  FileWorkbenchFileSaver,
+  FileWorkbenchFileUploader,
+  FileWorkbenchFilesLoader
+} from '../../../@shared/files'
+import { TranslateModule } from '@ngx-translate/core'
+import { firstValueFrom } from 'rxjs'
+
+export type ClawXpertConversationFilesMode = 'readonly' | 'editable'
+
+@Component({
+  standalone: true,
+  selector: 'pac-clawxpert-conversation-files',
+  imports: [CommonModule, TranslateModule, FileWorkbenchComponent],
+  template: `
+    <pac-file-workbench
+      [rootId]="xpertId() || conversationId()"
+      [rootLabel]="'PAC.Chat.ClawXpert.WorkspaceFiles' | translate: { Default: 'Workspace files' }"
+      [filesLoader]="loadConversationFiles"
+      [fileLoader]="loadConversationFile"
+      [fileSaver]="mode() === 'editable' ? saveConversationFile : null"
+      [fileDeleter]="mode() === 'editable' ? deleteConversationFile : null"
+      [fileUploader]="mode() === 'editable' ? uploadConversationFile : null"
+      [fileDownloader]="downloadConversationFile"
+      [reloadKey]="reloadKey()"
+      [referenceable]="true"
+      [treeSize]="'sm'"
+      (referenceRequest)="referenceRequest.emit($event)"
+    />
+  `,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  host: {
+    class: 'block h-full min-h-0'
+  }
+})
+export class ClawXpertConversationFilesComponent {
+  readonly #conversationService = inject(ChatConversationService)
+
+  readonly conversationId = input<string | null | undefined>(null)
+  readonly xpertId = input<string | null | undefined>(null)
+  readonly mode = input<ClawXpertConversationFilesMode>('editable')
+  readonly reloadKey = input<number>(0)
+  readonly referenceRequest = output<FileWorkbenchReferenceRequest>()
+
+  readonly loadConversationFiles: FileWorkbenchFilesLoader = (path?: string) => {
+    const conversationId = this.conversationId()
+    if (!conversationId) {
+      return []
+    }
+
+    return this.#conversationService.getFiles(conversationId, path ?? '')
+  }
+
+  readonly loadConversationFile: FileWorkbenchFileLoader = (path: string) => {
+    const conversationId = this.conversationId()
+    if (!conversationId) {
+      throw new Error('Conversation context is required')
+    }
+
+    return this.#conversationService.getFile(conversationId, path)
+  }
+
+  readonly downloadConversationFile: FileWorkbenchFileDownloader = async (path, item) => {
+    const conversationId = this.conversationId()
+    if (!conversationId) {
+      throw new Error('Conversation context is required')
+    }
+
+    const blob = await firstValueFrom(this.#conversationService.downloadFile(conversationId, path))
+    return {
+      kind: 'blob',
+      blob,
+      fileName: item?.hasChildren ? `${path.split('/').pop() || path}.zip` : path.split('/').pop() || path
+    }
+  }
+
+  readonly saveConversationFile: FileWorkbenchFileSaver = (path: string, content: string) => {
+    const conversationId = this.conversationId()
+    if (!conversationId) {
+      throw new Error('Conversation context is required')
+    }
+
+    return this.#conversationService.saveFile(conversationId, path, content)
+  }
+
+  readonly uploadConversationFile: FileWorkbenchFileUploader = (file: File, path: string) => {
+    const conversationId = this.conversationId()
+    if (!conversationId) {
+      throw new Error('Conversation context is required')
+    }
+
+    return this.#conversationService.uploadFile(conversationId, file, path)
+  }
+
+  readonly deleteConversationFile: FileWorkbenchFileDeleter = (path: string) => {
+    const conversationId = this.conversationId()
+    if (!conversationId) {
+      throw new Error('Conversation context is required')
+    }
+
+    return this.#conversationService.deleteFile(conversationId, path)
+  }
+}

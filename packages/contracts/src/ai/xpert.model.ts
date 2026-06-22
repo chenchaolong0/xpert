@@ -3,6 +3,7 @@ import { RunnableToolLike } from '@langchain/core/runnables'
 import { StructuredToolInterface } from '@langchain/core/tools'
 import { ITag } from '../tag-entity.model'
 import { IUser, LanguagesEnum } from '../user.model'
+import { IUserGroup } from '../user-group.model'
 import { ICopilotModel, TCopilotModel } from './copilot-model.model'
 import { IKnowledgebase, TKBRecallParams } from './knowledgebase.model'
 import { ChecklistItem, I18nObject, IPoint, ISize, TAvatar } from '../types'
@@ -13,6 +14,7 @@ import { IIntegration } from '../integration.model'
 import { TChatFrom } from './chat.model'
 import { IWorkflowNode, TVariableAssigner, TWFCase, VariableOperationEnum } from './xpert-workflow.model'
 import { IEnvironment } from './environment.model'
+import { TXpertCommandProfile } from './prompt-workflow.model'
 
 export type ToolCall = LToolCall
 
@@ -23,7 +25,7 @@ export enum XpertTypeEnum {
   Agent = 'agent',
 
   /**
-   * Copilot in UI
+   * @deprecated use Chatkit with agent instead.
    */
   Copilot = 'copilot',
 
@@ -36,6 +38,11 @@ export enum XpertTypeEnum {
 export type TXpertSandboxFeature = {
   enabled: boolean
   provider?: string
+}
+
+export type TXpertTitleFeature = {
+  enabled: boolean
+  instruction?: string
 }
 
 export type TXpertFeatures = {
@@ -77,6 +84,50 @@ export type TXpertFeatures = {
    * Sandbox feature
    */
   sandbox?: TXpertSandboxFeature
+
+  /**
+   * Conversation title generation feature
+   */
+  title?: TXpertTitleFeature
+}
+
+export type TXpertFeatureKey = keyof TXpertFeatures
+
+export type TXpertExportedTemplate = {
+  id: string
+  filePath: string
+  exportedAt: string
+  isDraft: boolean
+  includeMemory: boolean
+}
+
+export type XpertFrequentQuestionsRequest = {
+  locale?: string | null
+  windowDays?: number | null
+  conversationLimit?: number | null
+  questionCount?: number | null
+  forceRefresh?: boolean | null
+}
+
+export type XpertFrequentQuestionsSample = {
+  windowDays: number
+  conversationLimit: number
+  questionCount: number
+  conversationCount: number
+  messageCount: number
+  since: string
+  until: string
+}
+
+export type XpertFrequentQuestionsResponse = {
+  xpertId: string
+  organizationId: string | null
+  locale: string
+  questions: string[]
+  generatedAt: string
+  expiresAt: string
+  cached: boolean
+  sample: XpertFrequentQuestionsSample
 }
 
 export type TXpert = {
@@ -129,11 +180,12 @@ export type TXpert = {
    */
   summarize?: TSummarize
   /**
-   * Long-term memory config
+   * @deprecated use memory middlewares
    */
   memory?: TLongTermMemory
 
   features?: TXpertFeatures
+  commandProfile?: TXpertCommandProfile
 
   /**
    * Version of role: '1' '2' '2.1' '2.2'...
@@ -147,6 +199,8 @@ export type TXpert = {
    * Release notes
    */
   releaseNotes?: string
+
+  exportedTemplate?: TXpertExportedTemplate | null
 
   /**
    * Draft on current version
@@ -190,9 +244,9 @@ export type TXpert = {
   toolsets?: IXpertToolset[]
 
   /**
-   * The corresponding person in charge, whose has the authority to execute this digital expert
+   * User groups that are allowed to use this published digital expert.
    */
-  managers?: IUser[]
+  userGroups?: IUserGroup[]
   /**
    * Integrations for this xpert
    */
@@ -214,6 +268,11 @@ export interface IXpert extends IBasePerWorkspaceEntityModel, TXpert {
 }
 
 export type TXpertOptions = {
+  bootstrap?: {
+    source: 'template'
+    templateKey: string
+    workspaceKind: 'org-default'
+  }
   knowledge?: Record<
     string,
     {
@@ -249,9 +308,11 @@ export type TXpertOptions = {
 /**
  * Config for Agent execution (Langgraph.js)
  */
+export const DEFAULT_XPERT_AGENT_RECURSION_LIMIT = 1000
+
 export type TXpertAgentConfig = {
   /**
-   * Maximum number of times a call can recurse. If not provided, defaults to 25.
+   * Maximum number of times a call can recurse. If not provided, defaults to 1000.
    */
   recursionLimit?: number
   /** Maximum number of parallel calls to make. */
@@ -306,14 +367,6 @@ export type TXpertAgentConfig = {
    */
   retrievals?: Record<string, TKBRetrievalSettings>
 
-  /**
-   * Summarize the title of the conversation
-   */
-  summarizeTitle?: {
-    disable?: boolean
-    instruction?: string
-  }
-
   tools?: Record<
     string,
     {
@@ -329,6 +382,23 @@ export type TXpertAgentConfig = {
       parameters?: Record<string, any>
     }
   >
+}
+
+export function getXpertAgentRecursionLimit(agentConfig?: { recursionLimit?: number | null } | null): number {
+  return typeof agentConfig?.recursionLimit === 'number'
+    ? agentConfig.recursionLimit
+    : DEFAULT_XPERT_AGENT_RECURSION_LIMIT
+}
+
+export function normalizeXpertAgentConfig(): { recursionLimit: number }
+export function normalizeXpertAgentConfig<T extends { recursionLimit?: number | null }>(
+  agentConfig: T
+): Omit<T, 'recursionLimit'> & { recursionLimit: number }
+export function normalizeXpertAgentConfig<T extends { recursionLimit?: number | null }>(agentConfig?: T | null) {
+  return {
+    ...(agentConfig ?? {}),
+    recursionLimit: getXpertAgentRecursionLimit(agentConfig)
+  }
 }
 
 export type TStateVariableType = XpertParameterTypeEnum | 'object' | 'array[string]' | 'array[number]' | 'array[object]'
@@ -524,6 +594,12 @@ export interface TXpertTeamConnection {
    */
   type: 'edge' | TXpertTeamNodeType
 
+  /**
+   * Runtime selection behavior for selectable connections.
+   * For sub-agent connections, omitted means required.
+   */
+  required?: boolean
+
   readonly?: boolean
 }
 
@@ -550,10 +626,6 @@ export type TChatOptions = {
    */
   from?: TChatFrom
   /**
-   * Whether to summarize the conversation title
-   */
-  summarizeTitle?: boolean
-  /**
    * Project ID, identify the project where the xpert invoked
    */
   projectId?: string
@@ -573,22 +645,31 @@ export type TChatOptions = {
    * Specify additional tools
    */
   tools?: (StructuredToolInterface | RunnableToolLike)[]
+  /**
+   * Per-request runtime context forwarded to agent middleware/tools.
+   */
+  context?: Record<string, unknown>
 }
 
 /**
  * Knowledgebase retrieval settings
  */
 export type TKBRetrievalSettings = {
-  metadata: {
+  mode?: 'vector' | 'graph' | 'hybrid'
+  neighborHops?: number
+  entityTopK?: number
+  communityTopK?: number
+  graphWeight?: number
+  metadata?: {
     filtering_mode: 'disabled' | 'automatic' | 'manual'
     /**
      * Conditions (filter) when mode is manual
      */
-    filtering_conditions: TWFCase
+    filtering_conditions?: TWFCase
     /**
      * Parameter fields (tool call) when mode is automatic
      */
-    fields: Record<string, object>
+    fields?: Record<string, object>
   }
 }
 

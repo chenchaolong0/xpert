@@ -1,17 +1,34 @@
-import { IChatConversation, TChatRequest as TChatRequestV2, XpertAgentExecutionStatusEnum } from '@metad/contracts'
+import {
+    ApiKeyBindingType,
+    IApiKey,
+    IApiPrincipal,
+    IChatConversation,
+    IEnvironment,
+    IUser,
+    IXpert,
+    isTenantSharedXpertWorkspace,
+    RequestScopeLevel,
+    SecretTokenBindingType,
+    TChatRequest as TChatRequestV2,
+    XpertAgentExecutionStatusEnum
+} from '@xpert-ai/contracts'
 import { TChatRequest as LegacyTChatRequest } from '@xpert-ai/chatkit-types'
-import { BadRequestException, Logger } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Logger } from '@nestjs/common'
 import { CommandBus, CommandHandler, ICommandHandler, QueryBus } from '@nestjs/cqrs'
 import { isNil, omitBy } from 'lodash'
-import { finalize, map, tap } from 'rxjs/operators'
+import { map } from 'rxjs/operators'
 import z from 'zod'
 import { ChatConversationUpsertCommand } from '../../../chat-conversation/commands/upsert.command'
 import { GetChatConversationQuery } from '../../../chat-conversation/queries/conversation-get.query'
+import { EnvironmentService, getContextEnvState, mergeEnvironmentWithEnvState } from '../../../environment'
+import { PublishedXpertAccessService, XpertPrincipalService } from '../../../xpert'
 import { XpertChatCommand } from '../../../xpert/commands/chat.command'
-import { FindXpertQuery } from '../../../xpert/queries/get-one.query'
 import { XpertAgentExecutionUpsertCommand } from '../../../xpert-agent-execution/commands/upsert.command'
+import { XpertAgentExecutionOneQuery } from '../../../xpert-agent-execution/queries'
 import { RunCreateStreamCommand } from '../run-create-stream.command'
-import { RedisSseStreamService } from '../../stream/redis-sse.service'
+import { assertPublicXpertSessionConversationAccess } from '../../public-xpert-principal'
+import { RequestContext } from '@xpert-ai/plugin-sdk'
+import { serializeRunStreamPayload } from '../../../shared/stream/'
 
 const humanInputSchema = z.object({}).passthrough()
 
@@ -77,14 +94,45 @@ const retryChatRequestSchema = z
     })
     .passthrough()
 
+const followUpChatRequestSchema = z
+    .object({
+        action: z.literal('follow_up'),
+        conversationId: z.string().optional(),
+        mode: z.union([z.literal('queue'), z.literal('steer')]),
+        message: z
+            .object({
+                clientMessageId: z.string().optional(),
+                input: humanInputSchema
+            })
+            .passthrough(),
+        target: targetSchema.optional(),
+        state: stateSchema.optional()
+    })
+    .passthrough()
+
 const chatRequestSchema = z.discriminatedUnion('action', [
     sendChatRequestSchema,
     resumeChatRequestSchema,
-    retryChatRequestSchema
+    retryChatRequestSchema,
+    followUpChatRequestSchema
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function normalizeRunStreamMessage(message: MessageEvent): MessageEvent {
+    const payload = message.data
+    const nextPayload = serializeRunStreamPayload(payload)
+
+    if (nextPayload !== payload) {
+        return {
+            ...message,
+            data: nextPayload
+        }
+    }
+
+    return message
 }
 
 function isLegacyChatRequest(input: unknown): input is LegacyTChatRequest {
@@ -124,7 +172,38 @@ function toLegacyInterruptPatch(input: LegacyTChatRequest) {
     return Object.keys(patch).length ? patch : undefined
 }
 
-function normalizeLegacyChatRequest(input: LegacyTChatRequest): Record<string, unknown> {
+function normalizeLegacyChatRequest(
+    input: LegacyTChatRequest,
+    options?: { isConversationBusy?: boolean }
+): Record<string, unknown> {
+    const followUpMode = (input as LegacyTChatRequest & { followUpMode?: 'queue' | 'steer' }).followUpMode
+
+    if (followUpMode && options?.isConversationBusy) {
+        return omitBy(
+            {
+                action: 'follow_up',
+                conversationId: input.conversationId,
+                mode: followUpMode,
+                target: omitBy(
+                    {
+                        aiMessageId: input.id,
+                        executionId: input.executionId
+                    },
+                    isNil
+                ),
+                message: omitBy(
+                    {
+                        clientMessageId: input.id,
+                        input: input.input
+                    },
+                    isNil
+                ),
+                state: input.state
+            },
+            isNil
+        )
+    }
+
     if (input.retry) {
         return omitBy(
             {
@@ -185,13 +264,13 @@ function normalizeLegacyChatRequest(input: LegacyTChatRequest): Record<string, u
     )
 }
 
-function normalizeRunCreateInput(input: unknown): unknown {
+function normalizeRunCreateInput(input: unknown, options?: { isConversationBusy?: boolean }): unknown {
     if (!isRecord(input)) {
         return input
     }
 
     if (isLegacyChatRequest(input)) {
-        return normalizeLegacyChatRequest(input)
+        return normalizeLegacyChatRequest(input, options)
     }
 
     if (!input.action) {
@@ -204,11 +283,35 @@ function normalizeRunCreateInput(input: unknown): unknown {
     return input
 }
 
+function getChatRequestEnvironmentId(chatRequest: TChatRequestV2): string | undefined {
+    if (chatRequest.action === 'send' || chatRequest.action === 'retry') {
+        return chatRequest.environmentId
+    }
+
+    return undefined
+}
+
+function getRunCreateContext(context: unknown): Record<string, unknown> | undefined {
+    if (!isRecord(context)) {
+        return undefined
+    }
+
+    return context
+}
+
+type MutableRequestContextRequest = NonNullable<ReturnType<typeof RequestContext.currentRequest>> & {
+    user?: IUser | IApiPrincipal | null
+}
+
 export function validateRunCreateInput(
     input: LegacyTChatRequest | TChatRequestV2 | unknown,
     conversation: IChatConversation
 ): TChatRequestV2 {
-    const parsed = chatRequestSchema.safeParse(normalizeRunCreateInput(input))
+    const parsed = chatRequestSchema.safeParse(
+        normalizeRunCreateInput(input, {
+            isConversationBusy: conversation?.status === 'busy'
+        })
+    )
     if (!parsed.success) {
         throw new BadRequestException(
             parsed.error.issues.map(({ message, path }) => `${path.join('.')}: ${message}`).join('; ')
@@ -221,6 +324,69 @@ export function validateRunCreateInput(
     } as TChatRequestV2
 }
 
+function applyAssistantScopeToCurrentRequest(organizationId?: string | null) {
+    const request = RequestContext.currentRequest() as MutableRequestContextRequest | null
+
+    if (!request?.headers) {
+        return
+    }
+
+    if (organizationId) {
+        request.headers['organization-id'] = organizationId
+        request.headers['x-scope-level'] = RequestScopeLevel.ORGANIZATION
+        return
+    }
+
+    delete request.headers['organization-id']
+    request.headers['x-scope-level'] = RequestScopeLevel.TENANT
+}
+
+function applyAssistantPrincipalToCurrentRequest(
+    apiKey: IApiKey | null | undefined,
+    principalUser: IUser | null | undefined
+) {
+    const request = RequestContext.currentRequest() as MutableRequestContextRequest | null
+    const currentUser = RequestContext.currentUser() as IApiPrincipal | null
+
+    if (!request || !apiKey || !principalUser) {
+        return
+    }
+
+    if (
+        currentUser?.principalType === 'client_secret' &&
+        currentUser.clientSecretBindingType === SecretTokenBindingType.PUBLIC_XPERT
+    ) {
+        return
+    }
+
+    // An explicit x-principal-user-id represents the business user for this
+    // request and must not be overwritten by the xpert technical principal.
+    if (currentUser?.requestedUserId) {
+        return
+    }
+
+    request.user = {
+        ...principalUser,
+        apiKey,
+        ownerUserId: currentUser?.ownerUserId ?? apiKey.createdById ?? principalUser.id ?? null,
+        apiKeyUserId: currentUser?.apiKeyUserId ?? apiKey.userId ?? principalUser.id ?? null,
+        requestedUserId: currentUser?.requestedUserId ?? null,
+        requestedOrganizationId: currentUser?.requestedOrganizationId ?? null,
+        principalType: currentUser?.principalType ?? 'api_key'
+    }
+}
+
+function applyAssistantScope(xpert: IXpert) {
+    const apiKey = RequestContext.currentApiKey()
+    const keepConsumerOrganizationScope =
+        !xpert.organizationId && RequestContext.isOrganizationScope() && isTenantSharedXpertWorkspace(xpert.workspace)
+
+    if (!keepConsumerOrganizationScope) {
+        applyAssistantScopeToCurrentRequest(xpert.organizationId ?? null)
+    }
+    applyAssistantPrincipalToCurrentRequest(apiKey, (xpert.user as IUser | null | undefined) ?? null)
+}
+
 @CommandHandler(RunCreateStreamCommand)
 export class RunCreateStreamHandler implements ICommandHandler<RunCreateStreamCommand> {
     readonly #logger = new Logger(RunCreateStreamHandler.name)
@@ -228,23 +394,65 @@ export class RunCreateStreamHandler implements ICommandHandler<RunCreateStreamCo
     constructor(
         private readonly commandBus: CommandBus,
         private readonly queryBus: QueryBus,
-        private readonly redisSseStreamService: RedisSseStreamService
+        private readonly environmentService: EnvironmentService,
+        private readonly publishedXpertAccessService: PublishedXpertAccessService,
+        private readonly xpertPrincipalService?: XpertPrincipalService
     ) {}
+
+    private async resolveAssistantForRun(assistantId: string) {
+        const apiKey = RequestContext.currentApiKey()
+
+        if (apiKey?.type === ApiKeyBindingType.ASSISTANT && apiKey.entityId && apiKey.entityId !== assistantId) {
+            throw new ForbiddenException('API key is not allowed to access this assistant.')
+        }
+
+        const xpert = await this.publishedXpertAccessService.getAccessiblePublishedXpert(assistantId, {
+            relations: ['user', 'createdBy', 'workspace']
+        })
+
+        if (apiKey?.type === ApiKeyBindingType.WORKSPACE && apiKey.entityId && xpert.workspaceId !== apiKey.entityId) {
+            throw new ForbiddenException('API key is not allowed to access this workspace assistant.')
+        }
+
+        if (this.xpertPrincipalService) {
+            const principalUser = await this.xpertPrincipalService.ensurePrincipalUser(xpert as never)
+            return {
+                ...xpert,
+                user: principalUser,
+                userId: principalUser.id
+            }
+        }
+
+        return xpert
+    }
+
+    private async resolveRequestEnvironment(
+        xpert: { environmentId?: string | null },
+        chatRequest: TChatRequestV2,
+        runtimeContext: Record<string, unknown> | undefined
+    ): Promise<IEnvironment | undefined> {
+        const environmentId = getChatRequestEnvironmentId(chatRequest) ?? xpert.environmentId ?? undefined
+
+        let environment: IEnvironment | undefined
+        if (environmentId) {
+            environment = await this.environmentService.findOne(environmentId)
+        }
+
+        return mergeEnvironmentWithEnvState(environment, getContextEnvState(runtimeContext))
+    }
 
     public async execute(command: RunCreateStreamCommand) {
         const threadId = command.threadId
         const runCreate = command.runCreate
 
-        this.#logger.warn(
-            `Received RunCreateStreamCommand for threadId ${threadId} with input: ${JSON.stringify(runCreate.input)}`
-        )
-
         // Find thread (conversation) and assistant (xpert)
         const conversation = await this.queryBus.execute(new GetChatConversationQuery({ threadId }))
-        const xpert = await this.queryBus.execute(new FindXpertQuery({ id: runCreate.assistant_id }, {}))
+        assertPublicXpertSessionConversationAccess(conversation)
+        const xpert = await this.resolveAssistantForRun(runCreate.assistant_id)
+        applyAssistantScope(xpert)
         const chatRequest = validateRunCreateInput(runCreate.input, conversation)
-
-        this.#logger.warn(chatRequest, `validateRunCreateInput ${threadId}`)
+        const runtimeContext = getRunCreateContext(runCreate.context)
+        const environment = await this.resolveRequestEnvironment(xpert, chatRequest, runtimeContext)
 
         // Update conversation if xpertId is missing or sandboxEnvironmentId needs to be persisted
         let needsUpdate = false
@@ -268,54 +476,64 @@ export class RunCreateStreamHandler implements ICommandHandler<RunCreateStreamCo
             await this.commandBus.execute(new ChatConversationUpsertCommand(conversation))
         }
 
-        const execution = await this.commandBus.execute(
-            new XpertAgentExecutionUpsertCommand(
-                omitBy(
-                    {
-                        id: chatRequest.action === 'resume' ? chatRequest.target.executionId : undefined,
-                        threadId: conversation.threadId,
-                        status: XpertAgentExecutionStatusEnum.RUNNING
-                    },
-                    isNil
+        let execution =
+            chatRequest.action === 'follow_up' && chatRequest.target?.executionId
+                ? await this.queryBus.execute(new XpertAgentExecutionOneQuery(chatRequest.target.executionId))
+                : null
+
+        if (!execution) {
+            execution = await this.commandBus.execute(
+                new XpertAgentExecutionUpsertCommand(
+                    omitBy(
+                        {
+                            id:
+                                chatRequest.action === 'resume'
+                                    ? chatRequest.target.executionId
+                                    : chatRequest.action === 'follow_up'
+                                      ? chatRequest.target?.executionId
+                                      : undefined,
+                            threadId: conversation.threadId,
+                            status: XpertAgentExecutionStatusEnum.RUNNING
+                        },
+                        isNil
+                    )
                 )
             )
-        )
+        }
+
+        if (!execution?.id) {
+            throw new BadRequestException('Execution ID could not be resolved')
+        }
 
         const stream = await this.commandBus.execute(
             new XpertChatCommand(chatRequest, {
                 xpertId: xpert.id,
                 from: 'api',
-                execution: chatRequest.action === 'resume' ? undefined : execution,
-                sandboxEnvironmentId: conversation.options?.sandboxEnvironmentId
+                execution: chatRequest.action === 'resume' ? undefined : { id: execution.id },
+                ...(runtimeContext ? { context: runtimeContext } : {}),
+                environment,
+                sandboxEnvironmentId: conversation.options?.sandboxEnvironmentId,
+                streamPersistence: {
+                    transport: 'redis-stream',
+                    threadId,
+                    runId: execution.id
+                }
             })
         )
+        const normalizedStream = stream.pipe(map((message) => normalizeRunStreamMessage(message)))
+
+        if (chatRequest.action === 'follow_up') {
+            return {
+                execution,
+                stream: normalizedStream,
+                streamTransport: 'direct' as const
+            }
+        }
+
         return {
             execution,
-            stream: stream.pipe(
-                map((message) => {
-                    if (typeof message.data.data === 'object') {
-                        return {
-                            ...message,
-                            data: {
-                                ...message.data,
-                                data: omitBy(message.data.data, isNil) // Remove null or undefined values
-                            }
-                        }
-                    }
-
-                    return message
-                }),
-                tap((message) => {
-                    this.redisSseStreamService.appendEvent(threadId, execution.id, message.data).catch((error) => {
-                        this.#logger.warn(`Failed to persist SSE event: ${error}`)
-                    })
-                }),
-                finalize(() => {
-                    this.redisSseStreamService.appendCompleteEvent(threadId, execution.id).catch((error) => {
-                        this.#logger.warn(`Failed to persist SSE complete event: ${error}`)
-                    })
-                })
-            )
+            stream: normalizedStream,
+            streamTransport: 'redis' as const
         }
     }
 }

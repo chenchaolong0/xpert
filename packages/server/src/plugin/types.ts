@@ -1,5 +1,13 @@
 import type { ClassProvider, ExistingProvider, FactoryProvider, Provider, ValueProvider } from '@nestjs/common'
-import { PluginLevel, PluginSource } from '@metad/contracts'
+import type {
+	IPluginInstallInput,
+	IPluginInstallResult,
+	IPluginUpdateResult,
+	PluginLevel,
+	PluginSdkCompatibilityWarning,
+	PluginSource,
+	PluginSourceConfig
+} from '@xpert-ai/contracts'
 
 // Expose a list of loaded plugins through a global provider for lifecycle control.
 export const LOADED_PLUGINS = 'XPERT_LOADED_PLUGINS'
@@ -11,31 +19,15 @@ export interface LoadedPluginRecord {
 	ctx: any
 	packageName?: string
 	source?: PluginSource
+	sourceConfig?: PluginSourceConfig | null
 	baseDir?: string
 	level?: PluginLevel
+	sdkCompatibilityWarnings?: PluginSdkCompatibilityWarning[]
 }
 
-export interface PluginInstallInput {
-	pluginName: string
-	version?: string
-	source?: PluginSource
-	config?: Record<string, any>
-	workspacePath?: string
-}
-
-export interface PluginInstallResult {
-	success: boolean
-	name: string
-	packageName: string
-	organizationId: string
-	currentVersion?: string
-}
-
-export interface PluginUpdateResult extends PluginInstallResult {
-	latestVersion?: string
-	updated: boolean
-	previousVersion?: string
-}
+export type PluginInstallInput = IPluginInstallInput
+export type PluginInstallResult = IPluginInstallResult
+export type PluginUpdateResult = IPluginUpdateResult
 
 export function isCustomProvider(p: Provider): p is Exclude<Provider, () => void> {
 	return typeof p === 'object' && p !== null && 'provide' in p

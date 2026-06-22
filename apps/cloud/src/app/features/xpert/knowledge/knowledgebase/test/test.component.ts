@@ -1,28 +1,28 @@
-import { CommonModule } from '@angular/common'
 import { Component, computed, inject, model, signal } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { CdkMenuModule } from '@angular/cdk/menu'
-import { MatTooltipModule } from '@angular/material/tooltip'
 import { RouterModule } from '@angular/router'
 import { KnowledgeChunkComponent, KnowledgeRetrievalSettingsComponent } from '@cloud/app/@shared/knowledge'
 import { DocumentInterface } from '@langchain/core/documents'
-import { NgmCommonModule } from '@metad/ocap-angular/common'
-import { myRxResource } from '@metad/ocap-angular/core'
+import { NgmCommonModule } from '@xpert-ai/ocap-angular/common'
+import { myRxResource } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
 import {
   AiModelTypeEnum,
   DateRelativePipe,
   DocumentMetadata,
+  GraphRagRetrievalMode,
   IKnowledgeRetrievalLog,
   KnowledgebaseService,
   OrderTypeEnum,
+  TKBRetrievalSettings,
   ToastrService,
   getErrorMessage,
   injectHelpWebsite,
   routeAnimations
 } from '../../../../../@core'
 import { KnowledgebaseComponent } from '../knowledgebase.component'
-
+import { ZardTooltipImports } from '@xpert-ai/headless-ui'
 
 @Component({
   standalone: true,
@@ -30,12 +30,11 @@ import { KnowledgebaseComponent } from '../knowledgebase.component'
   templateUrl: './test.component.html',
   styleUrls: ['./test.component.scss'],
   imports: [
-    CommonModule,
     RouterModule,
     FormsModule,
     TranslateModule,
     CdkMenuModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
     NgmCommonModule,
     DateRelativePipe,
     KnowledgeChunkComponent,
@@ -50,13 +49,24 @@ export class KnowledgeTestComponent {
   readonly _toastrService = inject(ToastrService)
   readonly knowledgebaseComponent = inject(KnowledgebaseComponent)
   readonly helpUrl = injectHelpWebsite('/docs/ai/knowledge/retrieval')
-  
 
   readonly knowledgebase = this.knowledgebaseComponent.knowledgebase
 
   readonly recall = computed(() => this.knowledgebase()?.recall)
   readonly score = computed(() => this.recall()?.score)
   readonly topK = computed(() => this.recall()?.topK)
+  readonly retrievalModes: GraphRagRetrievalMode[] = ['vector', 'graph', 'hybrid']
+  readonly retrievalMode = model<GraphRagRetrievalMode>('vector')
+  readonly retrievalSettings = computed<TKBRetrievalSettings>(() => {
+    const graphRag = this.knowledgebase()?.graphRag
+    return {
+      mode: this.retrievalMode(),
+      entityTopK: graphRag?.entityTopK,
+      neighborHops: graphRag?.neighborHops,
+      graphWeight: graphRag?.graphWeight,
+      communityTopK: graphRag?.communityTopK
+    }
+  })
 
   readonly query = model<string>('')
   readonly results = signal<DocumentInterface<DocumentMetadata>[]>(null)
@@ -72,7 +82,7 @@ export class KnowledgeTestComponent {
           createdAt: OrderTypeEnum.DESC
         },
         skip: 0,
-        take: 20,
+        take: 20
       }
     }),
     loader: ({ request }) => {
@@ -87,7 +97,12 @@ export class KnowledgeTestComponent {
     this.#loading.set(true)
     this.error.set(null)
     this.knowledgebaseAPI
-      .test(this.knowledgebase().id, { query: this.query(), k: this.topK() ?? 10, score: this.score() })
+      .test(this.knowledgebase().id, {
+        query: this.query(),
+        k: this.topK() ?? 10,
+        score: this.score(),
+        retrieval: this.retrievalSettings()
+      })
       .subscribe({
         next: (results) => {
           this.results.set(results)

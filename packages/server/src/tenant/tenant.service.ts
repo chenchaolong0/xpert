@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -9,7 +9,7 @@ import {
 	FileStorageProviderEnum,
 	DEFAULT_TENANT,
 	IOrganizationCreateInput
-} from '@metad/contracts';
+} from '@xpert-ai/contracts';
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { CrudService } from '../core/crud/crud.service';
 import { Tenant } from './tenant.entity';
@@ -19,7 +19,8 @@ import { TenantFeatureOrganizationCreateCommand } from './commands/tenant-featur
 import { Role } from './../core/entities/internal';
 import { TenantSettingSaveCommand } from './tenant-setting/commands';
 import { OrganizationCreateCommand } from '../organization/commands';
-import { TenantCreatedEvent } from './events';
+import { EVENT_TENANT_CREATED, TenantCreatedEvent } from './events';
+import { normalizeTenantSubdomain } from './tenant-subdomain.util';
 
 
 @Injectable()
@@ -39,12 +40,16 @@ export class TenantService extends CrudService<Tenant> {
 
 	public async onboardTenant(
 		entity: ITenantCreateInput,
-		user: IUser
+		user: IUser,
+		options?: { skipSubdomainPreparation?: boolean }
 	): Promise<Tenant> {
-		const { isImporting = false, sourceId = null, defaultOrganization } = entity;
+		const preparedEntity = options?.skipSubdomainPreparation
+			? entity
+			: await this.prepareTenantCreateInput(entity)
+		const { isImporting = false, sourceId = null, defaultOrganization } = preparedEntity;
 
 		//1. Create Tenant of user.
-		const tenant = await this.create({...entity, createdBy: user});
+		const tenant = await this.create({...preparedEntity, createdBy: user});
 
 		//2. Create Role/Permissions to relative tenants.
 		await this.commandBus.execute(
@@ -118,7 +123,7 @@ export class TenantService extends CrudService<Tenant> {
 
 		//8. Apply tenant created event
 		this.eventEmitter.emit(
-			'tenant.created',
+			EVENT_TENANT_CREATED,
 			new TenantCreatedEvent(tenant.id, tenant.name),
 		  );
 		  
@@ -144,5 +149,66 @@ export class TenantService extends CrudService<Tenant> {
 				name: DEFAULT_TENANT
 			}
 		})
+	}
+
+	public async prepareTenantCreateInput(entity: ITenantCreateInput): Promise<ITenantCreateInput> {
+		const preparedEntity: ITenantCreateInput = { ...entity }
+		const subdomain = this.resolveCreateSubdomain(entity)
+
+		await this.ensureSubdomainUnique(subdomain)
+
+		if (subdomain) {
+			preparedEntity.subdomain = subdomain
+		} else {
+			delete preparedEntity.subdomain
+		}
+
+		return preparedEntity
+	}
+
+	public async prepareTenantUpdateInput(
+		tenantId: string,
+		entity: ITenantCreateInput
+	): Promise<ITenantCreateInput> {
+		const preparedEntity: ITenantCreateInput = { ...entity }
+
+		if (typeof entity.subdomain !== 'string' || entity.subdomain.trim().length === 0) {
+			delete preparedEntity.subdomain
+			return preparedEntity
+		}
+
+		const normalizedSubdomain = normalizeTenantSubdomain(entity.subdomain)
+		if (!normalizedSubdomain) {
+			throw new BadRequestException('Tenant subdomain is invalid')
+		}
+
+		await this.ensureSubdomainUnique(normalizedSubdomain, tenantId)
+		preparedEntity.subdomain = normalizedSubdomain
+
+		return preparedEntity
+	}
+
+	private resolveCreateSubdomain(entity: ITenantCreateInput): string | null {
+		if (typeof entity.subdomain === 'string' && entity.subdomain.trim().length > 0) {
+			const normalizedSubdomain = normalizeTenantSubdomain(entity.subdomain)
+			if (!normalizedSubdomain) {
+				throw new BadRequestException('Tenant subdomain is invalid')
+			}
+
+			return normalizedSubdomain
+		}
+
+		return normalizeTenantSubdomain(entity.name)
+	}
+
+	private async ensureSubdomainUnique(subdomain: string | null, currentTenantId?: string) {
+		if (!subdomain) {
+			return
+		}
+
+		const existing = await this.tenantRepository.findOneBy({ subdomain })
+		if (existing && existing.id !== currentTenantId) {
+			throw new BadRequestException('Tenant subdomain already exists')
+		}
 	}
 }

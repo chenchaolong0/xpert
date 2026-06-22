@@ -1,3 +1,4 @@
+@reference "../../../../styles/tailwind-reference.css";
 :host {
   @apply flex flex-col w-full overflow-y-auto;
 }
@@ -5,12 +6,12 @@
 .tab {
   @apply hover:bg-components-card-bg;
   .badge {
-    @apply border-neutral-200;
+    @apply border-divider-deep;
   }
 }
 .tab.active {
-  @apply bg-components-panel-bg text-text-primary;
+  @apply bg-components-button-primary-bg text-components-button-primary-text shadow-xs;
   .badge {
-    @apply border-neutral-300;
+    @apply border-components-button-primary-text text-components-button-primary-text;
   }
 }

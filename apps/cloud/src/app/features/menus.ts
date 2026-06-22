@@ -1,4 +1,3 @@
-import { PacMenuItem } from '@metad/cloud/auth'
 import {
   AiFeatureEnum,
   AIPermissionsEnum,
@@ -7,28 +6,281 @@ import {
   FeatureEnum,
   IOrganization,
   PermissionsEnum,
+  RequestScopeLevel,
   RolesEnum
 } from '../@core/types'
+import { CloudMenuItem } from './sidebar/cloud-sidebar-menu.types'
 
-export function getFeatureMenus(org: IOrganization): PacMenuItem[] {
-  return [
-    // Xpert AI Features
+export type MenuScope = 'tenant-only' | 'organization-only' | 'dual-scope'
+type MenuFeatureKey = AiFeatureEnum | AnalyticsFeatures | FeatureEnum
+type MenuData = {
+  translationKey?: string
+  permissionKeys?: string[]
+  featureKey?: MenuFeatureKey | MenuFeatureKey[]
+  inactivePathPrefixes?: string[]
+  hideWhenAllChildrenHidden?: boolean
+  [key: string]: unknown
+}
+
+export interface SettingsMenuItem {
+  path: string
+  label: string
+  icon: string
+  deprecated?: boolean
+  admin?: boolean
+  pathMatch?: 'full' | 'prefix'
+  scopeContext?: MenuScope
+  subtitleKey?: string
+  subtitleDefault?: string
+  data?: MenuData
+}
+
+type ScopedMenuItem = CloudMenuItem & { scopeContext?: MenuScope }
+
+export function getSettingsMenuItems(scopeLevel: RequestScopeLevel): SettingsMenuItem[] {
+  const isTenantScope = scopeLevel === RequestScopeLevel.TENANT
+  const items: SettingsMenuItem[] = [
     {
-      title: 'Chat',
-      matIcon: 'robot_2',
-      link: '/chat',
-      pathMatch: 'prefix',
+      path: 'account',
+      label: 'Account',
+      icon: 'account_circle',
+      scopeContext: 'dual-scope'
+    },
+    {
+      path: 'data-sources',
+      label: 'Data Sources',
+      icon: 'database',
+      admin: true,
+      scopeContext: 'organization-only',
       data: {
-        translationKey: 'Chat',
-        featureKey: AiFeatureEnum.FEATURE_XPERT,
-        permissionKeys: [AIPermissionsEnum.CHAT_VIEW]
+        permissionKeys: [AnalyticsPermissionsEnum.DATA_SOURCE_EDIT],
+        featureKey: AnalyticsFeatures.FEATURE_DATA_SOURCE
       }
     },
     {
+      path: 'assistants',
+      label: 'Assistants',
+      icon: 'robot_2',
+      scopeContext: 'dual-scope',
+      subtitleKey: isTenantScope ? 'PAC.Assistant.MenuTenantSubtitle' : 'PAC.Assistant.MenuOrganizationSubtitle',
+      subtitleDefault: isTenantScope ? 'Tenant defaults' : 'Organization overrides',
+      data: {
+        featureKey: AiFeatureEnum.FEATURE_XPERT,
+        permissionKeys: [RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN]
+      }
+    },
+    {
+      path: 'chatbi',
+      label: 'Chat BI',
+      icon: 'try',
+      deprecated: true,
+      scopeContext: 'dual-scope',
+      data: {
+        permissionKeys: [AnalyticsPermissionsEnum.MODELS_EDIT],
+        featureKey: [AiFeatureEnum.FEATURE_XPERT, AnalyticsFeatures.FEATURE_MODEL]
+      }
+    },
+    {
+      path: 'business-area',
+      label: 'Business Area',
+      icon: 'business_center',
+      deprecated: true,
+      pathMatch: 'prefix',
+      scopeContext: 'organization-only',
+      data: {
+        featureKey: AnalyticsFeatures.FEATURE_BUSINESS_AREA,
+        permissionKeys: [AnalyticsPermissionsEnum.BUSINESS_AREA_EDIT]
+      }
+    },
+    {
+      path: 'certification',
+      label: 'Certification',
+      icon: 'verified_user',
+      deprecated: true,
+      pathMatch: 'prefix',
+      scopeContext: 'organization-only',
+      data: {
+        permissionKeys: [AnalyticsPermissionsEnum.CERTIFICATION_EDIT]
+      }
+    },
+    {
+      path: 'integration',
+      label: 'System Integration',
+      icon: 'hub',
+      pathMatch: 'prefix',
+      scopeContext: 'organization-only',
+      data: {
+        featureKey: FeatureEnum.FEATURE_INTEGRATION,
+        permissionKeys: [PermissionsEnum.INTEGRATION_EDIT]
+      }
+    },
+    {
+      path: 'users',
+      label: 'User',
+      icon: 'people',
+      scopeContext: 'dual-scope',
+      data: {
+        permissionKeys: [
+          PermissionsEnum.ALL_ORG_VIEW,
+          PermissionsEnum.ALL_ORG_EDIT,
+          PermissionsEnum.ORG_USERS_VIEW,
+          PermissionsEnum.ORG_USERS_EDIT
+        ],
+        featureKey: FeatureEnum.FEATURE_USERS
+      }
+    },
+    {
+      path: 'groups',
+      label: 'Groups',
+      icon: 'group',
+      scopeContext: 'organization-only',
+      data: {
+        permissionKeys: [PermissionsEnum.ORG_USERS_VIEW, PermissionsEnum.ORG_USERS_EDIT],
+        featureKey: FeatureEnum.FEATURE_USER_GROUPS
+      }
+    },
+    {
+      path: 'roles',
+      label: 'Role & Permission',
+      icon: 'supervisor_account',
+      scopeContext: 'tenant-only',
+      data: {
+        featureKey: FeatureEnum.FEATURE_ROLES_PERMISSION,
+        permissionKeys: [PermissionsEnum.CHANGE_ROLES_PERMISSIONS]
+      }
+    },
+    {
+      path: 'email-templates',
+      label: 'Email Template',
+      icon: 'email',
+      scopeContext: 'dual-scope',
+      data: {
+        permissionKeys: [PermissionsEnum.VIEW_ALL_EMAIL_TEMPLATES],
+        featureKey: FeatureEnum.FEATURE_EMAIL_TEMPLATE
+      }
+    },
+    {
+      path: scopeLevel === RequestScopeLevel.TENANT ? 'features/tenant' : 'features/organization',
+      label: 'Feature',
+      icon: 'widgets',
+      scopeContext: 'dual-scope',
+      data: {
+        permissionKeys: [PermissionsEnum.CHANGE_ROLES_PERMISSIONS]
+      }
+    },
+    {
+      path: 'organizations',
+      label: 'Organization',
+      icon: 'corporate_fare',
+      scopeContext: 'dual-scope',
+      subtitleKey: isTenantScope ? 'PAC.Organization.MenuTenantSubtitle' : 'PAC.Organization.MenuOrganizationSubtitle',
+      subtitleDefault: isTenantScope ? 'Manage all organizations' : 'Review the current organization',
+      data: {
+        permissionKeys: [
+          PermissionsEnum.ALL_ORG_VIEW,
+          PermissionsEnum.ALL_ORG_EDIT,
+          PermissionsEnum.ORG_USERS_VIEW,
+          PermissionsEnum.ORG_USERS_EDIT
+        ],
+        featureKey: FeatureEnum.FEATURE_ORGANIZATION
+      }
+    },
+    {
+      path: 'tenant',
+      label: 'Tenant',
+      icon: 'storage',
+      scopeContext: 'tenant-only',
+      data: {
+        permissionKeys: [RolesEnum.SUPER_ADMIN]
+      }
+    }
+  ]
+
+  return items.filter((item) => matchesScope(item.scopeContext ?? 'dual-scope', scopeLevel))
+}
+
+export function getFeatureMenus(scopeLevel: RequestScopeLevel, _org: IOrganization | null): CloudMenuItem[] {
+  void _org
+
+  const menus: ScopedMenuItem[] = [
+    // Xpert AI Features
+    {
+      title: 'Chat',
+      icon: 'ri-chat-1-line',
+      link: '/chat',
+      pathMatch: 'prefix',
+      expanded: true,
+      scopeContext: 'dual-scope',
+      data: {
+        translationKey: 'Chat',
+        featureKey: AiFeatureEnum.FEATURE_XPERT,
+        permissionKeys: [AIPermissionsEnum.CHAT_VIEW],
+        inactivePathPrefixes: ['/chat/chatbi', '/chatbi'],
+        subtitleKey: 'PAC.Chat.MenuSubtitle',
+        subtitleDefault: '新建、最近、任务'
+      },
+      children: [
+        {
+          title: '最近会话',
+          icon: 'ri-history-line',
+          link: '/chat',
+          pathMatch: 'prefix',
+          data: {
+            translationKey: 'Recent Chats',
+            activePathPrefixes: ['/chat/c']
+          }
+        },
+        {
+          title: '任务',
+          icon: 'ri-list-check-3',
+          link: '/chat/tasks',
+          pathMatch: 'prefix',
+          data: {
+            translationKey: 'Tasks'
+          }
+        }
+      ]
+    },
+    {
+      title: 'CodeXpert',
+      icon: 'ri-code-box-line',
+      link: 'https://code.xpertai.cn/',
+      external: true,
+      scopeContext: 'dual-scope',
+      data: {
+        translationKey: 'CodeXpert',
+        featureKey: [AiFeatureEnum.FEATURE_XPERT, AiFeatureEnum.FEATURE_XPERT_CODEXPERT]
+      }
+    },
+    {
+      title: 'Data & Ontology',
+      icon: 'ri-node-tree',
+      link: 'https://data.xpertai.cn/',
+      external: true,
+      scopeContext: 'dual-scope',
+      data: {
+        translationKey: 'Data & Ontology',
+        featureKey: [AiFeatureEnum.FEATURE_XPERT, AiFeatureEnum.FEATURE_XPERT_DATA_ONTOLOGY]
+      }
+    },
+    // {
+    //   title: 'Project',
+    //   icon: 'ri-building-line',
+    //   link: '/project',
+    //   pathMatch: 'prefix',
+    //   scopeContext: 'dual-scope',
+    //   data: {
+    //     translationKey: 'Project',
+    //     featureKey: AiFeatureEnum.FEATURE_XPERT,
+    //     permissionKeys: [AIPermissionsEnum.CHAT_VIEW]
+    //   }
+    // },
+    {
       title: 'Explore Xperts',
-      matIcon: 'explore',
+      icon: 'ri-book-shelf-line',
       link: '/explore',
       pathMatch: 'prefix',
+      scopeContext: 'dual-scope',
       data: {
         translationKey: 'Explore',
         featureKey: AiFeatureEnum.FEATURE_XPERT,
@@ -37,9 +289,10 @@ export function getFeatureMenus(org: IOrganization): PacMenuItem[] {
     },
     {
       title: 'Xpert',
-      matIcon: 'engineering',
+      icon: 'ri-apps-line',
       link: '/xpert',
       pathMatch: 'prefix',
+      scopeContext: 'dual-scope',
       data: {
         translationKey: 'Workspace',
         featureKey: AiFeatureEnum.FEATURE_XPERT,
@@ -48,49 +301,49 @@ export function getFeatureMenus(org: IOrganization): PacMenuItem[] {
     },
 
     // BI Features
-    {
-      title: 'Dashboard',
-      matIcon: 'leaderboard',
-      link: '/dashboard',
-      pathMatch: 'prefix',
-      // home: true,
-      data: {
-        translationKey: 'Dashboard',
-        featureKey: FeatureEnum.FEATURE_HOME
-      },
-      children: [
-        {
-          title: 'Today',
-          matIcon: 'today',
-          link: '/dashboard',
-          data: {
-            translationKey: 'Today',
-            featureKey: FeatureEnum.FEATURE_DASHBOARD
-          }
-        },
-        {
-          title: 'Catalog',
-          matIcon: 'subscriptions',
-          link: '/dashboard/catalog',
-          data: {
-            translationKey: 'Catalog',
-            featureKey: FeatureEnum.FEATURE_DASHBOARD
-          }
-        },
-        {
-          title: 'Trending',
-          matIcon: 'timeline',
-          link: '/dashboard/trending',
-          data: {
-            translationKey: 'Trending',
-            featureKey: FeatureEnum.FEATURE_DASHBOARD
-          }
-        }
-      ]
-    },
+    // {
+    //   title: 'Dashboard',
+    //   icon: 'leaderboard',
+    //   link: '/dashboard',
+    //   pathMatch: 'prefix',
+    //   // home: true,
+    //   data: {
+    //     translationKey: 'Dashboard',
+    //     featureKey: FeatureEnum.FEATURE_HOME
+    //   },
+    //   children: [
+    //     {
+    //       title: 'Today',
+    //       icon: 'today',
+    //       link: '/dashboard',
+    //       data: {
+    //         translationKey: 'Today',
+    //         featureKey: FeatureEnum.FEATURE_DASHBOARD
+    //       }
+    //     },
+    //     {
+    //       title: 'Catalog',
+    //       icon: 'subscriptions',
+    //       link: '/dashboard/catalog',
+    //       data: {
+    //         translationKey: 'Catalog',
+    //         featureKey: FeatureEnum.FEATURE_DASHBOARD
+    //       }
+    //     },
+    //     {
+    //       title: 'Trending',
+    //       icon: 'timeline',
+    //       link: '/dashboard/trending',
+    //       data: {
+    //         translationKey: 'Trending',
+    //         featureKey: FeatureEnum.FEATURE_DASHBOARD
+    //       }
+    //     }
+    //   ]
+    // },
     // {
     //   title: 'Data Factory',
-    //   matIcon: 'data_table',
+    //   icon: 'data_table',
     //   link: '/data',
     //   pathMatch: 'prefix',
     //   data: {
@@ -100,245 +353,112 @@ export function getFeatureMenus(org: IOrganization): PacMenuItem[] {
     //   }
     // },
     {
-      title: 'Semantic Model',
-      matIcon: 'deployed_code',
-      link: '/models',
+      title: 'Data',
+      icon: 'ri-database-2-line',
+      link: '/data',
       pathMatch: 'prefix',
+      scopeContext: 'dual-scope',
       data: {
-        translationKey: 'Semantic Model',
-        featureKey: AnalyticsFeatures.FEATURE_MODEL,
-        permissionKeys: [AnalyticsPermissionsEnum.MODELS_EDIT]
-      }
-    },
-    {
-      title: 'Project',
-      matIcon: 'dashboard',
-      link: '/project',
-      pathMatch: 'prefix',
-      data: {
-        translationKey: 'BI Project',
-        featureKey: AnalyticsFeatures.FEATURE_PROJECT,
-        permissionKeys: [AnalyticsPermissionsEnum.STORIES_VIEW]
+        translationKey: 'Data',
+        hideWhenAllChildrenHidden: true
       },
       children: [
         {
-          title: 'Story',
-          matIcon: 'auto_stories',
-          link: '/project',
+          title: 'Project',
+          icon: 'ri-numbers-line',
+          link: '/data/project',
           data: {
-            translationKey: 'Story',
-            featureKey: AnalyticsFeatures.FEATURE_STORY,
-            permissionKeys: [AnalyticsPermissionsEnum.STORIES_VIEW]
+            translationKey: 'BI Project',
+            featureKey: AnalyticsFeatures.FEATURE_PROJECT,
+            permissionKeys: [AnalyticsPermissionsEnum.STORIES_EDIT]
           }
         },
         {
-          title: 'Indicators',
-          matIcon: 'trending_up',
-          link: '/project/indicators',
+          title: 'Semantic Model',
+          icon: 'ri-database-2-line',
+          link: '/data/models',
           data: {
-            translationKey: 'Indicators',
-            featureKey: AnalyticsFeatures.FEATURE_INDICATOR,
-            permissionKeys: [AnalyticsPermissionsEnum.INDICATOR_EDIT]
+            translationKey: 'Semantic Model',
+            featureKey: AnalyticsFeatures.FEATURE_MODEL,
+            permissionKeys: [AnalyticsPermissionsEnum.MODELS_EDIT]
           }
         }
       ]
     },
     {
-      title: 'Indicator Market',
-      matIcon: 'local_grocery_store',
-      link: '/indicator/market',
-      data: {
-        translationKey: 'Indicator Market',
-        featureKey: [AnalyticsFeatures.FEATURE_INDICATOR, AnalyticsFeatures.FEATURE_INDICATOR_MARKET],
-        permissionKeys: [AnalyticsPermissionsEnum.INDICATOR_MARTKET_VIEW]
-      }
-    },
-    {
-      title: 'Indicator App',
-      matIcon: 'trending_up',
-      pathMatch: 'prefix',
-      link: '/indicator-app',
-      data: {
-        translationKey: 'Indicator App',
-        featureKey: [AnalyticsFeatures.FEATURE_INDICATOR, AnalyticsFeatures.FEATURE_INDICATOR_APP],
-        permissionKeys: [AnalyticsPermissionsEnum.INDICATOR_VIEW]
-      }
-    },
-    {
       title: 'Settings',
-      matIcon: 'settings',
+      icon: 'settings',
       link: '/settings',
+      pathMatch: 'prefix',
       admin: true,
+      scopeContext: 'dual-scope',
       data: {
         translationKey: 'Settings',
-        featureKey: FeatureEnum.FEATURE_SETTING
-      },
-      children: [
-        {
-          title: 'Account',
-          matIcon: 'account_circle',
-          link: '/settings/account',
-          data: {
-            translationKey: 'Account'
-          }
-        },
-        {
-          title: 'AI Copilot',
-          matIcon: 'psychology',
-          link: '/settings/copilot',
-          data: {
-            translationKey: 'AI Copilot',
-            permissionKeys: [AIPermissionsEnum.COPILOT_EDIT],
-            featureKey: AiFeatureEnum.FEATURE_COPILOT
-          }
-        },
-        // {
-        //   title: 'Knowledgebase',
-        //   matIcon: 'school',
-        //   link: '/settings/knowledgebase',
-        //   data: {
-        //     translationKey: 'Knowledgebase',
-        //     permissionKeys: [RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN],
-        //     featureKey: AiFeatureEnum.FEATURE_COPILOT_KNOWLEDGEBASE
-        //   }
-        // },
-        {
-          title: 'Data Sources',
-          matIcon: 'database',
-          link: '/settings/data-sources',
-          admin: true,
-          data: {
-            translationKey: 'Data Sources',
-            permissionKeys: [AnalyticsPermissionsEnum.DATA_SOURCE_EDIT],
-            featureKey: AnalyticsFeatures.FEATURE_MODEL
-          }
-        },
-        {
-          title: 'Chat BI',
-          matIcon: 'try',
-          link: '/settings/chatbi',
-          data: {
-            translationKey: 'Chat BI',
-            permissionKeys: [AIPermissionsEnum.XPERT_EDIT],
-            featureKey: [AiFeatureEnum.FEATURE_XPERT, AnalyticsFeatures.FEATURE_MODEL]
-          }
-        },
-        {
-          title: 'User',
-          matIcon: 'people',
-          link: '/settings/users',
-          data: {
-            translationKey: 'User',
-            permissionKeys: [PermissionsEnum.ORG_USERS_EDIT],
-            featureKey: FeatureEnum.FEATURE_USER
-          }
-        },
-        {
-          title: 'Roles',
-          matIcon: 'supervisor_account',
-          link: '/settings/roles',
-          data: {
-            translationKey: 'Role & Permission',
-            featureKey: FeatureEnum.FEATURE_ROLES_PERMISSION,
-            permissionKeys: [PermissionsEnum.CHANGE_ROLES_PERMISSIONS]
-          }
-        },
-        {
-          title: 'Business Area',
-          matIcon: 'workspaces',
-          link: '/settings/business-area',
-          pathMatch: 'prefix',
-          data: {
-            translationKey: 'Business Area',
-            featureKey: AnalyticsFeatures.FEATURE_BUSINESS_AREA,
-            permissionKeys: [AnalyticsPermissionsEnum.BUSINESS_AREA_EDIT]
-          }
-        },
-        {
-          title: 'Certification',
-          matIcon: 'verified_user',
-          link: '/settings/certification',
-          pathMatch: 'prefix',
-          data: {
-            translationKey: 'Certification',
-            // 同语义模型的功能绑定一起启用与否
-            featureKey: AnalyticsFeatures.FEATURE_MODEL,
-            permissionKeys: [AnalyticsPermissionsEnum.CERTIFICATION_EDIT]
-          }
-        },
-        {
-          title: 'Integration',
-          matIcon: 'hub',
-          link: '/settings/integration',
-          pathMatch: 'prefix',
-          data: {
-            translationKey: 'System Integration',
-            featureKey: FeatureEnum.FEATURE_INTEGRATION,
-            permissionKeys: [PermissionsEnum.INTEGRATION_EDIT]
-          }
-        },
-
-        {
-          title: 'Email Templates',
-          matIcon: 'email',
-          link: '/settings/email-templates',
-          data: {
-            translationKey: 'Email Template',
-            permissionKeys: [PermissionsEnum.VIEW_ALL_EMAIL_TEMPLATES],
-            featureKey: FeatureEnum.FEATURE_EMAIL_TEMPLATE
-          }
-        },
-        {
-          title: 'Custom SMTP',
-          matIcon: 'alternate_email',
-          link: '/settings/custom-smtp',
-          data: {
-            translationKey: 'Custom SMTP',
-            permissionKeys: [PermissionsEnum.CUSTOM_SMTP_VIEW],
-            featureKey: FeatureEnum.FEATURE_SMTP
-          }
-        },
-        {
-          title: 'Features',
-          matIcon: 'widgets',
-          link: '/settings/features',
-          data: {
-            translationKey: 'Feature',
-            permissionKeys: [RolesEnum.SUPER_ADMIN]
-          }
-        },
-        {
-          title: 'Organizations',
-          matIcon: 'corporate_fare',
-          link: '/settings/organizations',
-          data: {
-            translationKey: 'Organization',
-            permissionKeys: [RolesEnum.SUPER_ADMIN]
-          }
-        },
-        {
-          title: 'Plugins',
-          matIcon: 'extension',
-          link: '/settings/plugins',
-          data: {
-            translationKey: 'Plugins',
-            permissionKeys: [RolesEnum.SUPER_ADMIN, RolesEnum.ADMIN, RolesEnum.TRIAL]
-          }
-        },
-        ...(org
-          ? []
-          : [
-              {
-                title: 'Tenant',
-                matIcon: 'storage',
-                link: '/settings/tenant',
-                data: {
-                  translationKey: 'Tenant',
-                  permissionKeys: [RolesEnum.SUPER_ADMIN]
-                }
-              }
-            ])
-      ]
+        inactivePathPrefixes: ['/settings/copilot']
+      }
+    },
+    {
+      title: 'Plugins',
+      icon: 'ri-puzzle-2-line',
+      link: '/plugins',
+      pathMatch: 'prefix',
+      scopeContext: 'dual-scope',
+      data: {
+        translationKey: 'Plugins',
+        featureKey: AiFeatureEnum.FEATURE_XPERT,
+        permissionKeys: [AIPermissionsEnum.XPERT_EDIT]
+      }
+    },
+    {
+      title: 'MCP Monitor',
+      icon: 'ri-pulse-line',
+      link: '/operations',
+      pathMatch: 'prefix',
+      scopeContext: 'dual-scope',
+      data: {
+        translationKey: 'MCP Monitor',
+        permissionKeys: [RolesEnum.SUPER_ADMIN]
+      }
+    },
+    {
+      title: 'Model Providers',
+      icon: 'psychology',
+      link: '/settings/copilot/basic',
+      pathMatch: 'prefix',
+      admin: true,
+      scopeContext: 'dual-scope',
+      data: {
+        translationKey: 'AI Copilot',
+        featureKey: AiFeatureEnum.FEATURE_COPILOT,
+        permissionKeys: [AIPermissionsEnum.COPILOT_EDIT],
+        activePathPrefixes: ['/settings/copilot']
+      }
     }
   ]
+
+  return menus.filter((item) => matchesScope(item.scopeContext ?? 'dual-scope', scopeLevel))
+}
+
+export function syncMenuParentStateFromChildren(item: CloudMenuItem) {
+  if (!item.children?.length || !item.data?.hideWhenAllChildrenHidden) {
+    return
+  }
+
+  const visibleChild = item.children.find((childItem) => !childItem.hidden)
+
+  item.hidden = !visibleChild
+  if (visibleChild?.link) {
+    item.link = visibleChild.link
+  }
+}
+
+function matchesScope(scope: MenuScope, level: RequestScopeLevel) {
+  if (scope === 'dual-scope') {
+    return true
+  }
+
+  return (
+    (scope === 'tenant-only' && level === RequestScopeLevel.TENANT) ||
+    (scope === 'organization-only' && level === RequestScopeLevel.ORGANIZATION)
+  )
 }

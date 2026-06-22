@@ -1,12 +1,12 @@
 import { CdkMenuModule } from '@angular/cdk/menu'
 import { CommonModule } from '@angular/common'
-import { Component, computed, inject, output, signal } from '@angular/core'
+import { Component, computed, effect, inject, output, signal } from '@angular/core'
+import { toObservable, toSignal } from '@angular/core/rxjs-interop'
 import { FormsModule } from '@angular/forms'
-import { MatSlideToggleModule } from '@angular/material/slide-toggle'
-import { MatTooltipModule } from '@angular/material/tooltip'
-import { IfAnimations } from '@metad/core'
-import { attrModel, linkedModel, NgmDensityDirective } from '@metad/ocap-angular/core'
+import { IfAnimations } from '@xpert-ai/core'
+import { attrModel, linkedModel, NgmDensityDirective } from '@xpert-ai/ocap-angular/core'
 import { TranslateModule } from '@ngx-translate/core'
+import { of, switchMap } from 'rxjs'
 import { XpertStudioApiService } from '../domain'
 import { XpertStudioFeaturesMemoryComponent } from './memory/memory.component'
 import { XpertStudioFeaturesSummaryComponent } from './summary/summary.component'
@@ -18,9 +18,9 @@ import { XpertStudioFeaturesTTSComponent } from './tts/tts.component'
 import { XpertStudioFeaturesSTTComponent } from './stt/stt.component'
 import { XpertStudioFeaturesMemoryReplyComponent } from './memory-reply/memory-reply.component'
 import { XpertStudioFeaturesSandboxComponent } from './sandbox/sandbox.component'
-import { linkedXpertFeaturesModel } from './types'
+import { linkedXpertFeaturesModel, resolveSandboxFeatureForToggle } from './types'
 import { injectHelpWebsite } from '@cloud/app/@core'
-
+import { ZardSwitchComponent, ZardTooltipImports } from '@xpert-ai/headless-ui'
 type ViewType =
   | 'summarize'
   | 'attachment'
@@ -41,8 +41,7 @@ type ViewType =
     FormsModule,
     CdkMenuModule,
     TranslateModule,
-    MatSlideToggleModule,
-    MatTooltipModule,
+    ...ZardTooltipImports,
     NgmDensityDirective,
     XpertStudioFeaturesSummaryComponent,
     XpertStudioFeaturesMemoryComponent,
@@ -53,7 +52,8 @@ type ViewType =
     XpertStudioFeaturesTTSComponent,
     XpertStudioFeaturesSTTComponent,
     XpertStudioFeaturesMemoryReplyComponent,
-    XpertStudioFeaturesSandboxComponent
+    XpertStudioFeaturesSandboxComponent,
+    ZardSwitchComponent
   ],
   templateUrl: './features.component.html',
   styleUrl: './features.component.scss',
@@ -92,6 +92,26 @@ export class XpertStudioFeaturesComponent {
   readonly speechToText_enabled = attrModel(this.speechToText, 'enabled')
   readonly memoryReply_enabled = attrModel(this.memoryReply, 'enabled')
   readonly sandbox_enabled = attrModel(this.sandbox, 'enabled')
+  readonly sandboxProviders = toSignal(
+    toObservable(this.sandbox_enabled).pipe(
+      switchMap((enabled) => (enabled ? this.apiService.xpertAPI.getSandboxProviders() : of([])))
+    ),
+    { initialValue: [] }
+  )
+
+  constructor() {
+    effect(() => {
+      const sandbox = this.sandbox()
+      if (!sandbox?.enabled) {
+        return
+      }
+
+      const next = resolveSandboxFeatureForToggle(true, sandbox, this.sandboxProviders())
+      if (next.provider !== sandbox.provider) {
+        this.sandbox.set(next)
+      }
+    })
+  }
 
   toggleView(view: ViewType) {
     this.view.update((state) => (state === view ? null : view))

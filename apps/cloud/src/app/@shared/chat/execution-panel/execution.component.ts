@@ -1,9 +1,9 @@
 import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog'
-import { CommonModule } from '@angular/common'
+
 import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, input, output, signal } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { myRxResource } from '@metad/core'
-import { NgmSpinComponent } from '@metad/ocap-angular/common'
+import { myRxResource } from '@xpert-ai/core'
+import { NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
 import { TranslateModule } from '@ngx-translate/core'
 import { interval, Subscription } from 'rxjs'
 import { getErrorMessage, IXpert, XpertAgentExecutionService, XpertAgentExecutionStatusEnum } from '../../../@core'
@@ -16,13 +16,12 @@ import { XpertAgentExecutionAccordionComponent, XpertAgentExecutionComponent } f
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
-    CommonModule,
     FormsModule,
     TranslateModule,
     NgmSpinComponent,
     XpertAgentExecutionComponent,
     XpertAgentExecutionAccordionComponent
-  ]
+]
 })
 export class ChatMessageExecutionPanelComponent {
   eXpertAgentExecutionEnum = XpertAgentExecutionStatusEnum
@@ -34,14 +33,15 @@ export class ChatMessageExecutionPanelComponent {
 
   // Inputs
   readonly id = input<string>(this.#data?.id) // ID of XpertAgentExecution
+  readonly organizationId = input<string | null>(null)
   readonly xpert = input<Partial<IXpert>>(this.#data?.xpert)
 
   // Output
   readonly close = output<void>()
 
   readonly #execution = myRxResource({
-    request: () => ({ id: this.id() }),
-    loader: ({ request }) => this.#executionService.getOneLog(request.id)
+    request: () => ({ id: this.id(), organizationId: this.organizationId() }),
+    loader: ({ request }) => this.#executionService.getOneLog(request.id, undefined, request.organizationId ?? undefined)
   })
 
   readonly error = computed(() => getErrorMessage(this.#execution.error()))
@@ -87,7 +87,7 @@ export class ChatMessageExecutionPanelComponent {
       } else {
         this.#stopPolling()
       }
-    }, { allowSignalWrites: true })
+    })
 
     // Stop polling when component is destroyed
     this.#destroyRef.onDestroy(() => {

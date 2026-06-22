@@ -18,13 +18,16 @@
 
 ## 💡 新功能
 
-**🚀 3.8 沙箱环境！**
+**🚀 3.10 Agentic Apps 与 File Understanding！**
 
-XpertAI 3.8 版本正式发布智能体沙箱功能，沙箱为智能体提供隔离的执行与文件操作环境，沙箱插件的核心能力之一是 Provider 插件机制。通过自定义 Provider，可以接入不同的运行时基础设施，例如：
+XpertAI 3.10 将插件升级为一等公民的 `Agentic Apps`：插件可以贡献 Xpert 模板、Workbench 视图和运行时 middleware 能力，结合新的文件理解链路，形成更可扩展的助手平台。
 
-- Docker/Podman 容器体系
-- [Runloop](https://runloop.ai/), [Modal](https://modal.com/), [Daytona](https://daytona.io/)
-- 远程虚拟机或安全沙盒服务
+- 通过插件 `targetApps`、`targetAppMeta`、插件贡献的 Xpert 模板、废弃标记和更丰富的 manifest 元数据，构建面向业务应用的插件中心。
+- View Extension 支持固定 Workbench 视图、remote component iframe entry、宿主主题透传、宿主事件、任务状态更新和 client commands。
+- Assistant Workbench 可以打开工具触发的 remote component，包括内置 Data X 指标管理插件，用于项目与语义模型指标操作。
+- 新增 File Understanding 层，将上传文件解析为 `FileAsset`、artifacts、chunks、page images、citation anchors 和 workspace paths，Agent 可按需检索和读取。
+- Middleware Runtime 新增文件、知识库、assistant task、组织上下文、chat event 等能力，并加入 Office Automation middleware 流程。
+- Copilot 运维观测增强：支持用户级使用明细、使用汇总、筛选、checkpoint retention 清理、Prometheus 指标和 conversation goals。
 
 ## 智能体与工作流混合架构
 
@@ -58,9 +61,21 @@ XpertAI 3.8 版本正式发布智能体沙箱功能，沙箱为智能体提供�
 ```bash
 cd xpert
 cd docker
-cp .env.example .env
+cp env.example .env
 docker compose -f docker-compose.cn.yml up -d
 ```
+
+如果你希望在新建组织时自动导入默认 xperts 或初始化分析语义模型模式，可以在 `docker/.env` 里额外配置：
+
+```bash
+# 可选：为每个新组织的默认 workspace 导入模板 xpert
+ORG_DEFAULT_XPERT_TEMPLATE_KEYS=af7133cb-32b3-47ff-90c1-b144c4d4887e,af7133cb-32b3-47ff-90c1-b144c4d48872
+
+# 可选：组织初始化时只创建语义模型基础数据，或导入完整 demo
+ORG_ANALYTICS_BOOTSTRAP_MODE=semantic-only
+```
+
+上面的推荐模板分别对应 `ChatBI with Sales Analysis Expert` 和 `Text2SQL-ChatDB`，比较适合带分析场景的组织默认配置。
 
 运行后，您可以在浏览器中访问 Xpert 仪表盘，地址为 [http://localhost/onboarding](http://localhost/onboarding)，并开始初始化过程。
 
@@ -119,6 +134,13 @@ Xpert AI 云平台链接为 <https://app.xpertai.cn> 。
 - [x] **小部件（Widgets）** – 让大模型回复驱动更丰富界面体验的 UI 组件。
 - [x] **智能体中间件** – 基于插件的智能体中间件。
 - [x] **智能体技能** – 轻量化的智能体技能，快速集成定制能力，比 MCP 工具更快捷。
+- [ ] **项目管理** – AI 驱动的项目执行工作台，用于规划、协同和运行多智能体任务。
+  - [ ] 项目工作区，包含概览、看板、文件、团队和项目标签页布局。
+  - [ ] Project / Sprint / Task / Backlog / Swimlane 数据模型与 API，支撑计划和执行策略。
+  - [ ] 绑定已发布 Xpert 作为项目助手和项目团队，支持团队角色与执行环境设置。
+  - [ ] 项目助手工具，支持 backlog 管理、Sprint 规划、任务更新、团队绑定和可执行任务投递。
+  - [ ] 任务助手 ChatKit 会话，串联执行产物和项目上下文交接。
+  - [ ] 项目事件流，支持看板实时更新和智能体执行反馈。
 - [ ] **审计，安全，合规** – 企业级功能，确保数据隐私和合规。
   - [ ] 审计日志
   - [ ] 角色权限管理
@@ -129,7 +151,7 @@ Xpert AI 云平台链接为 <https://app.xpertai.cn> 。
   - [ ] 评估框架
 - [ ] 系统运行监控和告警
   - [ ] Sentry 集成
-  - [ ] Prometheus 集成
+  - [x] Prometheus 集成
 
 ## 💌 联系我们
 

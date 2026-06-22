@@ -1,9 +1,19 @@
 <div class="flex items-center gap-1 px-2 py-1">
   <i class="ri-stack-fill text-indigo-500"></i>
-  <div class="text-sm font-semibold text-text-secondary">{{ 'PAC.KEY_WORDS.Middleware' | translate: {Default: 'Middleware'} }}</div>
-  <i class="ri-information-2-line text-text-tertiary opacity-50 hover:opacity-100"
-    [matTooltip]="'PAC.Xpert.AgentMiddlewaresTooltip' | translate: {Default: 'The agent loads middleware sequentially. Middleware can perform the following tasks: Tracking agent behavior with logging, analytics, and debugging; Transforming prompts, tool selection, and output formatting; Adding retries, fallbacks, and early termination logic; Applying rate limits, guardrails, and PII detection.'}"
-    matTooltipPosition="above"
+  <div class="text-sm font-semibold text-text-secondary">
+    {{ 'PAC.KEY_WORDS.Middleware' | translate: { Default: 'Middleware' } }}
+  </div>
+  <i
+    class="ri-information-2-line text-text-tertiary opacity-50 hover:opacity-100"
+    [zTooltip]="
+      'PAC.Xpert.AgentMiddlewaresTooltip'
+        | translate
+          : {
+              Default:
+                'The agent loads middleware sequentially. Middleware can perform the following tasks: Tracking agent behavior with logging, analytics, and debugging; Transforming prompts, tool selection, and output formatting; Adding retries, fallbacks, and early termination logic; Applying rate limits, guardrails, and PII detection.'
+            }
+    "
+    zPosition="top"
   ></i>
 </div>
 <div class="flex flex-col gap-1" cdkDropList (cdkDropListDropped)="drop($event)">
@@ -13,10 +23,16 @@
       cdkDrag
       cdkDragLockAxis="y"
     >
-      <i class="ri-draggable mt-0.5 cursor-grab text-text-tertiary opacity-50 group-hover:opacity-100" cdkDragHandle></i>
+      <i
+        class="ri-draggable mt-0.5 cursor-grab text-text-tertiary opacity-50 group-hover:opacity-100"
+        cdkDragHandle
+      ></i>
 
       @if (middleware.strategy?.meta.icon; as icon) {
-        <xp-icon [icon]="icon" class="w-8 h-8 shrink-0 rounded-lg bg-components-panel-bg flex items-center justify-center" />
+        <xp-icon
+          [icon]="icon"
+          class="w-8 h-8 shrink-0 rounded-lg bg-components-panel-bg flex items-center justify-center"
+        />
       } @else {
         <div
           class="w-8 h-8 shrink-0 rounded-lg bg-components-panel-bg flex items-center justify-center text-text-tertiary text-xs uppercase"
@@ -27,13 +43,32 @@
 
       <div class="min-w-0 flex flex-col gap-1">
         <div class="flex items-center gap-2 min-w-0">
-          <div class="text-text-primary system-sm-medium truncate">
+          <div
+            class="text-text-primary system-sm-medium truncate"
+            [class]="middleware.strategy?.meta?.deprecated ? 'line-through decoration-2 decoration-current' : ''"
+          >
             {{
               middleware.strategy?.meta.label
                 ? (middleware.strategy?.meta.label | i18n)
                 : middleware.strategy?.meta.name || middleware.node.key
             }}
           </div>
+          @if (middleware.strategy?.meta?.deprecated) {
+            <i
+              class="ri-alert-line shrink-0 text-text-warning"
+              [zTooltip]="
+                middleware.strategy?.meta?.deprecationMessage
+                  ? (middleware.strategy?.meta?.deprecationMessage | i18n)
+                  : ('PAC.Xpert.DeprecatedMiddleware'
+                    | translate
+                      : {
+                          Default:
+                            'This middleware is deprecated. Use the built-in feature or a replacement middleware instead.'
+                        })
+              "
+              zPosition="top"
+            ></i>
+          }
           <div class="text-text-tertiary text-xs font-mono truncate">
             {{ middleware.strategy?.meta.name || middleware.node.key }}
           </div>
@@ -49,8 +84,10 @@
   }
 
   @if (!middlewares()?.length) {
-    <div class="font-body text-text-tertiary text-sm px-2 py-3 text-center rounded-xl border border-dashed border-divider-regular">
-      {{ 'PAC.Xpert.NoMiddlewares' | translate: {Default: 'No middlewares added yet'} }}
+    <div
+      class="font-body text-text-tertiary text-sm px-2 py-3 text-center rounded-xl border border-dashed border-divider-regular"
+    >
+      {{ 'PAC.Xpert.NoMiddlewares' | translate: { Default: 'No middlewares added yet' } }}
     </div>
   }
 </div>

@@ -1,28 +1,20 @@
-@use '@angular/material/core/tokens/token-utils';
-@use '@angular/material/core/style/sass-utils';
-
+@use 'packages/angular/core/style/token-utils' as token-utils;
+@use 'packages/angular/core/style/sass-utils';
+@reference "../../../../styles/tailwind-reference.css";
 // The prefix used to generate the fully qualified name for tokens in this file.
 $global-prefix: ngm;
 $prefix: (ngm, story-designer);
 
 @function get-unthemable-tokens() {
-  @return (
-    container-rounded: var(--#{$global-prefix}-primary-container-rounded)
-  );
+  @return (container-rounded: var(--layout-shell-top-left-radius));
 }
 
 @function get-color-tokens() {
-  @return (
-    color-surface: var(--#{$global-prefix}-color-surface),
-    color-surface-container: var(--#{$global-prefix}-color-surface-container),
-  );
+  @return (color-surface: var(--sys-surface), color-background-body: var(--color-background-body));
 }
 
 @function get-token-slots() {
-  @return sass-utils.deep-merge-all(
-    get-unthemable-tokens(),
-    get-color-tokens(),
-  );
+  @return sass-utils.deep-merge-all(get-unthemable-tokens(), get-color-tokens());
 }
 
 :host {
@@ -83,7 +75,8 @@ $prefix: (ngm, story-designer);
   }
 }
 
-.mat-mdc-icon-button.mat-mdc-button-base {
+[z-button][data-icon-only],
+z-button[data-icon-only] {
   --mdc-icon-button-state-layer-size: 40px;
   padding: 0;
 }
@@ -124,7 +117,7 @@ $prefix: (ngm, story-designer);
   max-height: 100%;
 }
 
-.mat-mdc-tab-group {
+.z-tab-group {
   flex: 1;
   max-width: 100%;
 }
@@ -145,8 +138,8 @@ $prefix: (ngm, story-designer);
     border-right: 1px solid;
     border-top: 2px solid;
 
-    background-color: var(--ngm-color-surface);
-    border-color: var(--ngm-color-outline);
+    background-color: var(--sys-surface);
+    border-color: var(--color-divider-regular);
 
     &:hover,
     &.hover {
@@ -161,7 +154,7 @@ $prefix: (ngm, story-designer);
   }
 }
 
-.ngm-story__designer-drawer.mat-drawer-side.mat-drawer-end {
+z-drawer.ngm-story__designer-drawer[data-mode='side'][data-position='end'] {
   @apply border-l-0;
 }
 
@@ -170,12 +163,12 @@ $prefix: (ngm, story-designer);
     transition-opacity
     active:shadow-lg;
   @apply sm:p-16;
-  background-color: var(--ngm-color-surface-container-low);
-  border-color: var(--ngm-color-outline);
-  opacity: .5;
+  background-color: var(--sys-surface-subtle);
+  border-color: var(--color-divider-regular);
+  opacity: 0.5;
 
   &:hover {
-    background-color: var(--ngm-color-surface-container-high);
+    background-color: var(--color-components-card-bg);
     font-weight: 600;
     opacity: 1;
   }
@@ -189,11 +182,9 @@ $prefix: (ngm, story-designer);
 
 ::ng-deep {
   // Story designer pannel
-  .mat-drawer.ngm-story__designer-drawer {
-    .mat-drawer-inner-container {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
+  z-drawer.ngm-story__designer-drawer {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 }

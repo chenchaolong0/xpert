@@ -1,6 +1,6 @@
-import { ToolTagEnum } from '@metad/contracts'
-import { ConfigService } from '@metad/server-config'
-import { loadYamlFile } from '@metad/server-core'
+import { ToolTagEnum } from '@xpert-ai/contracts'
+import { ConfigService } from '@xpert-ai/server-config'
+import { loadYamlFile } from '@xpert-ai/server-core'
 import { Inject, Logger } from '@nestjs/common'
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs'
 import { ToolsetRegistry } from '@xpert-ai/plugin-sdk'
@@ -63,12 +63,20 @@ export class ListBuiltinToolProvidersHandler implements IQueryHandler<ListBuilti
 					name: provider.meta.name,
 					label: provider.meta.label,
 					description: provider.meta.description,
-					icon: provider.meta.icon?.value,
+					icon: this.getPluginIconValue(provider.meta.icon),
 				}
 			})
 		})
 
 		return items
+	}
+
+	private getPluginIconValue(icon: unknown): string | undefined {
+		if (!isObjectValue(icon)) {
+			return undefined
+		}
+
+		return getNonEmptyString(icon, 'value') ?? getNonEmptyString(icon, 'svg') ?? getNonEmptyString(icon, 'image') ?? undefined
 	}
 
 	getProviderServerPath(baseUrl: string, name: string) {
@@ -90,4 +98,18 @@ export class ListBuiltinToolProvidersHandler implements IQueryHandler<ListBuilti
 		}
 	}
 
+}
+
+function isObjectValue(value: unknown): value is object {
+	return typeof value === 'object' && value !== null
+}
+
+function getNonEmptyString(value: object, key: string): string | null {
+	const candidate = Reflect.get(value, key)
+	if (typeof candidate !== 'string') {
+		return null
+	}
+
+	const normalized = candidate.trim()
+	return normalized ? normalized : null
 }

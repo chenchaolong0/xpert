@@ -1,4 +1,4 @@
-import { TenantModule } from '@metad/server-core'
+import { TenantModule } from '@xpert-ai/server-core'
 import { Module, forwardRef } from '@nestjs/common'
 import { BullModule } from '@nestjs/bull'
 import { CqrsModule } from '@nestjs/cqrs'
@@ -10,22 +10,36 @@ import { CommandHandlers } from './commands/handlers'
 import { XpertTask } from './xpert-task.entity'
 import { XpertAgentModule } from '../xpert-agent/xpert-agent.module'
 import { TaskSchedulerProcessor } from './scheduler.job'
-
+import { Strategies } from './plugins'
+import { ScheduleNote } from './schedule-note.entity'
+import { ChatConversation } from '../chat-conversation/conversation.entity'
+import { AutoTask } from './auto-task.entity'
+import { AutoTaskTemplate } from './auto-task-template.entity'
+import { XpertTaskTemplate } from './xpert-task-template.entity'
+import { XpertModule } from '../xpert/xpert.module'
 
 @Module({
-	imports: [
-		RouterModule.register([{ path: '/xpert-task', module: XpertTaskModule }]),
-		TypeOrmModule.forFeature([XpertTask]),
-		TenantModule,
-		CqrsModule,
-		forwardRef(() => XpertAgentModule),
+    imports: [
+        RouterModule.register([{ path: '/xpert-task', module: XpertTaskModule }]),
+        TypeOrmModule.forFeature([
+            XpertTask,
+            ScheduleNote,
+            ChatConversation,
+            AutoTask,
+            AutoTaskTemplate,
+            XpertTaskTemplate
+        ]),
+        TenantModule,
+        CqrsModule,
+        forwardRef(() => XpertAgentModule),
+        forwardRef(() => XpertModule),
 
-		BullModule.registerQueue({
-			name: 'xpert-task-scheduler'
-		}),
-	],
-	controllers: [XpertTaskController],
-	providers: [XpertTaskService, TaskSchedulerProcessor, ...CommandHandlers],
-	exports: [XpertTaskService]
+        BullModule.registerQueue({
+            name: 'xpert-task-scheduler'
+        })
+    ],
+    controllers: [XpertTaskController],
+    providers: [XpertTaskService, TaskSchedulerProcessor, ...CommandHandlers, ...Strategies],
+    exports: [XpertTaskService]
 })
 export class XpertTaskModule {}

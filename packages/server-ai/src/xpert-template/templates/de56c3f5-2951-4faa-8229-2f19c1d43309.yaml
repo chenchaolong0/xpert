@@ -317,6 +317,7 @@ connections:
     key: Iterating_jsCXACz4wh/Agent_albUSvIcdF
     from: Iterating_jsCXACz4wh
     to: Agent_albUSvIcdF
+    required: true
   - type: edge
     key: Iterating_jsCXACz4wh/Answer_nMvdi1YrI9
     from: Iterating_jsCXACz4wh

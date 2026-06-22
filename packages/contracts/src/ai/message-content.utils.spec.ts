@@ -1,9 +1,12 @@
+import type { TMessageContentComponent } from '@xpert-ai/chatkit-types'
 import { CopilotChatMessage } from './chat-message.model'
+import { CONTEXT_COMPRESSION_COMPONENT_TYPE, TContextCompressionComponentData } from './context-compression.model'
 import {
   appendMessageContent,
   appendMessagePlainText,
   createMessageAppendContextTracker,
   inferMessageAppendContext,
+  mergeMessageContentForDisplay,
   resolveMessageAppendContext,
   TMessageAppendContext
 } from './message-content.utils'
@@ -44,7 +47,9 @@ describe('message-content.utils', () => {
     expect(chunks[0].text).toBe('hello world')
   })
 
-  it('keeps append order when multiple text streams interleave', () => {
+  it('merges interleaved chunks from the same stream into one segment', () => {
+    // Concurrent streams: A → B → A (interleaved). A2 must merge back into the A1
+    // chunk rather than being appended as a third fragment (issue #471).
     const message = { id: 'm1', role: 'ai', content: '' } as CopilotChatMessage
 
     appendMessageContent(message, 'A1', { source: 'chat_stream', streamId: 'stream-a' })
@@ -52,16 +57,14 @@ describe('message-content.utils', () => {
     appendMessageContent(message, 'A2', { source: 'chat_stream', streamId: 'stream-a' })
 
     const chunks = message.content as any[]
-    expect(chunks).toHaveLength(3)
+    expect(chunks).toHaveLength(2)
     expect(chunks[0].id).toBe('stream-a')
-    expect(chunks[0].text).toBe('A1')
+    expect(chunks[0].text).toBe('A1A2')
     expect(chunks[1].id).toBe('stream-b')
     expect(chunks[1].text).toBe('\nB1')
-    expect(chunks[2].id).toBe('stream-a')
-    expect(chunks[2].text).toBe('\nA2')
   })
 
-  it('adds a line break when next text follows a closed code fence from another stream', () => {
+  it('does not insert a line break when another text stream follows a code fence', () => {
     const message = { id: 'm1', role: 'ai', content: '' } as CopilotChatMessage
 
     appendMessageContent(message, { type: 'text', id: 'stream-a', text: '```ts\nconst n = 1\n```' } as any)
@@ -69,10 +72,10 @@ describe('message-content.utils', () => {
 
     const chunks = message.content as any[]
     expect(chunks).toHaveLength(2)
-    expect(chunks[1].text).toBe('\nnext')
+    expect(chunks[1].text).toBe('next')
   })
 
-  it('separates text after component with paragraph break', () => {
+  it('does not insert a paragraph break for text after a component', () => {
     const message = { id: 'm1', role: 'ai', content: '' } as CopilotChatMessage
 
     appendMessageContent(message, { type: 'text', id: 'stream-a', text: 'intro' } as any)
@@ -85,7 +88,25 @@ describe('message-content.utils', () => {
 
     const chunks = message.content as any[]
     expect(chunks).toHaveLength(3)
-    expect(chunks[2].text).toBe('\n\nsummary')
+    expect(chunks[2].text).toBe('summary')
+  })
+
+  it('merges text chunks without ids when previous context indicates the same stream', () => {
+    const message = { id: 'm1', role: 'ai', content: '' } as CopilotChatMessage
+
+    appendMessageContent(message, { type: 'text', text: 'hello' } as any, {
+      source: 'chat_stream',
+      streamId: 'stream-a'
+    })
+    appendMessageContent(message, { type: 'text', text: ' world' } as any, {
+      previous: { source: 'chat_stream', streamId: 'stream-a' },
+      source: 'chat_stream',
+      streamId: 'stream-a'
+    })
+
+    const chunks = message.content as any[]
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].text).toBe('hello world')
   })
 
   it('aggregates plain text output consistently with join hints', () => {
@@ -177,6 +198,104 @@ describe('message-content.utils', () => {
     expect(chunks[0].data.status).toBe('success')
     expect(chunks[0].data.output).toBe('ok')
     expect(chunks[0].data.created_date).toBe('2026-01-01T00:00:00.000Z')
+  })
+
+  it('updates context compression chunks by id without adding a second splitter item', () => {
+    const message = { id: 'm1', role: 'ai', content: [] } as CopilotChatMessage
+    const runningChunk: TMessageContentComponent<TContextCompressionComponentData> = {
+      id: 'compression-1',
+      type: 'component',
+      data: {
+        category: 'Tool',
+        type: CONTEXT_COMPRESSION_COMPONENT_TYPE,
+        status: 'running',
+        created_date: '2026-04-17T00:00:00.000Z'
+      }
+    }
+    const successChunk: TMessageContentComponent<TContextCompressionComponentData> = {
+      id: 'compression-1',
+      type: 'component',
+      data: {
+        category: 'Tool',
+        type: CONTEXT_COMPRESSION_COMPONENT_TYPE,
+        status: 'success',
+        summary: '<state_snapshot>Compressed history.</state_snapshot>',
+        end_date: '2026-04-17T00:00:02.000Z'
+      }
+    }
+
+    appendMessageContent(message, runningChunk)
+    appendMessageContent(message, successChunk)
+
+    const chunks = message.content as TMessageContentComponent<TContextCompressionComponentData>[]
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].data.type).toBe(CONTEXT_COMPRESSION_COMPONENT_TYPE)
+    expect(chunks[0].data.status).toBe('success')
+    expect(chunks[0].data.summary).toBe('<state_snapshot>Compressed history.</state_snapshot>')
+    expect(chunks[0].data.created_date).toBe('2026-04-17T00:00:00.000Z')
+    expect(chunks[0].data.end_date).toBe('2026-04-17T00:00:02.000Z')
+  })
+
+  it('merges text chunks by id for display across component boundaries', () => {
+    const display = mergeMessageContentForDisplay([
+      { type: 'text', id: 'stream-a', text: '```ts\nconst a = 1' } as any,
+      {
+        id: 'tool-1',
+        type: 'component',
+        data: { category: 'Tool', type: 'task', status: 'running' }
+      } as any,
+      { type: 'text', id: 'stream-a', text: '\n```' } as any
+    ])
+
+    expect(display).toHaveLength(2)
+    expect(display[0]).toEqual({
+      type: 'text',
+      id: 'stream-a',
+      text: '```ts\nconst a = 1\n```'
+    })
+    expect(display[1]).toMatchObject({
+      id: 'tool-1',
+      type: 'component'
+    })
+  })
+
+  it('reduces the auto paragraph separator when merging display text across a component boundary', () => {
+    const display = mergeMessageContentForDisplay([
+      { type: 'text', id: 'stream-a', text: '| a | b |\n| - | - |' } as any,
+      {
+        id: 'tool-1',
+        type: 'component',
+        data: { category: 'Tool', type: 'task', status: 'running' }
+      } as any,
+      { type: 'text', id: 'stream-a', text: '\n\n| 1 | 2 |' } as any
+    ])
+
+    expect(display).toHaveLength(2)
+    expect(display[0]).toEqual({
+      type: 'text',
+      id: 'stream-a',
+      text: '| a | b |\n| - | - |\n| 1 | 2 |'
+    })
+  })
+
+  it('keeps other text streams separate while merging each display block by id', () => {
+    const display = mergeMessageContentForDisplay([
+      { type: 'text', id: 'stream-a', text: '| a | b |\n| - | - |' } as any,
+      { type: 'text', id: 'stream-b', text: '\ninterruption' } as any,
+      { type: 'text', id: 'stream-a', text: '\n| 1 | 2 |' } as any
+    ])
+
+    expect(display).toHaveLength(2)
+    expect(display[0]).toEqual({
+      type: 'text',
+      id: 'stream-a',
+      text: '| a | b |\n| - | - |\n| 1 | 2 |'
+    })
+    expect(display[1]).toEqual({
+      type: 'text',
+      id: 'stream-b',
+      text: '\ninterruption'
+    })
   })
 
   it('merges reasoning chunks by id', () => {

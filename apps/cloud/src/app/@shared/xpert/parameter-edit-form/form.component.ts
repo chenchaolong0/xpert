@@ -1,14 +1,12 @@
 import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop'
 import { CdkListboxModule } from '@angular/cdk/listbox'
-import { CdkMenuModule } from '@angular/cdk/menu'
-import { CommonModule } from '@angular/common'
-import { Component, computed, inject } from '@angular/core'
+import { ConnectedPosition, OverlayModule } from '@angular/cdk/overlay'
+
+import { Component, computed, inject, signal } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { MatInputModule } from '@angular/material/input'
-import { MatSlideToggleModule } from '@angular/material/slide-toggle'
-import { MatTooltipModule } from '@angular/material/tooltip'
-import { NgmDensityDirective } from '@metad/ocap-angular/core'
-import { DisplayBehaviour } from '@metad/ocap-core'
+import { ZardInputDirective, ZardSwitchComponent, ZardTooltipImports } from '@xpert-ai/headless-ui'
+import { NgmDensityDirective } from '@xpert-ai/ocap-angular/core'
+import { DisplayBehaviour } from '@xpert-ai/ocap-core'
 import { TranslateModule } from '@ngx-translate/core'
 import { NgxControlValueAccessor } from 'ngxtension/control-value-accessor'
 import { TXpertParameter, XpertParameterTypeEnum } from '../../../@core'
@@ -21,20 +19,18 @@ import { XpertParameterIconComponent } from '../parameter-icon/icon.component'
   templateUrl: './form.component.html',
   styleUrl: 'form.component.scss',
   imports: [
-    CommonModule,
     TranslateModule,
     FormsModule,
     ReactiveFormsModule,
-    CdkMenuModule,
     CdkListboxModule,
+    OverlayModule,
     DragDropModule,
-    MatTooltipModule,
-    MatSlideToggleModule,
-    MatInputModule,
-
+    ...ZardTooltipImports,
+    ZardInputDirective,
     NgmDensityDirective,
     XpertParameterMenuItemComponent,
     XpertParameterIconComponent,
+    ZardSwitchComponent
   ],
 
   hostDirectives: [NgxControlValueAccessor]
@@ -54,6 +50,47 @@ export class XpertParameterFormComponent {
   readonly maximum = computed(() => this.cva.value$()?.maximum)
   readonly item = computed(() => this.cva.value$()?.item ?? [])
   readonly itemKeys = computed(() => Object.keys(this.item()))
+  readonly parameterTypeMenuOpen = signal(false)
+  readonly itemParameterMenuIndex = signal<number | null>(null)
+  readonly parameterTypeMenuPositions: ConnectedPosition[] = [
+    {
+      originX: 'end',
+      originY: 'bottom',
+      overlayX: 'end',
+      overlayY: 'top',
+      offsetY: 4
+    },
+    {
+      originX: 'end',
+      originY: 'top',
+      overlayX: 'end',
+      overlayY: 'bottom',
+      offsetY: -4
+    }
+  ]
+  readonly itemParameterMenuPositions: ConnectedPosition[] = [
+    {
+      originX: 'end',
+      originY: 'top',
+      overlayX: 'end',
+      overlayY: 'top',
+      offsetX: -8
+    },
+    {
+      originX: 'end',
+      originY: 'bottom',
+      overlayX: 'end',
+      overlayY: 'top',
+      offsetY: 4
+    },
+    {
+      originX: 'start',
+      originY: 'top',
+      overlayX: 'start',
+      overlayY: 'top',
+      offsetX: 8
+    }
+  ]
 
   updateParameter(name: keyof TXpertParameter, value: unknown) {
     this.cva.value$.update((state) => ({ ...(state ?? {}), [name]: value }) as TXpertParameter)
@@ -98,6 +135,20 @@ export class XpertParameterFormComponent {
     const item = Array.from(this.item())
     item.push(param as TXpertParameter)
     this.updateParameter('item', item)
+  }
+
+  addItemParameter(param: Partial<TXpertParameter>) {
+    this.addParameter(param)
+    this.parameterTypeMenuOpen.set(false)
+  }
+
+  toggleItemParameterMenu(index: number) {
+    this.parameterTypeMenuOpen.set(false)
+    this.itemParameterMenuIndex.update((state) => (state === index ? null : index))
+  }
+
+  closeItemParameterMenu() {
+    this.itemParameterMenuIndex.set(null)
   }
 
   updateItem(index: number, value: TXpertParameter) {

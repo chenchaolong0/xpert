@@ -1,10 +1,12 @@
+import { HttpParams } from '@angular/common/http'
 import { inject, Injectable } from '@angular/core'
-import { OrganizationBaseCrudService, PaginationParams, toHttpParams } from '@metad/cloud/state'
+import { OrganizationBaseCrudService, PaginationParams, toHttpParams } from '@xpert-ai/cloud/state'
 import { NGXLogger } from 'ngx-logger'
 import { BehaviorSubject } from 'rxjs'
 import { API_XPERT_AGENT_EXECUTION } from '../constants/app.constants'
-import { IXpertAgentExecution } from '../types'
+import { IXpertAgentExecution, TXpertAgentExecutionCheckpoint } from '../types'
 import { Store } from './store.service'
+import { appendOrganizationIdQueryParam } from './query-params'
 
 @Injectable({ providedIn: 'root' })
 export class XpertAgentExecutionService extends OrganizationBaseCrudService<IXpertAgentExecution> {
@@ -17,14 +19,25 @@ export class XpertAgentExecutionService extends OrganizationBaseCrudService<IXpe
     super(API_XPERT_AGENT_EXECUTION)
   }
 
-  getOneLog(id: string, options?: PaginationParams<IXpertAgentExecution>) {
+  getOneLog(id: string, options?: PaginationParams<IXpertAgentExecution>, organizationId?: string) {
     return this.httpClient.get<IXpertAgentExecution>(this.apiBaseUrl + `/${id}/log`, {
-      params: toHttpParams(options)
+      params: appendOrganizationIdQueryParam(toHttpParams(options), organizationId)
     })
   }
 
-  getOneState(id: string) {
-    return this.httpClient.get<IXpertAgentExecution>(this.apiBaseUrl + `/${id}/state`)
+  getOneState(id: string, checkpointId?: string, organizationId?: string) {
+    return this.httpClient.get<Record<string, unknown>>(this.apiBaseUrl + `/${id}/state`, {
+      params: (() => {
+        let params = checkpointId ? new HttpParams().set('checkpointId', checkpointId) : null
+        return appendOrganizationIdQueryParam(params, organizationId)
+      })()
+    })
+  }
+
+  getCheckpoints(id: string, organizationId?: string) {
+    return this.httpClient.get<TXpertAgentExecutionCheckpoint[]>(this.apiBaseUrl + `/${id}/checkpoints`, {
+      params: appendOrganizationIdQueryParam(null, organizationId)
+    })
   }
 
   findAllByXpertAgent(xpertId: string, agentKey: string, options: PaginationParams<IXpertAgentExecution>) {

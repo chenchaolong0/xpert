@@ -2,7 +2,7 @@ import { CommandBus, CommandHandler, ICommandHandler } from '@nestjs/cqrs'
 import { ChatConversationService } from '../../conversation.service'
 import { ConvFileGetByPathCommand } from '../file-get-by-path.command'
 import { LoadStorageFileCommand } from '../../../shared'
-import { TFile } from '@metad/contracts'
+import { TFile } from '@xpert-ai/contracts'
 import { Document } from 'langchain/document'
 
 @CommandHandler(ConvFileGetByPathCommand)
@@ -13,7 +13,9 @@ export class ConvFileGetByPathCommandHandler implements ICommandHandler<ConvFile
 	) {}
 
 	public async execute(command: ConvFileGetByPathCommand): Promise<TFile> {
-		const conversation = await this.service.findOne(command.id, { relations: ['attachments'] })
+		const conversation = await this.service.findOne(command.id, {
+			relations: ['attachments']
+		})
 		const storageFile = conversation.attachments.find((_) => _.originalName === command.path)
 		if (storageFile) {
 			const docs = await this.commandBus.execute<LoadStorageFileCommand, Document[]>(

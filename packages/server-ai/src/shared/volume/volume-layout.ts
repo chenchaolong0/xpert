@@ -1,32 +1,61 @@
-import { environment } from '@metad/server-config'
+import { environment } from '@xpert-ai/server-config'
 import path from 'path'
 
-const LEGACY_PUBLIC_VOLUME_PREFIX = /^(user|project|knowledges|skills)\/[0-9a-fA-F-]{36}\//
+const LEGACY_PUBLIC_VOLUME_PREFIX =
+    /^(?:(user|project|knowledges|skills)\/[0-9a-fA-F-]{36}\/|xpert\/[0-9a-fA-F-]{36}\/(?:user\/[0-9a-fA-F-]{36}\/)?)/
 
-function getLocalSandboxDataRoot() {
+export function getLocalSandboxDataRoot() {
     const homeDir = process.env.HOME || process.env.USERPROFILE || ''
     return path.join(homeDir, 'data')
 }
 
+function getConfiguredDockerHostSandboxVolumeRootPath(tenantId?: string) {
+    const configuredRoot = environment.sandboxConfig?.volume?.trim()
+    if (!configuredRoot) {
+        return null
+    }
+
+    const root = path.isAbsolute(configuredRoot) ? configuredRoot : path.resolve(process.cwd(), configuredRoot)
+    return path.join(root, tenantId ?? '')
+}
+
 export function hasConfiguredSandboxVolume() {
-    return Boolean(environment.sandboxConfig.volume?.trim())
+    return Boolean(environment.sandboxConfig?.volume?.trim())
 }
 
 export function usesFlattenedSandboxVolumeLayout() {
     return environment.envName === 'dev' && !hasConfiguredSandboxVolume()
 }
 
-export function getSandboxVolumeRootPath(tenantId?: string) {
+export function runsInsideDockerApiContainer() {
+    return `${environment.env?.IS_DOCKER ?? process.env.IS_DOCKER ?? ''}`.trim().toLowerCase() === 'true'
+}
+
+export function getApiContainerSandboxVolumeRootPath(tenantId?: string) {
     if (usesFlattenedSandboxVolumeLayout()) {
         return getLocalSandboxDataRoot()
     }
 
+    if (runsInsideDockerApiContainer()) {
+        return tenantId ? `/sandbox/${tenantId}` : '/sandbox'
+    }
+
     if (environment.envName === 'dev') {
-        return path.join(environment.sandboxConfig.volume!, tenantId ?? '')
+        return getConfiguredDockerHostSandboxVolumeRootPath(tenantId)!
     }
 
     return tenantId ? `/sandbox/${tenantId}` : '/sandbox'
 }
+
+export function getDockerHostSandboxVolumeRootPath(tenantId?: string) {
+    if (usesFlattenedSandboxVolumeLayout()) {
+        return getLocalSandboxDataRoot()
+    }
+
+    return getConfiguredDockerHostSandboxVolumeRootPath(tenantId) ?? getApiContainerSandboxVolumeRootPath(tenantId)
+}
+
+export const getSandboxVolumeRootPath = getApiContainerSandboxVolumeRootPath
 
 export function normalizeSandboxPublicVolumeSubpath(subpath: string) {
     if (!usesFlattenedSandboxVolumeLayout()) {

@@ -1,17 +1,17 @@
 import { DIALOG_DATA, DialogRef } from '@angular/cdk/dialog'
-import { CommonModule } from '@angular/common'
+
 import { ChangeDetectionStrategy, Component, inject, model, signal } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { MatSlideToggleModule } from '@angular/material/slide-toggle'
 import { getErrorMessage, injectToastr, XpertAPIService } from '@cloud/app/@core'
-import { SlideUpAnimation } from '@metad/core'
-import { NgmSpinComponent } from '@metad/ocap-angular/common'
+import { SlideUpAnimation } from '@xpert-ai/core'
+import { NgmSpinComponent } from '@xpert-ai/ocap-angular/common'
 import { TranslateModule } from '@ngx-translate/core'
 import { tap } from 'rxjs/operators'
+import { ZardSwitchComponent } from '@xpert-ai/headless-ui'
 
 @Component({
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslateModule, NgmSpinComponent, MatSlideToggleModule],
+  imports: [FormsModule, TranslateModule, NgmSpinComponent, ZardSwitchComponent],
   selector: 'xpert-export-dsl',
   templateUrl: './export-dsl.component.html',
   styleUrl: './export-dsl.component.scss',
@@ -21,6 +21,7 @@ import { tap } from 'rxjs/operators'
 export class XpertExportDslComponent {
   readonly #data = inject<{ xpertId: string; slug: string; isDraft: boolean }>(DIALOG_DATA)
   readonly #dialogRef = inject(DialogRef)
+  readonly #xpertAPI = inject(XpertAPIService)
   readonly exportXpertDsl = injectExportXpertDsl()
   readonly #toastr = injectToastr()
 
@@ -50,6 +51,26 @@ export class XpertExportDslComponent {
         this.#toastr.error(`PAC.Xpert.ExportFailed`, getErrorMessage(err))
       }
     })
+  }
+
+  exportAsTemplate() {
+    this.loading.set(true)
+    this.#xpertAPI
+      .exportDSLAsTemplate(this.xpertId(), {
+        isDraft: this.isDraft(),
+        includeMemory: this.includeMemory()
+      })
+      .subscribe({
+        next: () => {
+          this.loading.set(false)
+          this.#toastr.success('PAC.Xpert.ExportTemplateSuccess', { Default: 'Exported as template' })
+          this.close()
+        },
+        error: (err) => {
+          this.loading.set(false)
+          this.#toastr.error(`PAC.Xpert.ExportTemplateFailed`, getErrorMessage(err))
+        }
+      })
   }
 }
 

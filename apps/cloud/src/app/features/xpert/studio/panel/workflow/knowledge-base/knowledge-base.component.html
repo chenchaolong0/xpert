@@ -3,7 +3,7 @@
     <div class="group/collapse flex items-center justify-between py-1">
       <div class="system-sm-semibold uppercase flex items-center text-text-secondary">
         {{ 'PAC.Pipeline.KnowledgeStructure' | translate: {Default: 'Knowledge Structure'} }}
-        <div class="w-4 h-4 ml-1 flex items-center" [matTooltip]="'PAC.Pipeline.KnowledgeStructureTooltip' | translate: {Default: 'Select the segmentation structure used to divide the document into smaller chunks.'}">
+        <div class="w-4 h-4 ml-1 flex items-center" [zTooltip]="'PAC.Pipeline.KnowledgeStructureTooltip' | translate: {Default: 'Select the segmentation structure used to divide the document into smaller chunks.'}">
           <i class="ri-information-2-line text-text-quaternary hover:text-text-tertiary"></i>
         </div>
       </div>
@@ -17,7 +17,7 @@
     </div>
   </div>
   <div
-    class="group overflow-hidden rounded-xl border border-components-option-card-option-border bg-gradient-to-br from-sky-50 to-components-card-bg"
+    class="group overflow-hidden rounded-xl border border-divider-subtle bg-gradient-to-br from-background-default-subtle to-components-card-bg"
   >
     <div class="relative flex rounded-t-xl p-2">
       <div class="mr-1 flex h-[18px] w-[18px] shrink-0 items-center justify-center">
@@ -70,9 +70,14 @@
 <div class="p-4 space-y-3">
   <div class="system-sm-semibold uppercase flex items-center text-text-secondary">
     <div class="flex items-center">
-      {{ 'PAC.Pipeline.Chunk' | translate: {Default: 'Chunk'} }}
+      {{ 'PAC.Pipeline.Chunk' | translate: { Default: 'Chunk' } }}
       <span class="ml-1 text-text-warning">*</span>
-      <div class="w-4 h-4 ml-1 flex items-center" [matTooltip]="'PAC.Pipeline.ChunkVariableTooltip' | translate: {Default: 'Select the processed blocks for storage.'}">
+      <div
+        class="w-4 h-4 ml-1 flex items-center"
+        [zTooltip]="
+          'PAC.Pipeline.ChunkVariableTooltip' | translate: { Default: 'Select the processed blocks for storage.' }
+        "
+      >
         <i class="ri-information-2-line text-text-quaternary hover:text-text-tertiary"></i>
       </div>
     </div>
@@ -84,10 +89,17 @@
   <div class="space-y-1">
     @for (item of inputs(); track i; let i = $index) {
       <div class="relative group p-0.5 border border-transparent rounded-xl hover:border-divider-subtle">
-        <xpert-state-variable-select [variables]="variables()" [ngModel]="item" (ngModelChange)="updateInput(i, $event)" />
+        <xpert-state-variable-select
+          [variables]="variables()"
+          [ngModel]="item"
+          (ngModelChange)="updateInput(i, $event)"
+        />
 
-        <button type="button" class="absolute top-1 right-1 btn w-6 h-6 rounded-lg flex justify-center items-center danger opacity-0 group-hover:opacity-100 transition-opacity"
-          (click)="removeInput(i)">
+        <button
+          type="button"
+          class="absolute top-1 right-1 btn w-6 h-6 rounded-lg flex justify-center items-center danger opacity-0 group-hover:opacity-100 transition-opacity"
+          (click)="removeInput(i)"
+        >
           <i class="ri-close-line"></i>
         </button>
       </div>
@@ -98,45 +110,29 @@
 <div class="w-full h-[0.5px] bg-divider-subtle"></div>
 
 <div class="p-4 space-y-3">
-  <div class="system-sm-semibold uppercase flex items-center text-text-secondary">
-    {{ 'PAC.Pipeline.EmbeddingModel' | translate: {Default: 'Embedding Model'} }}
-    <span class="ml-1 text-text-warning">*</span>
-    <div class="w-4 h-4 ml-1 flex items-center" [matTooltip]="'PAC.Pipeline.EmbeddingModelTooltip' | translate: {Default: 'Select the model used for embedding chunks into vectors.'}">
-      <i class="ri-information-2-line text-text-quaternary hover:text-text-tertiary"></i>
-    </div>
+  <div class="system-sm-semibold uppercase text-text-secondary">
+    {{ 'PAC.Knowledgebase.ModelConfiguration' | translate: { Default: 'Model Configuration' } }}
   </div>
-  <div>
-    <copilot-model-select hiddenLabel [modelType]="eModelType.TEXT_EMBEDDING"
-      [(ngModel)]="copilotModel"
-    />
+  <div class="system-sm-regular text-text-tertiary">
+    {{
+      'PAC.Knowledgebase.ModelConfigurationManagedInSettings'
+        | translate
+          : {
+              Default:
+                'Chat, embedding, vision, and rerank models are configured on the knowledgebase configuration page.'
+            }
+    }}
   </div>
+  @if (knowledgebaseId()) {
+    <a
+      class="btn btn-secondary btn-medium w-fit"
+      [routerLink]="['/xpert/knowledges', knowledgebaseId(), 'configuration']"
+    >
+      <i class="ri-settings-3-line mr-1"></i>
+      {{ 'PAC.Knowledgebase.OpenConfiguration' | translate: { Default: 'Open configuration' } }}
+    </a>
+  }
 </div>
-
-
-<div class="p-4 space-y-3">
-  <div>
-    <copilot-model-select [label]="'PAC.Knowledgebase.VisionModel' | translate: {Default: 'Vision Model'}" [modelType]="eModelType.LLM" [features]="[eModelFeature.VISION]"
-      [(ngModel)]="visionModel"
-    />
-  </div>
-</div>
-
-<div class="w-full h-[0.5px] bg-divider-subtle"></div>
-
-<div class="p-4 space-y-3">
-  <div class="system-sm-semibold uppercase flex items-center text-text-secondary">
-    {{ 'PAC.Pipeline.RetrievalConfig' | translate: {Default: 'Retrieval Config'} }}
-    <div class="w-4 h-4 ml-1 flex items-center" [matTooltip]="'PAC.Pipeline.RetrievalConfigTooltip' | translate: {Default: 'Select the model used for retrieving documents.'}">
-      <i class="ri-information-2-line text-text-quaternary hover:text-text-tertiary"></i>
-    </div>
-  </div>
-  <div>
-    <copilot-model-select [label]="'PAC.Knowledgebase.RerankModel' | translate: {Default: 'Rerank Model'}" [modelType]="eModelType.RERANK"
-      [(ngModel)]="rerankModel"
-    />
-  </div>
-</div>
-
 
 <!-- 
 <ng-template #strcutureMenu>
@@ -150,7 +146,7 @@
 
     <div class="space-y-1 pt-2">
       <div
-        class="group overflow-hidden rounded-xl border border-components-option-card-option-border bg-gradient-to-br from-indigo-50 to-components-card-bg cursor-pointer hover:shadow-xs
+        class="group overflow-hidden rounded-xl border border-divider-subtle bg-gradient-to-br from-background-default-subtle to-components-card-bg cursor-pointer hover:shadow-xs
           hover:from-indigo-100"
         [class.!border-primary-500]="structure() === eKnowledgeStructureEnum.General"
         (click)="structure.set(eKnowledgeStructureEnum.General);trigger.close()"
@@ -172,7 +168,7 @@
         </div>
       </div>
       <div
-        class="group overflow-hidden rounded-xl border border-components-option-card-option-border bg-gradient-to-br from-green-50 to-components-card-bg cursor-pointer hover:shadow-xs
+        class="group overflow-hidden rounded-xl border border-divider-subtle bg-gradient-to-br from-background-default-subtle to-components-card-bg cursor-pointer hover:shadow-xs
           hover:from-green-100"
         [class.!border-primary-500]="structure() === eKnowledgeStructureEnum.ParentChild"
         (click)="structure.set(eKnowledgeStructureEnum.ParentChild);trigger.close()"
@@ -194,7 +190,7 @@
         </div>
       </div>
       <div
-        class="group overflow-hidden rounded-xl border border-components-option-card-option-border bg-gradient-to-br from-sky-50 to-components-card-bg cursor-pointer hover:shadow-xs
+        class="group overflow-hidden rounded-xl border border-divider-subtle bg-gradient-to-br from-background-default-subtle to-components-card-bg cursor-pointer hover:shadow-xs
           hover:from-sky-100"
         [class.!border-primary-500]="structure() === eKnowledgeStructureEnum.QA"
         (click)="structure.set(eKnowledgeStructureEnum.QA);trigger.close()"

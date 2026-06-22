@@ -2,7 +2,6 @@ import fsPromises from 'fs/promises'
 import path from 'path'
 import { FileSystemPermission } from './permissions'
 
-
 /**
  * Restricted FileSystem based on granted permissions
  */
@@ -10,7 +9,11 @@ export class XpFileSystem {
   private allowedOps: Set<'read' | 'write' | 'delete' | 'list'>
   private scope: string[] | undefined
 
-  constructor(permission: FileSystemPermission, private basePath: string, private baseUrl: string) {
+  constructor(
+    permission: FileSystemPermission,
+    private basePath: string,
+    private baseUrl: string
+  ) {
     this.allowedOps = new Set(permission.operations)
     this.scope = permission.scope
   }
@@ -39,7 +42,7 @@ export class XpFileSystem {
 
   /**
    * Get the absolute path of file in the file system.
-   * 
+   *
    * @param filePath Relative file path
    * @returns Absolute file path
    */
@@ -48,14 +51,27 @@ export class XpFileSystem {
   }
 
   /**
+   * Convert an absolute path under this file-system root back to a relative path.
+   */
+  relativePath(filePath: string): string | null {
+    const relative = path.relative(this.basePath, path.resolve(filePath)).replace(/\\/g, '/')
+    if (!relative || relative === '.') {
+      return ''
+    }
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return null
+    }
+    return relative
+  }
+
+  /**
    * Get web url for a given file path in the file system.
-   * 
+   *
    * @param filePath Relative file path
    * @returns Web URL of file
    */
   fullUrl(filePath: string): string {
-    const url = new URL(filePath, this.baseUrl)
-    return url.href
+    return this.buildUrl(filePath)
   }
 
   /**
@@ -77,8 +93,7 @@ export class XpFileSystem {
     this.ensureInScope(fullPath)
     await fsPromises.mkdir(path.dirname(fullPath), { recursive: true })
     await fsPromises.writeFile(fullPath, content)
-    const url = new URL(filePath, this.baseUrl)
-    return url.href
+    return this.buildUrl(filePath)
   }
 
   /**
@@ -109,5 +124,30 @@ export class XpFileSystem {
     } catch {
       return false
     }
+  }
+
+  // Keep URL generation tolerant of protocol-relative base URLs like "//localhost:3000",
+  // which are used by the current dev config and would otherwise make `new URL()` throw.
+  private buildUrl(filePath: string): string {
+    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(filePath) || filePath.startsWith('//')) {
+      return filePath
+    }
+
+    const normalizedPath = this.encodePath(`${filePath}`.replace(/^\/+/, ''))
+    const normalizedBaseUrl = `${this.baseUrl}`.replace(/\/+$/, '')
+
+    if (normalizedBaseUrl.startsWith('//')) {
+      return `${normalizedBaseUrl}/${normalizedPath}`
+    }
+
+    const url = new URL(normalizedPath, `${normalizedBaseUrl}/`)
+    return url.href
+  }
+
+  private encodePath(filePath: string): string {
+    return filePath
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')
   }
 }

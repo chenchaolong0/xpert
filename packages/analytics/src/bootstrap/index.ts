@@ -1,4 +1,6 @@
-import { environment as env, getConfig, setConfig } from '@metad/server-config'
+import { environment as env, getConfig, setConfig } from '@xpert-ai/server-config'
+import { API_PRINCIPAL_USER_ID_HEADER } from '@xpert-ai/contracts'
+import { initializeApplicationTracingFromEnv, MetricsService } from '@xpert-ai/server-ai'
 import {
 	AppService,
 	AuthGuard,
@@ -14,8 +16,8 @@ import {
 	registerPluginsAsync,
 	ServerAppModule,
 	SharedModule
-} from '@metad/server-core'
-import { IPluginConfig } from '@metad/server-common'
+} from '@xpert-ai/server-core'
+import { IPluginConfig } from '@xpert-ai/server-common'
 import { ConflictException, DynamicModule, Logger as NestLogger, Module, Type } from '@nestjs/common'
 import { NestFactory, Reflector } from '@nestjs/core'
 import { NestExpressApplication } from '@nestjs/platform-express'
@@ -24,7 +26,7 @@ import { GLOBAL_ORGANIZATION_SCOPE } from '@xpert-ai/plugin-sdk'
 import { useContainer } from 'class-validator'
 import chalk from 'chalk'
 import cookieParser from 'cookie-parser'
-import { json, text, urlencoded } from 'express'
+import { json, Request, Response, text, urlencoded } from 'express'
 import expressSession from 'express-session'
 import i18next from 'i18next'
 import * as middleware from 'i18next-http-middleware'
@@ -38,6 +40,7 @@ import { BootstrapModule } from './bootstrap.module'
 export async function bootstrap(options: { title: string; version: string }) {
 	// Pre-bootstrap the application configuration
 	const config = await preBootstrapApplicationConfig({})
+	initializeApplicationTracingFromEnv()
 
 	const baseDir = config.assetOptions.serverRoot
 	await initI18next(path.join(baseDir, 'packages'))
@@ -51,6 +54,12 @@ export async function bootstrap(options: { title: string; version: string }) {
 
 	app.useLogger(app.get(Logger))
 	NestLogger.overrideLogger(resolveNestLogLevels())
+
+	const metricsService = app.get(MetricsService)
+	app.getHttpAdapter().get('/metrics', (_req: Request, res: Response) => {
+		res.setHeader('Content-Type', metricsService.contentType)
+		res.send(metricsService.render())
+	})
 
 	// Set query parser to extended (In Express v5, query parameters are no longer parsed using the qs library by default.)
 	app.set('query parser', 'extended')
@@ -79,7 +88,7 @@ export async function bootstrap(options: { title: string; version: string }) {
 		credentials: true,
 		methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
 		allowedHeaders:
-			'Authorization, Language, Time-Zone, Tenant-Id, Organization-Id, X-Requested-With, X-Auth-Token, X-HTTP-Method-Override, Content-Type, Content-Length, Content-Language, Accept, Accept-Language, Observe, last-event-id, X-Api-Key, ' +
+			`Authorization, Language, Time-Zone, Tenant-Id, Organization-Id, X-Scope-Level, X-Requested-With, X-Auth-Token, X-HTTP-Method-Override, Content-Type, Content-Length, Content-Language, Accept, Accept-Language, Observe, last-event-id, X-Api-Key, X-Client-Secret, ${API_PRINCIPAL_USER_ID_HEADER}, ` +
 			headersForOpenAI
 	})
 
@@ -102,12 +111,6 @@ export async function bootstrap(options: { title: string; version: string }) {
 	await serverService.seedDBIfEmpty()
 	const analyticsService = app.select(AnalyticsModule).get(AnalyticsService)
 	await analyticsService.seedDBIfEmpty()
-	// Webhook for lark
-	// const larkService = app.select(IntegrationLarkModule).get(LarkService)
-	// app.use('/api/lark/webhook/:id', larkService.webhookEventMiddleware)
-
-	// const subscriptionService = app.select(ServerAppModule).get(SubscriptionService)
-	// subscriptionService.setupJobs()
 
 	/**
 	 * Dependency injection with class-validator
@@ -171,16 +174,8 @@ export async function preBootstrapPlugins() {
 	const defaultGlobalPlugins = [
 		'@xpert-ai/plugin-draft',
 		'@xpert-ai/plugin-agent-middlewares',
-		'@xpert-ai/plugin-integration-github',
 		// '@xpert-ai/plugin-integration-lark',
-		// '@xpert-ai/plugin-ocr-paddle',
-		'@xpert-ai/plugin-trigger-schedule',
-		'@xpert-ai/plugin-textsplitter-common',
-		'@xpert-ai/plugin-retriever-common',
-		'@xpert-ai/plugin-transformer-common',
 		'@xpert-ai/plugin-vlm-default'
-		// '@xpert-ai/plugin-vstore-chroma',
-		// '@xpert-ai/plugin-vstore-weaviate',
 	]
 
 	const organizationPluginConfigs = await loadOrganizationPluginConfigs()
@@ -225,18 +220,13 @@ export async function preBootstrapPlugins() {
 			configs: persistedGlobalGroup?.configs ?? {}
 		}
 	]
-
 	const modules: DynamicModule[] = []
 	for await (const group of groups) {
-		const mergedPlugins = group.plugins
 		try {
-			const { modules: orgModules } = await registerPluginsAsync({
-				organizationId: group.organizationId,
-				plugins: mergedPlugins,
-				configs: group.configs
-			})
+			const { modules: orgModules } = await registerPluginsAsync(group, new NestLogger('BootstrapPlugins'))
 			modules.push(...orgModules)
 		} catch (error) {
+			console.error(error)
 			NestLogger.error(`Failed to register plugins for organization ${group.organizationId}: ${error.message}`)
 		}
 	}

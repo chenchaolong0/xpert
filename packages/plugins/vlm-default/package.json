@@ -1,6 +1,7 @@
 {
   "name": "@xpert-ai/plugin-vlm-default",
-  "version": "0.0.1",
+  "version": "5.0.2",
+  "private": true,
   "xpert": {
     "plugin": {
       "level": "system"
@@ -10,5 +11,9 @@
     "sharp": "^0.34.4"
   },
   "main": "./index.cjs",
-  "module": "./index.js"
+  "module": "./index.js",
+  "peerDependencies": {
+    "@nestjs/common": ">=10",
+    "@xpert-ai/plugin-sdk": "workspace:*"
+  }
 }

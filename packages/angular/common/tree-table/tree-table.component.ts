@@ -1,15 +1,13 @@
 import { coerceBooleanProperty } from '@angular/cdk/coercion'
-import { FlatTreeControl } from '@angular/cdk/tree'
-import { Component, Input, OnChanges, OnInit, SimpleChanges, TemplateRef } from '@angular/core'
-import { MatTreeFlatDataSource, MatTreeFlattener } from '@angular/material/tree'
-import { DisplayDensity } from '@metad/ocap-angular/core'
-import { FlatTreeNode, Property, TreeNodeInterface } from '@metad/ocap-core'
+import { Component, Input, OnChanges, OnInit, signal, SimpleChanges, TemplateRef } from '@angular/core'
+import { ZardFlatTreeControl, ZardTreeFlatDataSource, ZardTreeFlattener } from '@xpert-ai/headless-ui'
+import { DisplayDensity } from '@xpert-ai/ocap-angular/core'
+import { FlatTreeNode, TreeNodeInterface } from '@xpert-ai/ocap-core'
+import { TableColumn } from '../table/types'
+import { displayDensityToTableSize, parseTableWidthToPx } from '../table/table.utils'
 
-export type TreeTableColumn = Property & {
-  cellTemplate?: TemplateRef<any>,
-  pipe?: (value: any) => any;
-  sticky?: boolean
-  stickyEnd?: boolean
+export type TreeTableColumn = Omit<TableColumn, 'cellTemplate'> & {
+  cellTemplate?: TemplateRef<any>
 }
 
 /**
@@ -19,6 +17,7 @@ export type TreeTableColumn = Property & {
   selector: 'ngm-tree-table',
   templateUrl: 'tree-table.component.html',
   styleUrls: ['tree-table.component.scss'],
+  standalone: false,
   host: {
     'class': 'ngm-tree-table'
   }
@@ -57,6 +56,7 @@ export class TreeTableComponent<T> implements OnInit, OnChanges {
 
   treeNodePadding = 40
   displayedColumns = ['name']
+  readonly visibleNodes = signal<FlatTreeNode<T>[]>([])
 
   private transformer = (node: TreeNodeInterface<T>, level: number): FlatTreeNode<T> => {
     return {
@@ -71,19 +71,19 @@ export class TreeTableComponent<T> implements OnInit, OnChanges {
     }
   }
 
-  treeControl = new FlatTreeControl<FlatTreeNode<T>>(
+  treeControl = new ZardFlatTreeControl<FlatTreeNode<T>>(
     (node) => node.level,
     (node) => node.expandable
   )
 
-  treeFlattener = new MatTreeFlattener(
+  treeFlattener = new ZardTreeFlattener(
     this.transformer,
     (node) => node.level,
     (node) => node.expandable,
     (node) => node.children
   )
 
-  dataSource = new MatTreeFlatDataSource(this.treeControl, this.treeFlattener)
+  dataSource = new ZardTreeFlatDataSource(this.treeControl, this.treeFlattener)
 
   unfold = false
   ngOnInit() {
@@ -102,6 +102,8 @@ export class TreeTableComponent<T> implements OnInit, OnChanges {
           }
         })
       }
+
+      this.updateVisibleNodes()
     }
 
     if (columns?.currentValue) {
@@ -121,6 +123,45 @@ export class TreeTableComponent<T> implements OnInit, OnChanges {
 
   hasChild = (_: number, node: FlatTreeNode<T>) => node.expandable
 
+  get tableSize() {
+    return displayDensityToTableSize(this.displayDensity)
+  }
+
+  stickyStartOffset(columnName: string) {
+    let offset = 0
+    for (const column of this.columns ?? []) {
+      if (column.name === columnName) {
+        return offset
+      }
+
+      if (column.sticky) {
+        offset += parseTableWidthToPx(column.width, 180)
+      }
+    }
+
+    return null
+  }
+
+  stickyEndOffset(columnName: string) {
+    let offset = 0
+    for (const column of [...(this.columns ?? [])].reverse()) {
+      if (column.name === columnName) {
+        return offset
+      }
+
+      if (column.stickyEnd) {
+        offset += parseTableWidthToPx(column.width, 160)
+      }
+    }
+
+    return null
+  }
+
+  toggleNode(node: FlatTreeNode<T>) {
+    this.treeControl.toggle(node)
+    this.updateVisibleNodes()
+  }
+
   toggleUnfold() {
     this.unfold = !this.unfold
     if (this.unfold) {
@@ -128,5 +169,74 @@ export class TreeTableComponent<T> implements OnInit, OnChanges {
     } else {
       this.treeControl.collapseAll()
     }
+    this.updateVisibleNodes()
+  }
+
+  contentClass(column: TreeTableColumn) {
+    const shouldClamp = this.shouldClampContent(column)
+    return [
+      'block min-w-0 max-w-full',
+      shouldClamp ? 'overflow-hidden' : '',
+      !column.cellTemplate && shouldClamp ? 'text-ellipsis' : '',
+      column.contentClass ?? ''
+    ]
+  }
+
+  displayValue(data: FlatTreeNode<T>, column: TreeTableColumn): unknown {
+    const value = data.raw?.[column.name]
+    return column.pipe ? column.pipe(value) : value
+  }
+
+  cellTitle(data: FlatTreeNode<T>, column: TreeTableColumn): string | null {
+    if (column.cellTemplate) {
+      return null
+    }
+
+    return this.titleValue(this.displayValue(data, column))
+  }
+
+  private updateVisibleNodes() {
+    const expandedAncestors: boolean[] = []
+    const visibleNodes: FlatTreeNode<T>[] = []
+
+    for (const node of this.treeControl.dataNodes ?? []) {
+      const isVisible = node.level === 0 || expandedAncestors.slice(0, node.level).every(Boolean)
+      if (isVisible) {
+        visibleNodes.push(node)
+      }
+
+      expandedAncestors[node.level] = this.treeControl.isExpanded(node)
+      expandedAncestors.length = node.level + 1
+    }
+
+    this.visibleNodes.set(visibleNodes)
+  }
+
+  private shouldClampContent(column: Pick<TreeTableColumn, 'width' | 'maxWidth' | 'cellTemplate'>) {
+    if (column.cellTemplate) {
+      return false
+    }
+
+    return !!column.width || !!column.maxWidth
+  }
+
+  private titleValue(value: unknown): string | null {
+    if (value === null || value === undefined) {
+      return null
+    }
+
+    if (typeof value === 'string') {
+      return value || null
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+      return String(value)
+    }
+
+    if (value instanceof Date) {
+      return value.toISOString()
+    }
+
+    return null
   }
 }

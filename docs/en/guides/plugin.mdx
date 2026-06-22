@@ -14,6 +14,151 @@ For deployment-time plugin injection, set the `PLUGINS` environment variable.
 
 - use a comma-separated list for multiple plugins
 
+## Local development from a separate plugin repo
+
+If plugin code lives outside the Xpert monorepo, install it through the existing `POST /api/plugin` endpoint. This avoids npm publishing and keeps the plugin in its own repository.
+
+Before starting the API, explicitly allow the workspace roots that may be mounted:
+
+```bash
+export PLUGIN_WORKSPACE_ROOTS="/abs/path/to/xpert:/abs/path/to/xpert-plugins"
+```
+
+Recommended workflow:
+
+1. run `pnpm install` in the external plugin repository
+2. validate the plugin lifecycle with `plugin-dev-harness`
+3. build the plugin, or start its build watch task
+4. start the Xpert API
+5. call the install endpoint for the local plugin
+6. rebuild and repeat the install request whenever code changes need to be reloaded
+
+Example local install request:
+
+```bash
+curl -X POST http://localhost:3333/api/plugin \
+  -H 'Content-Type: application/json' \
+  -H 'Organization-Id: <your-org-id>' \
+  --data '{
+    "pluginName": "@xpert-ai/plugin-lark",
+    "source": "code",
+    "sourceConfig": {
+      "workspacePath": "/abs/path/to/xpert-plugins/xpertai/integrations/lark"
+    }
+  }'
+```
+
+You can also send the same request with the built-in helper script:
+
+```bash
+pnpm plugin:install:local \
+  --workspace-path /abs/path/to/xpert-plugins/xpertai/integrations/lark \
+  --org-id <your-org-id> \
+  --token <your-token>
+```
+
+If you want "rebuild plugin + reinstall" in one step, use:
+
+```bash
+pnpm plugin:reinstall:local \
+  --workspace-path /abs/path/to/xpert-plugins/xpertai/integrations/lark \
+  --org-id <your-org-id> \
+  --token <your-token>
+```
+
+Field notes:
+
+- `source: "code"` installs from a local source workspace
+- `sourceConfig` stores source-specific install metadata
+- for local code installs, `sourceConfig.workspacePath` must be an absolute path inside `PLUGIN_WORKSPACE_ROOTS`
+- local code installs are always copied into the host plugin directory before loading
+
+Notes:
+
+- Xpert does not support `symlink` mode for local code installs
+- the loader resolves symlinked packages to the external workspace realpath, which keeps the external dependency tree active and can duplicate host runtime singletons such as `@nestjs/core`
+- rebuild the plugin and send a fresh install request whenever code changes need to be reloaded
+- the host continues to validate `package.json.name`, SDK compatibility, and the presence of either `dist/` or `src/index.ts`
+- `plugin-dev-harness` validates plugin lifecycle in isolation; it does not replace end-to-end installation inside Xpert
+
+## SDK versioning
+
+- declare `@xpert-ai/plugin-sdk` in `peerDependencies`, not `dependencies`
+- use an explicit single-major range such as `^3.8.0`
+- the host validates SDK compatibility before activating a plugin and rejects packages that bundle their own SDK copy
+
+## Plugin webhook auth guard
+
+Use `PluginWebhookAuthGuard` when a plugin exposes an inbound webhook route for an external system. The webhook credential is scoped to one Integration. It is not a full platform API key, and plugins should not look up or embed platform API keys in callback URLs.
+
+The credential lifecycle is managed by the host through the integration permission service:
+
+- `ensureWebhookCredential(id, { provider })` creates or returns the active credential and returns the plain token once
+- `rotateWebhookCredential(id, { provider })` replaces the credential and returns a new token
+- `revokeWebhookCredential(id, { provider })` disables the credential
+- the stored Integration option is `webhookCredential`, shaped as `PluginWebhookCredentialRecord`
+- the stored record contains only metadata and `tokenHash`; the plain token is never persisted
+
+Webhook URLs should carry only an opaque secret query value, for example:
+
+```text
+https://api.example.com/api/my-provider/webhook/<integration-id>?secret=<webhook-secret>
+```
+
+For systems that cannot set custom headers, this keeps the URL self-contained without exposing an API key. The guard reads the Integration id from a route parameter and the secret from a query parameter, validates the token hash, checks the optional provider, and then writes the resolved Integration principal plus tenant/organization headers onto the request. Downstream plugin code should run webhook work under that principal context before calling host permission services.
+
+Example controller:
+
+```ts
+import { Body, Controller, Param, Post, Request, UseGuards } from '@nestjs/common'
+import { PluginWebhookAuth, PluginWebhookAuthGuard, runWithRequestContext } from '@xpert-ai/plugin-sdk'
+
+@Controller('my-provider')
+export class MyWebhookController {
+  // Use the host public-route decorator when normal platform auth is global.
+  @Public()
+  @PluginWebhookAuth({
+    provider: 'my-provider',
+    integrationParam: 'integrationId',
+    secretQueryParam: 'secret'
+  })
+  @UseGuards(PluginWebhookAuthGuard)
+  @Post('webhook/:integrationId')
+  async webhook(
+    @Param('integrationId') integrationId: string,
+    @Request() req: { user?: unknown; headers?: Record<string, string> },
+    @Body() body: unknown
+  ) {
+    await new Promise<void>((resolve, reject) => {
+      runWithRequestContext({ user: req.user, headers: req.headers ?? {} }, {}, () => {
+        this.handleWebhook(integrationId, body).then(resolve).catch(reject)
+      })
+    })
+    return 'success'
+  }
+}
+```
+
+`@Public()` or the host-equivalent public decorator is still required when the route is intentionally called by an external webhook sender and would otherwise be blocked by the normal platform auth guard. `PluginWebhookAuthGuard` is then the route-specific auth boundary for that webhook.
+
+Register the guard in the plugin module that owns the webhook route:
+
+```ts
+@XpertServerPlugin({
+  providers: [MyWebhookService, PluginWebhookAuthGuard],
+  controllers: [MyWebhookController]
+})
+export class MyProviderPlugin {}
+```
+
+Operational rules:
+
+- generate the callback URL from `ensureWebhookCredential()` or `rotateWebhookCredential()`; do not ask users to paste a platform API key
+- include `provider` in `@PluginWebhookAuth()` so a credential for one Integration provider cannot be replayed against another provider route
+- rotate the credential when the URL is exposed, and revoke it when the external integration is disconnected
+- do not add `PluginWebhookAuthGuard` as a global bootstrap guard; attach it to webhook routes with `@UseGuards()`
+- if the external system supports signed headers, a plugin may add provider-specific signature checks after this guard, but the Xpert principal should still come from the scoped webhook credential
+
 ## Plugin configuration support
 
 If a plugin needs user-managed configuration:
@@ -28,6 +173,100 @@ When `config.formSchema` is present:
 - the frontend renders the form with `JSONSchemaFormComponent`
 - the host stores the config in `PluginInstance.config`
 - the stored value is encrypted at rest before persistence
+
+Frontend surfaces should also check that `config.formSchema.type === "object"` and that `config.formSchema.properties` contains at least one renderable field before showing a `Configure` action. Plugins without actual configuration fields should not open an empty configuration dialog.
+
+## Target app metadata
+
+Plugins can use `meta.targetApps` and `meta.targetAppMeta` to declare which product surfaces they are intended for and to provide app-specific business metadata. `category` remains the xpert-pro technical category and should not be used to infer whether a plugin belongs to an upper-layer business app.
+
+```ts
+export const plugin: XpertPlugin = {
+  meta: {
+    name: '@xpert-ai/plugin-bom-document-intake',
+    version: '0.0.1',
+    level: 'system',
+    category: 'middleware',
+    displayName: 'BOM Document Intake',
+    description: 'Parse BOM change documents and expose review views.',
+    author: 'Xpert AI',
+    targetApps: ['data-xpert'],
+    targetAppMeta: {
+      'data-xpert': {
+        types: ['workbench-view', 'assistant-tool', 'business-app'],
+        minAppVersion: '0.1.0',
+        capabilities: ['bom-document-intake', 'bom-review-workbench', 'bom-change-governance']
+      }
+    }
+  },
+  register(ctx) {
+    // ...
+  }
+}
+```
+
+Field contract:
+
+| Field                              | Meaning                                                                                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `targetApps`                       | Product surfaces where the plugin should appear. When omitted, the plugin remains a generic xpert-pro plugin and is not automatically shown in an upper-layer business plugin center. |
+| `targetAppMeta`                    | App-specific metadata keyed by product surface, for example `targetAppMeta["data-xpert"]`. Each target app owns its own `types` vocabulary and compatibility rules.                   |
+| `targetAppMeta[app].types`         | Business type values for that target app. xpert-pro does not interpret these values; it only passes them through.                                                                     |
+| `targetAppMeta[app].minAppVersion` | Minimum target app version supported by the plugin.                                                                                                                                   |
+| `targetAppMeta[app].capabilities`  | Business capability identifiers exposed to the target app for search, filtering, detail pages, or governance rules.                                                                   |
+
+data-xpert currently uses these type values:
+
+- `resource-adapter`
+- `workbench-view`
+- `assistant-tool`
+- `governance-extension`
+- `business-app`
+
+The data-xpert plugin center only shows plugins that satisfy both conditions:
+
+1. `targetApps` includes `data-xpert`
+2. `targetAppMeta["data-xpert"].types` is not empty
+
+Do not put data-xpert business metadata in a top-level `dataXpert` field for new plugins. That old shape is only read as a migration fallback; new plugins should use `targetAppMeta["data-xpert"]`.
+
+## Codex-style plugin resources
+
+Plugins can ship Codex-style bundle resources such as `.xpertai-plugin/plugin.json`, `skills/`, `.mcp.json`, `.app.json`, `hooks/`, and `assets/`. Installing the plugin itself only persists `PluginInstance` and loads the plugin code. Resource definitions are not copied into a component instance table; the host computes them live from the real bundle through `readPluginBundleManifest()` and `collectPluginBundleComponents()`.
+
+Resource initialization has two target types:
+
+| Target    | Installable resources | Runtime                                                                                   |
+| --------- | --------------------- | ----------------------------------------------------------------------------------------- |
+| workspace | Skills / MCP / Apps   | `SkillPackage`, workspace-scoped plugin-managed `XpertToolset`, app connector requirement |
+| Xpert     | Hooks                 | The target agent's `PluginHooksMiddleware`                                                |
+
+Assistant templates can also declare `dependencies`. When a template is installed, the server creates the Xpert first and then binds the declared Skills / MCP / Apps / Hooks to the target agent. Role-specific Codex plugins use this path to pre-bind all role skills to a single-agent template.
+
+Runtime resource state is stored only in `PluginResourceInstallation`:
+
+- `workspaceId` is the owning workspace
+- `xpertId` / `agentKey` identify the bound Xpert and agent; both are `null` for workspace-target installs
+- `runtimeType` / `runtimeId` point to the `SkillPackage`, `XpertToolset`, hook profile, or app connector requirement
+- `runtimeNodeKey` records the Xpert draft graph node that was created or reused; app requirements usually keep it `null`
+- `definitionHash` is compared with the live bundle definition to report `staleDefinition`
+- `status` uses `ready`, `pending_auth`, `blocked`, or `failed`
+
+`PluginResourceAttachment` is not used. The new system does not need legacy compatibility, and installation rows now capture both instantiation and binding state so resource state does not drift across two tables.
+
+`.app.json` supports the upstream map shape:
+
+```json
+{
+  "apps": {
+    "salesforce": {
+      "name": "REPLACE_WITH_SALESFORCE_CONNECTOR_ID"
+    }
+  }
+}
+```
+
+The host expands each map key into a separate `APP` component. `REPLACE_WITH_*` placeholders are not treated as usable connectors; installation records them as `blocked` until the workspace provides explicit connector overrides in `PluginInstance.config`.
 
 ## Related guides
 

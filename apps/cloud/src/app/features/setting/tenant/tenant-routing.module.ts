@@ -1,7 +1,9 @@
 import { NgModule } from '@angular/core'
 import { RouterModule, Routes } from '@angular/router'
 import { NgxPermissionsGuard } from 'ngx-permissions'
-import { RolesEnum } from '../../../@core'
+import { FeatureEnum, PermissionsEnum, RolesEnum } from '../../../@core'
+import { SMTPComponent } from '../../../@shared/smtp/smtp.component'
+import { featureGate } from '../../feature-gate'
 import { DemoComponent } from './demo/demo.component'
 import { SettingsComponent } from './settings/settings.component'
 import { PACTenantComponent } from './tenant.component'
@@ -17,6 +19,7 @@ const routes: Routes = [
     component: PACTenantComponent,
     canActivate: [NgxPermissionsGuard],
     data: {
+      scopeContext: 'tenant-only',
       permissions: {
         only: [RolesEnum.SUPER_ADMIN],
         redirectTo
@@ -33,8 +36,35 @@ const routes: Routes = [
         component: SettingsComponent
       },
       {
+        path: 'skills',
+        loadComponent: () => import('./skills/skills.component').then((m) => m.TenantSkillsComponent),
+        data: {
+          title: 'settings/tenant/skills'
+        }
+      },
+      {
         path: 'tags',
         component: TenantTagMaintainComponent
+      },
+      {
+        path: 'smtp',
+        component: SMTPComponent,
+        canActivate: [NgxPermissionsGuard, featureGate([FeatureEnum.FEATURE_SMTP], ['/settings/tenant/settings'])],
+        data: {
+          title: 'settings/tenant/smtp',
+          scopeContext: 'tenant-only',
+          isOrganization: false,
+          permissions: {
+            only: [PermissionsEnum.CUSTOM_SMTP_VIEW],
+            redirectTo
+          },
+          selectors: {
+            project: false,
+            employee: false,
+            date: false,
+            organization: false
+          }
+        }
       }
     ]
   }

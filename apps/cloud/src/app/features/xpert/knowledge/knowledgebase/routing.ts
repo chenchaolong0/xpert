@@ -4,11 +4,13 @@ import { KnowledgeDocumentChunkComponent } from './documents/chunk/chunk.compone
 import { KnowledgeDocumentCreateComponent } from './documents/create/create.component'
 import { KnowledgeDocumentsComponent } from './documents/documents.component'
 import { KnowledgebaseComponent } from './knowledgebase.component'
+import { KnowledgeGraphComponent } from './graph/graph.component'
 import { KnowledgeTestComponent } from './test/test.component'
 import { KnowledgeDocumentPipelineComponent } from './documents/pipeline/pipeline.component'
 import { KnowledgebasePipelinesComponent } from './pipelines/pipelines.component'
 import { KnowledgeDocumentSettingsComponent } from './documents/settings/settings.component'
 import { KnowledgebasePipelineComponent } from './pipeline/pipeline.component'
+import { ExtensionHostViewPageComponent } from 'apps/cloud/src/app/@shared/view-extension'
 
 export default [
   {
@@ -54,8 +56,20 @@ export default [
         component: KnowledgeTestComponent
       },
       {
+        path: 'graph',
+        component: KnowledgeGraphComponent
+      },
+      {
+        path: 'view/:viewKey',
+        component: ExtensionHostViewPageComponent,
+        data: {
+          hostType: 'knowledgebase',
+          slot: 'detail.main_tabs'
+        }
+      },
+      {
         path: 'xpert/:id',
-        component: KnowledgebasePipelineComponent,
+        component: KnowledgebasePipelineComponent
       },
       {
         path: 'xpert',

@@ -1,18 +1,21 @@
 import {
-	ICopilotModel,
-	IIntegration,
-	IKnowledgebase,
-	IKnowledgeDocument,
-	IXpert,
-	KBMetadataFieldDef,
-	KnowledgebaseParserConfig,
-	KnowledgebasePermission,
-	KnowledgebaseTypeEnum,
-	KnowledgeStructureEnum,
-	TAvatar,
-	TKBRecallParams
-} from '@metad/contracts'
-import { Integration } from '@metad/server-core'
+    ICopilotModel,
+    IIntegration,
+    IKnowledgebase,
+    IKnowledgeDocument,
+    IXpert,
+    KBMetadataFieldDef,
+    KnowledgebaseParserConfig,
+    KnowledgebasePermission,
+    KnowledgebaseStatusEnum,
+    KnowledgebaseTypeEnum,
+    KnowledgeStructureEnum,
+    GraphRagConfig,
+    KnowledgeGraphStatus,
+    TAvatar,
+    TKBRecallParams
+} from '@xpert-ai/contracts'
+import { Integration } from '@xpert-ai/server-core'
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 import { Transform, TransformFnParams } from 'class-transformer'
 import { IsBoolean, IsEnum, IsJSON, IsNumber, IsOptional, IsString } from 'class-validator'
@@ -21,222 +24,335 @@ import { WorkspaceBaseEntity } from '../core/entities/base.entity'
 import { CopilotModel, KnowledgeDocument, Xpert } from '../core/entities/internal'
 import { XpertIdentiDto } from '../xpert/dto'
 
-
 @Entity('knowledgebase')
 @Index(['tenantId', 'organizationId', 'name'], { unique: true })
 export class Knowledgebase extends WorkspaceBaseEntity implements IKnowledgebase {
-	@ApiPropertyOptional({ type: () => String })
-	@IsString()
-	@Column()
-	name: string
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @Column()
+    name: string
 
-	@ApiPropertyOptional({ enum: KnowledgebaseTypeEnum, enumName: 'KnowledgebaseTypeEnum' })
-	@IsEnum(KnowledgebaseTypeEnum)
-	@Column({ nullable: true, length: 20 })
-	type: KnowledgebaseTypeEnum
+    @ApiPropertyOptional({ enum: KnowledgebaseTypeEnum, enumName: 'KnowledgebaseTypeEnum' })
+    @IsEnum(KnowledgebaseTypeEnum)
+    @Column({ type: 'varchar', nullable: true, length: 20 })
+    type: KnowledgebaseTypeEnum
 
-	@ApiPropertyOptional({ enum: KnowledgeStructureEnum, enumName: 'KnowledgeStructureEnum' })
-	@IsEnum(KnowledgeStructureEnum)
-	@IsOptional()
-	@Column({ nullable: true })
-	structure?: KnowledgeStructureEnum
+    @ApiPropertyOptional({ enum: KnowledgeStructureEnum, enumName: 'KnowledgeStructureEnum' })
+    @IsEnum(KnowledgeStructureEnum)
+    @IsOptional()
+    @Column({ type: 'varchar', nullable: true })
+    structure?: KnowledgeStructureEnum
 
-	@ApiPropertyOptional({ type: () => String })
-	@IsString()
-	@IsOptional()
-	@Column({ nullable: true, length: 20 })
-	language?: 'Chinese' | 'English'
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ type: 'varchar', nullable: true, length: 20 })
+    language?: 'Chinese' | 'English'
 
-	@ApiPropertyOptional({ type: () => Object })
-	@IsJSON()
-	@IsOptional()
-	@Column({ type: 'json', nullable: true })
-	avatar?: TAvatar
+    @ApiPropertyOptional({ type: () => Object })
+    @IsJSON()
+    @IsOptional()
+    @Column({ type: 'json', nullable: true })
+    avatar?: TAvatar
 
-	@ApiPropertyOptional({ type: () => String })
-	@IsString()
-	@IsOptional()
-	@Column({ nullable: true })
-	description?: string
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    description?: string
 
-	@ApiProperty({ type: () => String, enum: KnowledgebasePermission })
-	@IsEnum(KnowledgebasePermission)
-	@IsOptional()
-	@Column({ nullable: true, default: KnowledgebasePermission.Private })
-	permission?: KnowledgebasePermission
+    @ApiProperty({ type: () => String, enum: KnowledgebasePermission })
+    @IsEnum(KnowledgebasePermission)
+    @IsOptional()
+    @Column({ type: 'varchar', nullable: true, default: KnowledgebasePermission.Private })
+    permission?: KnowledgebasePermission
 
-	// Copilot Model
-	@ApiProperty({ type: () => CopilotModel })
-	@OneToOne(() => CopilotModel, {
-		nullable: true,
-		cascade: true
-	})
-	@JoinColumn()
-	copilotModel?: ICopilotModel
+    // Copilot Model
+    @ApiProperty({ type: () => CopilotModel })
+    @OneToOne(() => CopilotModel, {
+        nullable: true,
+        cascade: true
+    })
+    @JoinColumn()
+    copilotModel?: ICopilotModel
 
-	@ApiProperty({ type: () => String })
-	@RelationId((it: Knowledgebase) => it.copilotModel)
-	@IsString()
-	@Column({ nullable: true })
-	copilotModelId?: string
+    @ApiProperty({ type: () => String })
+    @RelationId((it: Knowledgebase) => it.copilotModel)
+    @IsString()
+    @Column({ nullable: true })
+    copilotModelId?: string
 
-	@ApiProperty({ type: () => CopilotModel })
-	@OneToOne(() => CopilotModel, {
-		nullable: true,
-		cascade: true
-	})
-	@JoinColumn()
-	rerankModel?: ICopilotModel
+    @ApiPropertyOptional({ type: () => CopilotModel })
+    @OneToOne(() => CopilotModel, {
+        nullable: true,
+        cascade: true
+    })
+    @JoinColumn()
+    chatModel?: ICopilotModel | null
 
-	@ApiProperty({ type: () => String })
-	@RelationId((it: Knowledgebase) => it.rerankModel)
-	@IsString()
-	@Column({ nullable: true })
-	rerankModelId?: string
+    @ApiPropertyOptional({ type: () => String })
+    @RelationId((it: Knowledgebase) => it.chatModel)
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    chatModelId?: string | null
 
-	@ApiProperty({ type: () => CopilotModel })
-	@OneToOne(() => CopilotModel, {
-		nullable: true,
-		cascade: true
-	})
-	@JoinColumn()
-	visionModel?: ICopilotModel
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    embeddingCollectionName?: string | null
 
-	@ApiProperty({ type: () => String })
-	@RelationId((it: Knowledgebase) => it.visionModel)
-	@IsString()
-	@Column({ nullable: true })
-	visionModelId?: string
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    embeddingModelFingerprint?: string | null
 
-	@ApiPropertyOptional({ type: () => Number })
-	@IsNumber()
-	@IsOptional()
-	@Column({ nullable: true })
-	documentNum?: number
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    embeddingDimensions?: number | null
 
-	@ApiPropertyOptional({ type: () => Number })
-	@IsNumber()
-	@IsOptional()
-	@Column({ nullable: true })
-	tokenNum?: number
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    embeddingRevision?: number | null
 
-	@ApiPropertyOptional({ type: () => Number })
-	@IsNumber()
-	@IsOptional()
-	@Column({ nullable: true })
-	chunkNum?: number
+    @ApiPropertyOptional({ type: () => CopilotModel })
+    @OneToOne(() => CopilotModel, {
+        nullable: true,
+        cascade: true
+    })
+    @JoinColumn()
+    pendingCopilotModel?: ICopilotModel | null
 
-	/**
-	 * @deprecated use `recall`
-	 */
-	@ApiPropertyOptional({ type: () => Number })
-	@IsNumber()
-	@IsOptional()
-	@Column({ nullable: true, type: 'decimal' })
-	similarityThreshold?: number
+    @ApiPropertyOptional({ type: () => String })
+    @RelationId((it: Knowledgebase) => it.pendingCopilotModel)
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    pendingCopilotModelId?: string | null
 
-	@ApiPropertyOptional({ type: () => Number })
-	@IsNumber()
-	@IsOptional()
-	@Column({ nullable: true })
-	vectorSimilarityWeight?: number
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    pendingEmbeddingCollectionName?: string | null
 
-	@ApiPropertyOptional({ type: () => Object })
-	@IsJSON()
-	@IsOptional()
-	@Column({ type: 'json', nullable: true, default: { topK: 10 } })
-	recall?: TKBRecallParams
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    pendingEmbeddingModelFingerprint?: string | null
 
-	@ApiPropertyOptional({ type: () => String })
-	@IsString()
-	@IsOptional()
-	@Column({ nullable: true })
-	parserId?: string
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    pendingEmbeddingDimensions?: number | null
 
-	@ApiPropertyOptional({ type: () => Object })
-	@IsJSON()
-	@IsOptional()
-	@Column({ type: 'json', nullable: true })
-	parserConfig?: KnowledgebaseParserConfig
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    pendingEmbeddingRevision?: number | null
 
-	@ApiPropertyOptional({ type: () => String })
-	@IsString()
-	@IsOptional()
-	@Column({ nullable: true })
-	status?: string
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    rebuildTaskId?: string | null
 
-	@ApiPropertyOptional({ type: () => Object })
-	@IsJSON()
-	@IsOptional()
-	@Column('jsonb', { default: [] })
-	metadataSchema?: KBMetadataFieldDef[];
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    embeddingRebuildError?: string | null
 
-	@ApiProperty({ type: () => Boolean })
-	@IsBoolean()
-	@IsOptional()
-	@Column({ nullable: true, default: true })
-	apiEnabled?: boolean
+    @ApiPropertyOptional({ type: () => Object })
+    @IsJSON()
+    @IsOptional()
+    @Column({ type: 'json', nullable: true })
+    graphRag?: GraphRagConfig | null
 
-	@ApiPropertyOptional({ type: () => String })
-	@IsString()
-	@IsOptional()
-	@Column({ nullable: true })
-	extKnowledgebaseId?: string
+    @ApiPropertyOptional({ enum: KnowledgeGraphStatus, enumName: 'KnowledgeGraphStatus' })
+    @IsEnum(KnowledgeGraphStatus)
+    @IsOptional()
+    @Column({ type: 'varchar', nullable: true, default: KnowledgeGraphStatus.DISABLED })
+    graphStatus?: KnowledgeGraphStatus | null
 
-	/*
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ type: 'int', nullable: true, default: 0 })
+    graphRevision?: number | null
+
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ type: 'text', nullable: true })
+    graphIndexError?: string | null
+
+    @ApiProperty({ type: () => CopilotModel })
+    @OneToOne(() => CopilotModel, {
+        nullable: true,
+        cascade: true
+    })
+    @JoinColumn()
+    rerankModel?: ICopilotModel
+
+    @ApiProperty({ type: () => String })
+    @RelationId((it: Knowledgebase) => it.rerankModel)
+    @IsString()
+    @Column({ nullable: true })
+    rerankModelId?: string
+
+    @ApiProperty({ type: () => CopilotModel })
+    @OneToOne(() => CopilotModel, {
+        nullable: true,
+        cascade: true
+    })
+    @JoinColumn()
+    visionModel?: ICopilotModel
+
+    @ApiProperty({ type: () => String })
+    @RelationId((it: Knowledgebase) => it.visionModel)
+    @IsString()
+    @Column({ nullable: true })
+    visionModelId?: string
+
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    documentNum?: number
+
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    tokenNum?: number
+
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    chunkNum?: number
+
+    /**
+     * @deprecated use `recall`
+     */
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true, type: 'decimal' })
+    similarityThreshold?: number
+
+    @ApiPropertyOptional({ type: () => Number })
+    @IsNumber()
+    @IsOptional()
+    @Column({ nullable: true })
+    vectorSimilarityWeight?: number
+
+    @ApiPropertyOptional({ type: () => Object })
+    @IsJSON()
+    @IsOptional()
+    @Column({ type: 'json', nullable: true, default: { topK: 10 } })
+    recall?: TKBRecallParams
+
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    parserId?: string
+
+    @ApiPropertyOptional({ type: () => Object })
+    @IsJSON()
+    @IsOptional()
+    @Column({ type: 'json', nullable: true })
+    parserConfig?: KnowledgebaseParserConfig
+
+    @ApiPropertyOptional({ enum: KnowledgebaseStatusEnum, enumName: 'KnowledgebaseStatusEnum' })
+    @IsEnum(KnowledgebaseStatusEnum)
+    @IsOptional()
+    @Column({ type: 'varchar', nullable: true, default: KnowledgebaseStatusEnum.READY })
+    status?: KnowledgebaseStatusEnum
+
+    @ApiPropertyOptional({ type: () => Object })
+    @IsJSON()
+    @IsOptional()
+    @Column('jsonb', { default: [] })
+    metadataSchema?: KBMetadataFieldDef[]
+
+    @ApiProperty({ type: () => Boolean })
+    @IsBoolean()
+    @IsOptional()
+    @Column({ nullable: true, default: true })
+    apiEnabled?: boolean
+
+    @ApiPropertyOptional({ type: () => String })
+    @IsString()
+    @IsOptional()
+    @Column({ nullable: true })
+    extKnowledgebaseId?: string
+
+    /*
     |--------------------------------------------------------------------------
     | @OneToMany
     |--------------------------------------------------------------------------
     */
-	@ApiPropertyOptional({ type: () => KnowledgeDocument, isArray: true })
-	@IsOptional()
-	@OneToMany(() => KnowledgeDocument, (kd) => kd.knowledgebase, {
-		cascade: ['insert', 'update', 'remove', 'soft-remove', 'recover']
-	})
-	documents?: IKnowledgeDocument[] | null
+    @ApiPropertyOptional({ type: () => KnowledgeDocument, isArray: true })
+    @IsOptional()
+    @OneToMany(() => KnowledgeDocument, (kd) => kd.knowledgebase, {
+        cascade: ['insert', 'update', 'remove', 'soft-remove', 'recover']
+    })
+    documents?: IKnowledgeDocument[] | null
 
-	/*
+    /*
     |--------------------------------------------------------------------------
     | @OneToOne
     |--------------------------------------------------------------------------
     */
-	// One-to-One with Xpert
-	@OneToOne(() => Xpert, (xpert) => xpert.knowledgebase)
-	@JoinColumn({ name: 'pipelineId' })
-	pipeline?: IXpert
+    // One-to-One with Xpert
+    @OneToOne(() => Xpert, (xpert) => xpert.knowledgebase)
+    @JoinColumn({ name: 'pipelineId' })
+    pipeline?: IXpert
 
-	@IsOptional()
-	@IsString()
-	@Column({ nullable: true })
-	pipelineId?: string
+    @IsOptional()
+    @IsString()
+    @Column({ nullable: true })
+    pipelineId?: string
 
-	/*
+    /*
     |--------------------------------------------------------------------------
     | @ManyToOne
     |--------------------------------------------------------------------------
     */
-	@ApiProperty({ type: () => Integration })
-	@ManyToOne(() => Integration, {
-		onDelete: 'SET NULL'
-	})
-	@JoinColumn()
-	integration?: IIntegration
+    @ApiProperty({ type: () => Integration })
+    @ManyToOne(() => Integration, {
+        onDelete: 'SET NULL'
+    })
+    @JoinColumn()
+    integration?: IIntegration
 
-	@ApiProperty({ type: () => String })
-	@RelationId((it: Knowledgebase) => it.integration)
-	@IsString()
-	@Column({ nullable: true })
-	integrationId?: string
+    @ApiProperty({ type: () => String })
+    @RelationId((it: Knowledgebase) => it.integration)
+    @IsString()
+    @Column({ nullable: true })
+    integrationId?: string
 
-	/*
+    /*
     |--------------------------------------------------------------------------
     | @ManyToMany 
     |--------------------------------------------------------------------------
     */
-	@Transform((params: TransformFnParams) => params.value?.map((_) => new XpertIdentiDto(_)))
-	@ManyToMany(() => Xpert, (xpert) => xpert.knowledgebases, {
-		onUpdate: 'CASCADE',
-		onDelete: 'CASCADE'
-	})
-	xperts?: IXpert[]
+    @Transform((params: TransformFnParams) => params.value?.map((_) => new XpertIdentiDto(_)))
+    @ManyToMany(() => Xpert, (xpert) => xpert.knowledgebases, {
+        onUpdate: 'CASCADE',
+        onDelete: 'CASCADE'
+    })
+    xperts?: IXpert[]
 }

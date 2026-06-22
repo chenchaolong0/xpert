@@ -1,3 +1,4 @@
+import type { TChatRequestHuman, TInterruptCommand } from '@xpert-ai/chatkit-types'
 import { IBasePerTenantAndOrganizationEntityModel } from '../base-entity.model'
 import { ICopilotModel, TCopilotModel } from './copilot-model.model'
 import { IKnowledgebase, TKBRecallParams } from './knowledgebase.model'
@@ -170,6 +171,10 @@ export type TXpertAgentOptions = {
    */
   attachment?: TXpertAgentAttachment
   /**
+   * Built-in file understanding tools config of agent
+   */
+  fileUnderstanding?: TXpertAgentFileUnderstanding
+  /**
    * Config of middlewares for agent
    */
   middlewares?: {
@@ -194,6 +199,13 @@ export type TXpertAgentAttachment = TXpertAgentVision & {
    * Max number of files to be processed
    */
   maxNum?: number
+}
+
+export type TXpertAgentFileUnderstanding = {
+  /**
+   * Enable built-in tools for understanding conversation files. Default: true
+   */
+  enabled?: boolean
 }
 
 export type TAgentPromptTemplate = {

@@ -1,14 +1,15 @@
-import { Injectable } from '@angular/core'
+import { Inject, Injectable } from '@angular/core'
 import { Router } from '@angular/router'
 import { Ability, AbilityBuilder } from '@casl/ability'
-import { IUser } from '@metad/contracts'
-import { UsersService } from '@metad/cloud/state'
+import { IUser } from '@xpert-ai/contracts'
+import { CurrentUserHydrationService, CURRENT_USER_BOOTSTRAP_RELATIONS, CURRENT_USER_BOOTSTRAP_SELECT, UsersService } from '@xpert-ai/cloud/state'
 import * as Sentry from "@sentry/angular";
 import { NgxPermissionsService } from 'ngx-permissions'
 import { firstValueFrom } from 'rxjs'
 import { AuthStrategy } from '../../@core/auth/auth-strategy.service'
 import { Store } from '../../@core/services/store.service'
 import { AbilityActions, RolesEnum } from '../types'
+import { ScopeService } from './scope.service'
 import { TenantService } from './tenant.service'
 
 @Injectable({ providedIn: 'root' })
@@ -21,23 +22,24 @@ export class AppInitService {
     private readonly authStrategy: AuthStrategy,
     private readonly router: Router,
     private readonly store: Store,
+    private readonly scopeService: ScopeService,
+    private readonly currentUserHydrationService: CurrentUserHydrationService,
     private readonly ngxPermissionsService: NgxPermissionsService,
-    private readonly ability: Ability,
+    @Inject(Ability) private readonly ability: Ability,
   ) {}
 
   async init() {
     try {
       const id = this.store.userId
       if (id) {
-
-        this.user = await this.usersService.getMe([
-          'employee',
-          'role',
-          'role.rolePermissions',
-          'tenant',
-          'tenant.featureOrganizations',
-          'tenant.featureOrganizations.feature'
-        ])
+        this.user = await this.usersService.getMe(
+          [...CURRENT_USER_BOOTSTRAP_RELATIONS],
+          CURRENT_USER_BOOTSTRAP_SELECT,
+          {
+            currentOrganizationId: this.store.organizationId ?? this.store.lastOrganizationId,
+            limitOrganizations: true
+          }
+        )
 
         //When a new user registers & logs in for the first time, he/she does not have tenantId.
         //In this case, we have to redirect the user to the onboarding page to create their first organization, tenant, role.
@@ -48,9 +50,24 @@ export class AppInitService {
 
         this.store.user = this.user
 
+        const memberships = (this.user.organizations ?? []).filter(
+          (membership) =>
+            membership.isActive !== false &&
+            !!membership.organization?.id &&
+            membership.organization.isActive !== false
+        )
+        const organizations = memberships.map(({ organization }) => organization)
+        const preferredOrganizationId =
+          memberships.find((membership) => membership.isDefault)?.organizationId ?? null
+
+        this.scopeService.initializeEntryScope(organizations, preferredOrganizationId)
+
         //tenant enabled/disabled features for relatives organizations
-        const { tenant } = this.user
-        this.store.featureTenant = tenant.featureOrganizations.filter((item) => !item.organizationId)
+        const tenantFeatures = this.user.tenant?.featureOrganizations ?? []
+        this.store.featureTenant = tenantFeatures.filter((item) => !item.organizationId)
+        this.store.featureContextHydrated = Array.isArray(this.user.tenant?.featureOrganizations)
+        this.store.featureContextHydrationLoading = false
+        this.store.featureContextHydrationFailed = false
 
         //only enabled permissions assign to logged in user
         this.store.userRolePermissions = this.user.role.rolePermissions.filter((permission) => permission.enabled)
@@ -66,6 +83,12 @@ export class AppInitService {
 
         // Sentry identify user
         Sentry.setUser({ id: this.user.id, email: this.user.email, username: this.user.username })
+
+        if (!this.store.featureContextHydrated) {
+          this.store.featureContextHydrationLoading = true
+          this.store.featureContextHydrationFailed = false
+          this.hydrateCurrentUserContextInBackground(id)
+        }
       } else {
         const onboarded = await firstValueFrom(this.tenantService.getOnboard())
         if (onboarded.tenant) {
@@ -86,6 +109,19 @@ export class AppInitService {
     }
   }
 
+  private hydrateCurrentUserContextInBackground(userId: string) {
+    void this.currentUserHydrationService
+      .getFeatureHydration()
+      .catch((error) => {
+        if (this.store.userId !== userId) {
+          return
+        }
+        this.store.featureContextHydrationFailed = true
+        this.store.featureContextHydrationLoading = false
+        console.warn('Deferred current-user hydration failed', error)
+      })
+  }
+
   private updateAbility(user: IUser) {
     const { can, rules } = new AbilityBuilder(Ability)
 
@@ -98,7 +134,8 @@ export class AppInitService {
 
       if (
         user.role.name === RolesEnum.ADMIN ||
-        user.role.name === RolesEnum.DATA_ENTRY ||
+        user.role.name === RolesEnum.AI_BUILDER ||
+        user.role.name === RolesEnum.ANALYTICS_BUILDER ||
         user.role.name === RolesEnum.TRIAL
       ) {
         can(AbilityActions.Manage, 'Story')

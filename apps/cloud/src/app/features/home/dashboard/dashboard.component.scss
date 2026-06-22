@@ -1,9 +1,10 @@
+@reference "../../../../styles/tailwind-reference.css";
 :host {
   @apply flex flex-col flex-1 max-w-full px-1 md:px-4;
 }
 
 .pac-home__navigation {
-  .mat-tab-link {
+  .z-tab-link {
     height: 38px;
     min-width: 100px;
   }
@@ -14,7 +15,7 @@
 }
 
 .pac-home__quick-guide {
-  background-color: var(--ngm-home-card-background-color);
+  background-color: var(--sys-surface-subtle);
 
   .step {
     width: 220px;
@@ -72,7 +73,7 @@
 }
 
 .pac-home__widget {
-  background-color: var(--ngm-home-card-background-color);
+  background-color: var(--sys-surface-subtle);
 }
 
 .emoji-loader::before {
@@ -90,11 +91,11 @@ gridster {
 :host::ng-deep {
   gridster {
     .gridster-row {
-      border-color: var(--ngm-color-outline);
+      border-color: var(--color-divider-regular);
     }
   
     .gridster-column {
-      border-color: var(--ngm-color-outline);
+      border-color: var(--color-divider-regular);
     }
   }
 }

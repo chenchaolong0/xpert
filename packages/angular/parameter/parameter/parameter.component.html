@@ -1,16 +1,16 @@
 @switch (paramType) {
   @case(eCubeParameterEnum.Input) {
     @if (options()?.slider) {
-      <mat-slider class="w-full"
+      <z-slider class="w-full"
         [step]="options()?.sliderStep || 1"
         [min]="options()?.sliderMin || 0"
         [max]="options()?.sliderMax || 100"
-        [discrete]="options()?.showThumbLabel"
+        [showValueLabel]="options()?.showThumbLabel"
         [showTickMarks]="options()?.showTickMarks"
-        [color]="options()?.sliderColor"
-        >
-        <input matSliderThumb [ngModel]="parameterValue()" (dragEnd)="onSlicerEnd($event)">
-      </mat-slider>
+        [ngModel]="parameterValue()"
+        (changeEnd)="onSlicerEnd($event)"
+      >
+      </z-slider>
     } @else {
       <ngm-input class="block w-full px-2" [ngModel]="parameterValue()" [type]="parameter().dataType ?? 'string'"
         (blur)="onBlur($event)"
@@ -24,44 +24,26 @@
       @for (option of availableMembers(); track option.key; let i = $index) {
         <li role="listitem" class="radio-item w-full flex items-center px-2 py-1.5 rounded-lg cursor-pointer hover:bg-hover-bg" [cdkOption]="option.key">
           <input id="default-radio-{{i}}" name="parameter-radio" type="radio" [checked]="option.key === valueList()?.[0]"
-            class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+            class="h-4 w-4 border border-divider-regular bg-components-input-bg-normal text-[var(--sys-primary)] focus:ring-2 focus:ring-components-input-border-active"
           >
-          <label for="default-radio-{{i}}" class="ms-2 text-sm font-medium text-gray-900 dark:text-gray-300">{{ option.caption }}</label>
+          <label for="default-radio-{{i}}" class="ms-2 text-sm font-medium text-text-primary">{{ option.caption }}</label>
         </li>
       }
     </ul>
   }
   @case(eCubeParameterEnum.Dimension) {
-    <!-- For now, use the simplified version: display dimension members in a flat format -->
-    @if (multiple) {
-      <mat-selection-list class="flex-1"
-        [multiple]="true"
-        [displayDensity]="appearance()?.displayDensity"
-        [compareWith]="compareWith"
-        [ngModel]="parameterValue()"
-        (ngModelChange)="updateParameterValue($event)"
-      >
-        @for (availableMember of availableMembers$ | async; track availableMember.key) {
-          <mat-list-option [value]="availableMember">
-            <ngm-display-behaviour [option]="availableMember" [displayBehaviour]="displayBehaviour()" />
-          </mat-list-option>
-        }
-      </mat-selection-list>
-    }@else {
-      <mat-selection-list class="flex-1"
-        [multiple]="false"
-        [displayDensity]="appearance()?.displayDensity"
-        [compareWith]="compareWith"
-        [ngModel]="parameterValue()"
-        (ngModelChange)="updateParameterValue($event)"
-      >
-        @for (availableMember of availableMembers$ | async; track availableMember.key) {
-          <mat-list-option [value]="availableMember">
-            <ngm-display-behaviour [option]="availableMember" [displayBehaviour]="displayBehaviour()" />
-          </mat-list-option>
-        }
-      </mat-selection-list>
-    }
+    <ul class="flex-1 ngm-cdk-listbox" cdkListbox
+      [cdkListboxMultiple]="multiple"
+      [cdkListboxCompareWith]="compareWith"
+      [cdkListboxValue]="selectedDimensionMembers()"
+      (cdkListboxValueChange)="updateParameterValue($event.value)"
+    >
+      @for (availableMember of listboxAvailableMembers(); track availableMember.key) {
+        <li class="ngm-cdk-option rounded-lg" [cdkOption]="availableMember">
+          <ngm-display-behaviour [option]="availableMember" [displayBehaviour]="displayBehaviour()" />
+        </li>
+      }
+    </ul>
   }
 }
 

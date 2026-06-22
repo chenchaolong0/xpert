@@ -340,26 +340,32 @@ connections:
     key: Agent_0Pwnh0yVtu/Agent_wDPbYKCcr5
     from: Agent_0Pwnh0yVtu
     to: Agent_wDPbYKCcr5
+    required: true
   - type: agent
     key: Agent_0Pwnh0yVtu/Agent_V2azSA4iJv
     from: Agent_0Pwnh0yVtu
     to: Agent_V2azSA4iJv
+    required: true
   - type: agent
     key: Agent_V2azSA4iJv/Agent_0Pwnh0yVtu
     from: Agent_V2azSA4iJv
     to: Agent_0Pwnh0yVtu
+    required: true
   - type: agent
     key: Agent_wDPbYKCcr5/Agent_0Pwnh0yVtu
     from: Agent_wDPbYKCcr5
     to: Agent_0Pwnh0yVtu
+    required: true
   - type: agent
     key: Agent_wDPbYKCcr5/Agent_V2azSA4iJv
     from: Agent_wDPbYKCcr5
     to: Agent_V2azSA4iJv
+    required: true
   - type: agent
     key: Agent_V2azSA4iJv/Agent_wDPbYKCcr5
     from: Agent_V2azSA4iJv
     to: Agent_wDPbYKCcr5
+    required: true
   - type: toolset
     key: Agent_V2azSA4iJv/b1013d33-4a9a-4821-94ea-346b1fcd50aa
     from: Agent_V2azSA4iJv

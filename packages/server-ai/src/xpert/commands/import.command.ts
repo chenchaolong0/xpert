@@ -1,8 +1,21 @@
 import { ICommand } from '@nestjs/cqrs'
 import { XpertDraftDslDTO } from '../dto'
 
-export class XpertImportCommand implements ICommand {
-	static readonly type = '[Xpert] Import'
+export type XpertImportCommandOptions = {
+    targetXpertId?: string
+    /**
+     * Runs the managed import normalization path for primary and middleware LLM models.
+     */
+    normalizeCopilotModels?: boolean
+    templateId?: string
+    sourceTemplateId?: string
+}
 
-	constructor(public readonly draft: Partial<XpertDraftDslDTO>) {}
+export class XpertImportCommand implements ICommand {
+    static readonly type = '[Xpert] Import'
+
+    constructor(
+        public readonly draft: Partial<XpertDraftDslDTO>,
+        public readonly options: XpertImportCommandOptions = {}
+    ) {}
 }

@@ -1343,10 +1343,12 @@ connections:
     key: Task_nBMtpMCWkq/Agent_v0sgJngFW9
     from: Task_nBMtpMCWkq
     to: Agent_v0sgJngFW9
+    required: true
   - type: agent
     key: Task_nBMtpMCWkq/Agent_HTsgrKfKTR
     from: Task_nBMtpMCWkq
     to: Agent_HTsgrKfKTR
+    required: true
   - type: toolset
     key: Agent_HTsgrKfKTR/6fbe5693-8ee5-4151-8f0d-395f8c675315
     from: Agent_HTsgrKfKTR
